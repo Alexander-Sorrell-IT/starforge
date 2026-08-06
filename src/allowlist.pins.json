@@ -1,0 +1,8 @@
+{
+  "note": "SHA-256 of the two files the static scan allowlists. verify FAILS if either file changes without this manifest being regenerated on purpose: node src/verify.mjs --update-pins",
+  "algorithm": "sha256",
+  "files": {
+    "tripwire.mjs": "e5d8169e04cc8406363d37bc89d5e49cd4190cce9e4d068c646649f41f95b4bd",
+    "confine.mjs": "af7c8d084b59d332fe2bd1b839c064435bece61c9c30d98a792f03dc77d0e96f"
+  }
+}

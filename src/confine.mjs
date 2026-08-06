@@ -18,7 +18,9 @@
 // Scope, stated honestly: this seals SOCKETS for the confined process and
 // all of its descendants. It cannot stop a file written into a
 // cloud-synced directory from leaving the machine later. starforge writes
-// reports only under ~/.starforge.
+// under ~/.starforge, PLUS any --join-fleet directory you name — and that
+// one is a path you chose, so it is the one that can be inside Dropbox or
+// iCloud (PROVE-IT.md §6).
 //
 // ---------------------------------------------------------------------------
 // INTENTIONAL, NAMED EXCEPTION TO THE NO-NETWORK RULE
@@ -72,7 +74,9 @@ export function detectConfinement() {
   }
   notes.push(
     "OS confinement seals sockets, not files: a report written into a cloud-synced " +
-      "folder can still leave the machine later. starforge writes only under ~/.starforge."
+      "folder can still leave the machine later. starforge writes under ~/.starforge, plus " +
+      "any --join-fleet directory you name — and that directory is the one that can be inside " +
+      "a synced folder, because you chose it (PROVE-IT.md §6)."
   );
   if (!recommended) {
     notes.push(
@@ -118,13 +122,32 @@ function profileOneLine() {
 // ---- building the confined command -----------------------------------------
 // Returns the argv array actually spawned, so the printed command string and
 // the executed process can never drift apart.
+//
+// The child is launched through /usr/bin/env so it carries
+// STARFORGE_CONFINEMENT=<mode>. That is the ONLY reason the variable exists:
+// audit.mjs reads it and records which sandbox the run claims to have been
+// launched under. It is a label, not evidence — any process can set it, so the
+// run log stores it with verified:false. Setting it here (and in
+// bin/starforge-proof.sh) is what stops a genuinely confined run from being
+// recorded as "none". Putting it INSIDE argv rather than in spawn's env keeps
+// the printed command byte-identical to what is executed.
+const ENV_BIN = "/usr/bin/env";
 function buildParts({ argv = [], srcDir = SRC_DIR, mode } = {}) {
   const cli = join(srcDir, "cli.mjs");
   if (mode === "sandbox-exec") {
-    return [SANDBOX_EXEC, "-p", profileOneLine(), process.execPath, cli, ...argv];
+    return [
+      ENV_BIN,
+      "STARFORGE_CONFINEMENT=sandbox-exec",
+      SANDBOX_EXEC,
+      "-p",
+      profileOneLine(),
+      process.execPath,
+      cli,
+      ...argv,
+    ];
   }
   if (mode === "netns") {
-    return ["unshare", "-rn", process.execPath, cli, ...argv];
+    return [ENV_BIN, "STARFORGE_CONFINEMENT=netns", "unshare", "-rn", process.execPath, cli, ...argv];
   }
   throw new Error(
     "no OS-level confinement available on this system (need sandbox-exec on macOS " +

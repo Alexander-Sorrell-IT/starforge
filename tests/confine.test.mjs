@@ -54,9 +54,33 @@ test("buildProofCommand is an inspectable one-line shell command", { skip: !det.
   assert.ok(cmd.includes("--no-snapshot"));
   assert.ok(!cmd.includes("\n"));
   if (det.recommended === "sandbox-exec") {
-    assert.ok(cmd.startsWith("/usr/bin/sandbox-exec -p "));
+    // the confined child is launched through /usr/bin/env so it carries the
+    // confinement label into its own audit log — see the next test for why
+    assert.ok(cmd.startsWith("/usr/bin/env STARFORGE_CONFINEMENT=sandbox-exec /usr/bin/sandbox-exec -p "), cmd);
     assert.ok(cmd.includes("deny network"));
   }
+});
+
+test("the confined command SETS STARFORGE_CONFINEMENT, so a confined run is not logged as unconfined", { skip: !det.recommended }, async () => {
+  // The audit log's confinement field used to be dead-wired: nothing in the
+  // tree ever set the variable, so a genuinely sandboxed run recorded
+  // mode "none". The launcher must set it — as a self-reported CLAIM
+  // (audit.mjs keeps verified:false; only the user-run probe is proof).
+  const cmd = buildProofCommand({ argv: ["--yes"] });
+  assert.ok(cmd.includes(`STARFORGE_CONFINEMENT=${det.recommended}`), cmd);
+
+  // and the value really reaches the child: a stub cli that prints it, run
+  // through the exact command string the tool prints for the user (which also
+  // pins that the printed command is runnable verbatim in a shell).
+  const dir = mkdtempSync(join(tmpdir(), "confine-env-"));
+  writeFileSync(
+    join(dir, "cli.mjs"),
+    'console.log("CLAIM:" + (process.env.STARFORGE_CONFINEMENT ?? "unset"));\n'
+  );
+  const res = await runConfined({ argv: [], srcDir: dir });
+  assert.equal(res.ok, true);
+  const r = spawnSync("/bin/sh", ["-c", res.command], { encoding: "utf8", timeout: 15000 });
+  assert.match(r.stdout, new RegExp(`CLAIM:${det.recommended}`), r.stdout + r.stderr);
 });
 
 test("runConfined spawns the command inside confinement and streams output", { skip: !det.recommended }, async () => {

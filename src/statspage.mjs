@@ -2,10 +2,17 @@
 // only — no external resources, no JS, no network. Aesthetic matches card.mjs
 // (#010409 bg, cyan #7fe0ff data accent, monospace numerals).
 //
-// Every stringy value is escaped AND passed through redactSecrets + maskPath
-// before it lands in markup. Every section tolerates absent data: a metric
-// that wasn't computed renders as a dash — 0% is a claim, absence is not.
-import { redactSecrets, maskPath } from "./redact.mjs";
+// Every stringy value is escaped AND passed through redactSecrets + maskPath +
+// maskIdentities before it lands in markup. Every section tolerates absent
+// data: a metric that wasn't computed renders as a dash — 0% is a claim,
+// absence is not.
+//
+// This page is the output most likely to be shared (screenshot, handed to a
+// recruiter), so it is also the last line of defence for identity: any email
+// address in ANY rendered string — including a --fleet blob produced by some
+// other tool — becomes its stable pseudonym unless renderStatsPage is called
+// with { showAccounts: true }.
+import { redactSecrets, maskPath, maskIdentities } from "./redact.mjs";
 
 // ---- palette ---------------------------------------------------------------
 // Data accent (single-series marks) + a 4-slot categorical set for the token
@@ -34,10 +41,17 @@ function esc(s) {
   );
 }
 
-// All free text: redact, mask, escape — in that order.
+// Raw account addresses in the page are opt-in. Module-scoped because clean()
+// is called from ~30 places; renderStatsPage is synchronous and sets it on
+// entry, so there is no interleaving to get wrong.
+let SHOW_ACCOUNTS = false;
+
+// All free text: redact, mask paths, pseudonymise identities, escape — in that
+// order.
 function clean(s) {
   if (s == null) return DASH;
-  return esc(maskPath(redactSecrets(String(s))));
+  const masked = maskPath(redactSecrets(String(s)));
+  return esc(SHOW_ACCOUNTS ? masked : maskIdentities(masked));
 }
 
 // Ported human() K/M/B/T formatter (fun_stats.py discipline: compact analogy
@@ -256,6 +270,7 @@ function genericTable(data) {
 
 export function renderStatsPage(input = {}) {
   const { profile, agg, accounts, fleet, providers, starSvg, velocity, name } = input;
+  SHOW_ACCOUNTS = input.showAccounts === true;
   const p = profile ?? {};
   const a = agg ?? {};
   const conv = p.conversation ?? {};
@@ -519,9 +534,19 @@ export function renderStatsPage(input = {}) {
   ${s7}
   ${extra}
   <footer>
-    <div class="priv">computed locally &#183; nothing uploaded</div>
-    <div>computed locally from your session logs; no text left this machine; nothing was uploaded. prompt text was counted in-stream and never stored.</div>
+    <div class="priv">computed locally &#183; no page can prove its own no-egress claim</div>
+    <div>computed locally from your session logs: this page was rendered on your machine, it references nothing remote, and prompt text was counted in-stream and never stored. It cannot prove that nothing left the machine &#8212; no process can prove that about itself. The kernel-level check is in PROVE-IT.md &#167;1.</div>
     <div>numbers are floors, not lifetime totals &#8212; this is what survives on disk (cleanup may have deleted older logs). secrets redacted &#183; paths masked.</div>
+    <div class="priv">${
+      input.noProjects === true
+        ? "before sharing: project names on this page are proj-&lt;hash&gt; pseudonyms (--no-projects) &#8212; but any machine label you passed is still verbatim."
+        : "before sharing: this page prints your PROJECT NAMES (last two segments of each working directory) and any machine label you passed, verbatim."
+    }</div>
+    <div class="priv">${
+      SHOW_ACCOUNTS
+        ? "account email addresses are shown RAW here &#8212; --show-accounts was passed."
+        : "account identities are pseudonyms (acct-&lt;hash&gt;), not addresses: a constant-salted SHA-256 prefix, which hides an address from a reader but cannot stop someone confirming a guess."
+    }</div>
     <div>generated ${esc(p.generated_at ?? new Date().toISOString())} &#183; ${val(p.files_scanned)} files scanned</div>
   </footer>
 </div>

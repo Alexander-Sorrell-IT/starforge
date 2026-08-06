@@ -14,6 +14,12 @@
 //   - Account identity: oauthAccount.emailAddress, else "user:"+userID[:12],
 //     else "unknown (<dirname>)". The dir literally named ".claude" keeps its
 //     config at <home>/.claude.json, NOT inside the dir.
+// ONE deliberate departure from the Python: the identity that leaves this
+// module is PSEUDONYMISED by default (see displayAccount below). accountFor()
+// still returns the raw address — callers that only print to the terminal use
+// it — but every row/fleet record this module hands to a writer carries
+// "acct-<8 hex>" unless the caller opts into raw with { showAccounts: true }
+// (`--show-accounts` on the CLI).
 //   - Floor: per ACCOUNT (profiles folded first, counter applied exactly once),
 //     max(counterTotal + transcript tokens on days strictly after
 //     lastComputedDate, measured on disk). Concatenation is exact; subtraction
@@ -29,7 +35,7 @@ import {
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { maskPath, redactSecrets } from "./redact.mjs";
+import { maskPath, redactSecrets, accountPseudonym } from "./redact.mjs";
 
 // The four billed usage counters: JSONL key -> output key. usage.iterations
 // restates these for multi-step turns and is deliberately never summed.
@@ -233,6 +239,23 @@ export function accountFor(configDir, home) {
   return `unknown (${basename(configDir)})`;
 }
 
+// The identity as it may appear in a FILE. Default: a stable pseudonym, because
+// reports / the stats page / a --join-fleet folder all get synced or shared and
+// an OAuth email address is the user's real-world name. Raw is opt-in.
+//
+// Only the two tiers that identify a PERSON or an account are pseudonymised —
+// the email tier and the "user:<uid>" tier. The "unknown (<dirname>)" fallback
+// is a local directory name that the row already carries verbatim in its masked
+// configDir field, so hashing it would hide nothing and cost readability.
+// The mapping is deterministic, so grouping, the floor metric, and cross-machine
+// merges behave exactly as they do with raw identities.
+export function displayAccount(identity, showAccounts = false) {
+  const id = String(identity ?? "");
+  if (showAccounts) return id;
+  if (id.includes("@") || id.startsWith("user:")) return accountPseudonym(id);
+  return id;
+}
+
 // ---- transcript scan (analyze_tokens.scan / iter_usage) --------------------
 
 function listJsonl(root) {
@@ -401,11 +424,33 @@ export function readStatsCache(home) {
         if (typeof n === "number" && isFinite(n)) tok[outKey] += n;
       }
     }
+    // Per-model breakdown, same four billed counters summed per model as
+    // sessions.read_stats_cache. His machine_floor needs the record; his
+    // stats page shows by_model, so it is carried, not just the grand total.
+    const byModel = {};
+    let inputOutputOnly = 0;
+    for (const [model, v] of Object.entries(mu)) {
+      if (!v || typeof v !== "object") continue;
+      let n = 0;
+      for (const [key] of CACHE_FIELDS) {
+        const x = v[key];
+        if (typeof x === "number" && isFinite(x)) n += x;
+      }
+      byModel[model] = n;
+      const i = v.inputTokens;
+      const o = v.outputTokens;
+      if (typeof i === "number" && isFinite(i)) inputOutputOnly += i;
+      if (typeof o === "number" && isFinite(o)) inputOutputOnly += o;
+    }
     out.push({
       profile: name,
       account: redactSecrets(accountFor(dir, home)),
       tok,
       total: grand(tok),
+      byModel,
+      inputOutputOnly,
+      totalSessions: Number.isInteger(d.totalSessions) ? d.totalSessions : null,
+      totalMessages: Number.isInteger(d.totalMessages) ? d.totalMessages : null,
       firstSession:
         typeof d.firstSessionDate === "string"
           ? d.firstSessionDate.slice(0, 10)
@@ -431,13 +476,19 @@ export function readStatsCache(home) {
 // floor as "measured on disk is all we know".
 export async function discoverAccounts(opts = {}) {
   const home = opts.home ?? homedir();
+  const showAccounts = opts.showAccounts === true;
   const dirs = findConfigDirs(home);
   const seen = new Set(); // ONE uuid set for the whole machine
   const rows = [];
   const merged = new Map(); // account -> { tok, days, byModel, sessionRows, ... }
+  // display label -> raw identity. NEVER written to a file: the caller uses it
+  // to print the terminal table, which is the one output that is not a file.
+  const identities = new Map();
 
   for (const dir of dirs) {
-    const account = redactSecrets(accountFor(dir, home));
+    const raw = redactSecrets(accountFor(dir, home));
+    const account = displayAccount(raw, showAccounts);
+    identities.set(account, raw);
     const { totals, byDay, byModel, sessions, sessionRows } =
       await scanProfile(dir, seen);
     rows.push({
@@ -476,8 +527,11 @@ export async function discoverAccounts(opts = {}) {
 
   // Counter lookup by ACCOUNT; like the Python dict comprehension, a later
   // glob entry for the same account overwrites an earlier one.
+  // Keyed by the DISPLAY label so the join still lands after pseudonymisation
+  // (the mapping is deterministic, so this is the same partition either way).
   const counterByAcct = new Map();
-  for (const e of readStatsCache(home)) counterByAcct.set(e.account, e);
+  for (const e of readStatsCache(home))
+    counterByAcct.set(displayAccount(e.account, showAccounts), e);
 
   // Per-account floor: "the counter owns everything up to its end date, the
   // transcripts own the days strictly after it, and no token is in both."
@@ -526,6 +580,11 @@ export async function discoverAccounts(opts = {}) {
     if (grand(g.tok) === 0 && g.sessions === 0) continue;
     const by_model = {};
     for (const [m, t] of g.byModel) by_model[m] = toLong(t);
+    // by_day is what stats_page.machine_floor uses to find the transcript days
+    // strictly AFTER the frozen counter's lastComputedDate. Omitting it makes
+    // his pipeline fall back to on-disk only and understate the floor.
+    const by_day = {};
+    for (const day of [...g.days.keys()].sort()) by_day[day] = toLong(g.days.get(day));
     fleetAccounts.push({
       account,
       config_dir: g.configDir,
@@ -533,6 +592,7 @@ export async function discoverAccounts(opts = {}) {
       turns: g.sessionRows.reduce((a, r) => a + r.turns, 0),
       totals: toLong(g.tok),
       by_model,
+      by_day,
     });
     for (const r of g.sessionRows) {
       fleetSessions.push({
@@ -548,7 +608,33 @@ export async function discoverAccounts(opts = {}) {
       });
     }
   }
-  return { rows, fleetAccounts, fleetSessions };
+  // The frozen counters, in sessions.read_stats_cache's own record shape, so
+  // stats_page.machine_floor can concatenate counter + post-counter days.
+  const fleetStatsCache = readStatsCache(home).map((e) => ({
+    profile: e.profile,
+    account: displayAccount(e.account, showAccounts),
+    total: e.total,
+    input_output_only: e.inputOutputOnly,
+    by_model: e.byModel,
+    sessions: e.totalSessions,
+    messages: e.totalMessages,
+    first_session: e.firstSession,
+    last_computed: e.lastComputed,
+  }));
+
+  // `identities` is terminal-only (display label -> raw address). Callers must
+  // never write it: everything else in this object is already pseudonymised.
+  return {
+    rows,
+    fleetAccounts,
+    fleetSessions,
+    fleetStatsCache,
+    identities: [...identities.entries()].map(([account, identity]) => ({
+      account,
+      identity,
+    })),
+    showAccounts,
+  };
 }
 
 // Fleet-style rollup across account rows. onDisk sums every profile; floor

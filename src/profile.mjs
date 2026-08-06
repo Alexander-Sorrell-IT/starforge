@@ -846,6 +846,11 @@ export function computeProfile(rawSignals, opts = {}) {
     languages,
     projects,
     proficiency,
-    privacy: "computed locally from session logs; prompt text was counted in-stream and never stored; nothing uploaded",
+    // Same rule as the CLI banner and the stats-page footer: state what is
+    // checkable, and never assert the one thing this process cannot prove about
+    // itself. ("nothing uploaded" used to be asserted here, in a field that
+    // gets written into expanded-*.json.)
+    privacy:
+      "computed locally from session logs; prompt text was counted in-stream and never stored. This process cannot prove that nothing left the machine — no process can prove that about itself; see PROVE-IT.md §1 for the kernel-level check.",
   };
 }

@@ -5,10 +5,15 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
+import { auditWrite } from "./audit.mjs";
 
 export const SNAP_DIR = join(homedir(), ".starforge", "snapshots");
 
-export function writeSnapshots(monthlyBuckets, meta = {}) {
+// Pass { audit } so these writes land in the run log — snapshots are written on
+// every default run, and an audit log that skipped them would report no writes
+// at all for the most common invocation. auditWrite(null, …) is a pass-through,
+// so callers that have no audit object keep working unchanged.
+export function writeSnapshots(monthlyBuckets, meta = {}, { audit = null } = {}) {
   mkdirSync(SNAP_DIR, { recursive: true });
   const host = hostname();
   for (const bucket of monthlyBuckets) {
@@ -21,7 +26,7 @@ export function writeSnapshots(monthlyBuckets, meta = {}) {
     }
     snap.machines ??= {};
     snap.machines[host] = { ...bucket, updated_at: new Date().toISOString(), ...meta };
-    writeFileSync(file, JSON.stringify(snap, null, 2));
+    writeFileSync(file, auditWrite(audit, file, JSON.stringify(snap, null, 2)));
   }
 }
 

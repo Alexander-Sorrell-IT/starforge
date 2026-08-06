@@ -1,12 +1,28 @@
 {
-  "name": "starforge",
+  "name": "starforge-cli",
   "version": "0.1.0",
-  "description": "Privacy-first developer wrapped: scans your local AI-coding session logs (Claude Code, Codex, Cowork), redacts secrets and masks paths BEFORE anything is written, keeps rolling monthly snapshots for longitudinal velocity, and renders your skill star live in the terminal. Everything stays on your machine.",
+  "description": "Privacy-first developer wrapped: scans your local AI-coding session logs (Claude Code, Codex, Cowork), redacts secrets and masks paths BEFORE anything is written, keeps rolling monthly snapshots for longitudinal velocity, and renders your skill star live in the terminal. No network code on the scan path — and PROVE-IT.md shows you how to have the kernel confirm it rather than taking the claim on faith.",
   "type": "module",
   "bin": {
-    "starforge": "./src/cli.mjs"
+    "starforge-cli": "./src/cli.mjs"
   },
   "main": "./src/cli.mjs",
+  "files": [
+    "src/",
+    "bin/",
+    "tests/",
+    "README.md",
+    "PROVE-IT.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Alexander-Sorrell-IT/starforge.git"
+  },
+  "homepage": "https://github.com/Alexander-Sorrell-IT/starforge#readme",
+  "bugs": {
+    "url": "https://github.com/Alexander-Sorrell-IT/starforge/issues"
+  },
   "scripts": {
     "start": "node src/cli.mjs",
     "test": "node --test tests/"

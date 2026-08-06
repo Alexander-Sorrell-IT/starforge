@@ -11,8 +11,9 @@ import {
   findConfigDirs,
   accountFor,
   readStatsCache,
+  displayAccount,
 } from "../src/accounts.mjs";
-import { maskPath } from "../src/redact.mjs";
+import { maskPath, accountPseudonym, findEmail } from "../src/redact.mjs";
 
 function tok(input = 0, output = 0, cacheRead = 0, cacheWrite = 0) {
   return { input, output, cacheRead, cacheWrite };
@@ -232,23 +233,27 @@ test("discoverAccounts: full fixture end to end", async (t) => {
   assert.ok(!dirs.some((d) => d.includes("linkprof")));
 
   // Account A live profile: quirk identity + counting edge cases.
+  // The identity that leaves the module is the PSEUDONYM, not the address —
+  // rows are what cli.mjs writes into expanded-*.json and the stats page.
   const a = byDir.get(maskPath(join(home, ".claude")));
-  assert.equal(a.account, "a@example.com");
+  assert.equal(a.account, accountPseudonym("a@example.com"));
   assert.deepEqual(a.onDisk, { ...tok(165, 115, 207, 50), sessions: 1 });
   assert.deepEqual(a.floor, tok(465, 165, 507, 100));
 
   // Desktop copy: same account via the ".claude"-name quirk, zero tokens
   // (global dedup), no second claim of the counter.
   const copy = byDir.get(maskPath(join(home, "Desktop", "stash", ".claude")));
-  assert.equal(copy.account, "a@example.com");
+  assert.equal(copy.account, accountPseudonym("a@example.com"));
   assert.deepEqual(copy.onDisk, { ...tok(0, 0, 0, 0), sessions: 1 });
   assert.equal(copy.floor, null);
 
   // Account B: counter applied exactly once across two profiles.
   const b1 = byDir.get(maskPath(join(home, ".claude-b1")));
   const b2 = byDir.get(maskPath(join(home, ".claude-b2")));
-  assert.equal(b1.account, "b@example.com");
-  assert.equal(b2.account, "b@example.com");
+  assert.equal(b1.account, accountPseudonym("b@example.com"));
+  assert.equal(b2.account, accountPseudonym("b@example.com"));
+  // grouping still works: one account, one label, across two profiles
+  assert.notEqual(b1.account, a.account);
   assert.deepEqual(b1.onDisk, { ...tok(100, 0, 0, 0), sessions: 1 });
   assert.deepEqual(b2.onDisk, { ...tok(50, 0, 0, 0), sessions: 1 });
   assert.deepEqual(b1.floor, tok(4150, 1000, 0, 0));
@@ -260,7 +265,7 @@ test("discoverAccounts: full fixture end to end", async (t) => {
 
   // Tier 2 and tier 3 identities; no counter -> floor null.
   const api = byDir.get(maskPath(join(home, ".claude-api")));
-  assert.equal(api.account, "user:0123456789ab");
+  assert.equal(api.account, accountPseudonym("user:0123456789ab"));
   assert.deepEqual(api.onDisk, { ...tok(0, 5, 0, 0), sessions: 1 });
   assert.equal(api.floor, null);
   const x = byDir.get(maskPath(join(home, ".claude-x")));
@@ -273,6 +278,66 @@ test("discoverAccounts: full fixture end to end", async (t) => {
   const fleet = floorTotals(rows);
   assert.deepEqual(fleet.onDisk, { ...tok(820, 120, 207, 50), sessions: 7 });
   assert.deepEqual(fleet.floor, tok(5120, 1170, 507, 100));
+});
+
+// ---- identity policy (red-team HIGH: raw OAuth email in shareable output) ---
+// The identity is an OAuth EMAIL ADDRESS. Every structure discoverAccounts
+// hands back is written to a file by cli.mjs (expanded-*.json, the stats page,
+// a --join-fleet folder), so none of them may carry an address by default.
+// The ONE exception is `identities`, which is terminal-only by contract.
+test("identity policy: no address in anything a caller writes; raw only via --show-accounts", async (t) => {
+  const home = buildFixtureHome();
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+
+  const res = await discoverAccounts({ home, fleet: true });
+
+  // Every payload cli.mjs writes: not one email address anywhere in the tree.
+  for (const [what, blob] of [
+    ["rows", res.rows],
+    ["fleetAccounts", res.fleetAccounts],
+    ["fleetSessions", res.fleetSessions],
+    ["fleetStatsCache", res.fleetStatsCache],
+  ]) {
+    const json = JSON.stringify(blob);
+    const hit = findEmail(json);
+    assert.equal(hit, null, `${what} leaked an address: ${hit?.value}`);
+    assert.ok(json.includes("acct-"), `${what} should carry acct-<hash> labels`);
+  }
+
+  // ...and the pseudonyms are the SAME label across every payload, or the
+  // per-account totals a reader joins on would silently split.
+  const aLabel = accountPseudonym("a@example.com");
+  assert.ok(res.fleetAccounts.some((r) => r.account === aLabel));
+  assert.ok(res.fleetSessions.some((r) => r.account === aLabel));
+
+  // The raw addresses survive in memory for the terminal table only.
+  const ids = new Map(res.identities.map((x) => [x.account, x.identity]));
+  assert.equal(ids.get(aLabel), "a@example.com");
+  assert.equal(res.showAccounts, false);
+
+  // Opt in and the raw addresses come back — the flag is not decorative.
+  const raw = await discoverAccounts({ home, fleet: true, showAccounts: true });
+  assert.ok(raw.rows.some((r) => r.account === "a@example.com"));
+  assert.ok(JSON.stringify(raw.fleetSessions).includes("b@example.com"));
+  assert.equal(raw.showAccounts, true);
+});
+
+test("displayAccount pseudonymises the two identifying tiers and only those", () => {
+  // tier 1: OAuth email — the user's real-world name
+  assert.equal(displayAccount("a@example.com"), accountPseudonym("a@example.com"));
+  // tier 2: userID — an account handle, still an identifier
+  assert.equal(displayAccount("user:0123456789ab"), accountPseudonym("user:0123456789ab"));
+  // tier 3: no identity at all, just the profile dir name — nothing to hide,
+  // and hashing it would make the row unreadable for no privacy gain.
+  assert.equal(displayAccount("unknown (.claude-x)"), "unknown (.claude-x)");
+  // opt-in returns every tier verbatim
+  assert.equal(displayAccount("a@example.com", true), "a@example.com");
+  assert.equal(displayAccount("user:0123456789ab", true), "user:0123456789ab");
+  // two addresses an "a***@gmail.com" style mask would MERGE stay distinct
+  assert.notEqual(
+    displayAccount("alice@gmail.com"),
+    displayAccount("adam@gmail.com")
+  );
 });
 
 test("CLAUDE_CONFIG_DIR is ignored when scanning an overridden home", async (t) => {

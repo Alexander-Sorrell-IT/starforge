@@ -367,11 +367,22 @@ print(hashlib.sha256(payload).hexdigest()[:12])
 
 // ---- the real gate: run check_consistency.py on a folder we wrote ----------
 
+// The checkout is named by STARFORGE_TOKEN_USAGE_DIR and nothing else. It used
+// to be a hardcoded absolute path on the author's machine — which put a real
+// username, and a throwaway agent-session directory, into a file that npm
+// ships (package.json "files" includes tests/). A privacy tool that leaks its
+// author's home path in its own test suite has already lost the argument; see
+// tests/shipset.test.mjs, which now fails the build if any shipped file
+// carries this machine's username again.
 test("Python check_consistency.py passes on a starforge-written fleet", (t) => {
-  const pySrc = "/private/tmp/claude-501/-Users-broodierchip-m1air/e19c63eb-4b28-4f07-ac52-170c90b6c3b7/scratchpad/token-usage";
+  const pySrc = process.env.STARFORGE_TOKEN_USAGE_DIR;
   const needed = ["check_consistency.py", "paths.py", "analyze_tokens.py"];
+  if (!pySrc) {
+    t.skip("set STARFORGE_TOKEN_USAGE_DIR to a token-usage checkout to run the Python cross-check");
+    return;
+  }
   if (!needed.every((f) => existsSync(join(pySrc, f)))) {
-    t.skip("token-usage checkout not present");
+    t.skip(`STARFORGE_TOKEN_USAGE_DIR does not contain ${needed.join(", ")}`);
     return;
   }
   const root = makeFixtureFleet();

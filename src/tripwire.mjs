@@ -51,6 +51,12 @@ function targetOf(args) {
   return "?";
 }
 
+// Record the hit, THEN throw. The recorder must be called before the throw and
+// must make the hit durable on its own, because this throw usually aborts the
+// run: the audit recorder from startAudit() writes the run log to disk right
+// here (see audit.mjs), so `starforge verify` can still count a hit from a run
+// that never reached its normal end. An alarm that erases its own evidence
+// would be worse than no alarm.
 function trip(api, args) {
   const hit = {
     api,
@@ -101,7 +107,9 @@ function patch(obj, key, api) {
 }
 
 // Arm every patch. recorder (optional) gets each {api,target,at} hit — wire
-// audit.recorder from src/audit.mjs here so hits land in the run log.
+// audit.recorder from src/audit.mjs here so hits land in the run log AND on
+// disk immediately (that recorder flushes the log at the moment of the hit,
+// which is the only reason a tripped run leaves evidence behind).
 export function armTripwire(recorder) {
   state.recorder = recorder ?? state.recorder;
   if (state.armed) return tripwireStatus();

@@ -321,7 +321,10 @@ test("renderStatsPage: smoke — sections, footer, no raw secrets", () => {
   for (const key of [
     "JUDGMENT SIGNALS", "RHYTHM", "TOKEN ECONOMICS", "TOOLS &amp; MODELS",
     "CRAFT", "RECORDS", "ACCOUNTS",
-    "computed locally", "nothing uploaded", "ALEX", "STAR",
+    // "nothing uploaded" used to be required here. The footer must NOT assert
+    // it (see tests/cli-ux.test.mjs) — the page cannot prove it — so the
+    // required string is the honest replacement.
+    "computed locally", "no page can prove its own no-egress claim", "ALEX", "STAR",
     "correction rate", "question ratio", "delegation ratio",
   ])
     assert.ok(html.includes(key), `missing: ${key}`);
