@@ -40,9 +40,14 @@ test("package is named starforge-cli, and its bin matches", () => {
 });
 
 test("no copy-pastable command in the docs invokes the squatted bare name", () => {
-  // `starforge` not followed by `-` (starforge-cli, starforge-proof.sh) and not
-  // preceded by `.` (the ~/.starforge data dir).
-  const bareName = /(?<![.\w-])starforge(?![-\w])/;
+  // The risk is RUNNING the bare name: `npx starforge` fetches the unrelated
+  // 2017 package, and `starforge verify` implies a binary that isn't ours. So
+  // match command POSITION, not the token anywhere on the line — now that the
+  // repo is public the docs legitimately contain the word in a clone URL and in
+  // `cd starforge`, and neither of those executes anything. A blanket token
+  // search would fail on those and tempt the next person to delete the guard.
+  const bareName =
+    /(?:^\s*(?:\$\s*)?|\bnpx\s+|\bnpm\s+exec\s+)starforge(?![-\w])/;
   for (const [name, md] of [["README.md", README], ["PROVE-IT.md", PROVE]]) {
     for (const line of codeBlockLines(md)) {
       assert.ok(
@@ -220,14 +225,26 @@ test("`prove` and bin/starforge-proof.sh are documented in both docs", () => {
   assert.ok(existsSync(root + "bin/starforge-proof.sh"));
 });
 
-test("docs never tell the reader to clone a URL that does not exist yet", () => {
+// The repo IS pushed now, so a clone instruction is honest and this guard has
+// flipped: what must not be claimed is the half that is still false. npm has no
+// starforge-cli on it, so nothing may read as though `npx starforge-cli` works
+// today — that would send a reader to the registry for a package that isn't
+// there (and the bare name `starforge` IS taken by an unrelated 2017 package,
+// which is how a reader gets a stranger's code instead).
+test("docs never imply the npm package is installable while it is unpublished", () => {
   for (const [name, md] of [["README.md", README], ["PROVE-IT.md", PROVE]]) {
-    assert.ok(!/git clone/i.test(md), `${name}: no clone instruction until the repo is pushed`);
-    if (md.includes("github.com/Alexander-Sorrell-IT/starforge")) {
-      assert.match(
-        md,
-        /not pushed yet|not published yet/i,
-        `${name}: the GitHub URL must be marked as the intended home, not a live one`
+    assert.match(
+      md,
+      /not published yet|not on npm yet|not published\s*\n?to npm yet/i,
+      `${name} must disclose that npm publication has not happened`
+    );
+    // An `npx starforge-cli` line is allowed only in the future tense or inside
+    // an explicit not-yet warning — never as a bare run instruction in a fenced
+    // block, which is the thing people copy.
+    for (const line of codeBlockLines(md)) {
+      assert.ok(
+        !/^\s*(\$\s*)?npx\s+starforge/.test(line),
+        `${name}: a copyable line tells the reader to npx a package that is not published: ${line.trim()}`
       );
     }
   }
@@ -320,10 +337,23 @@ test("README showcases the star card and the stats page", () => {
 });
 
 test("README states publication status and how to run it today, up top", () => {
-  const head = README.split("\n").slice(0, 30).join("\n");
+  const head = README.split("\n").slice(0, 32).join("\n");
   assert.match(head, /\*\*Status:\*\*/, "a Status line must sit near the top");
-  assert.match(head, /not published to npm yet/i);
-  assert.match(head, /not pushed yet/i, "the GitHub repo status belongs in the same line");
+  // Two different facts, and they must not be collapsed into one: the source is
+  // live on GitHub, the npm package is not published. A reader who assumes the
+  // second from the first goes to the registry and finds someone else's 2017
+  // package under the bare name.
+  assert.match(head, /not published\s*\n?to npm yet|not published to npm yet/i);
+  assert.match(
+    head,
+    /github\.com\/Alexander-Sorrell-IT\/starforge/,
+    "the Status line must name where the source actually is"
+  );
+  assert.doesNotMatch(
+    head,
+    /not pushed yet/i,
+    "the repo IS pushed — this claim is stale and must be removed, not softened"
+  );
   assert.match(head, /node src\/cli\.mjs/, "say how to run it from a checkout");
 });
 

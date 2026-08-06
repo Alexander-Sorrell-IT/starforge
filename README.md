@@ -9,12 +9,14 @@ no server-side scoring.
 The thesis is not "trust us." It is: **run it under OS confinement and let the
 kernel answer.**
 
-**Status:** not published to npm yet, and
-`https://github.com/Alexander-Sorrell-IT/starforge` is not pushed yet. This
-tree is the source of truth — run everything from a checkout with
-`node src/cli.mjs`. (Why the npm name matters anyway: [Install](#install--about-the-name).)
+**Status:** the source lives at
+`github.com/Alexander-Sorrell-IT/starforge` and is **not published to npm yet** —
+nothing to `npx`, no tarball to trust, so run it from a checkout. Zero
+dependencies, so there is no install step. (Why the npm name matters anyway:
+[Install](#install--about-the-name).)
 
 ```bash
+git clone https://github.com/Alexander-Sorrell-IT/starforge.git && cd starforge
 node src/cli.mjs                        # scan, with the live star
 node src/cli.mjs --yes --card --page    # no prompts; also write the SVG card + HTML page
 ```
