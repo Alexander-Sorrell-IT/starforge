@@ -24,6 +24,7 @@ import {
 import { LiveStar, computeLevels, AXES } from "./star.mjs";
 import { writeSnapshots, loadTimeline, velocity, SNAP_DIR } from "./snapshots.mjs";
 import { maskPath } from "./redact.mjs";
+import { renderCard } from "./card.mjs";
 
 const BOLD = "\x1b[1m", DIM = "\x1b[2m", CYAN = "\x1b[36m", RESET = "\x1b[0m";
 
@@ -138,6 +139,13 @@ async function main() {
     writeFileSync(p1, JSON.stringify(baseline, null, 2));
     writeFileSync(p2, JSON.stringify(expanded, null, 2));
     console.log(`\nreports: ${maskPath(p1)}\n         ${maskPath(p2)}`);
+  }
+  if (flag("--card")) {
+    const outDir = join(homedir(), ".starforge", "reports");
+    mkdirSync(outDir, { recursive: true });
+    const cardPath = join(outDir, `star-${new Date().toISOString().slice(0, 10)}.svg`);
+    writeFileSync(cardPath, renderCard(levels, agg, vel, { name: opt("name") ?? "SKILL SCREEN" }));
+    console.log(`\ncard: ${maskPath(cardPath)} (open in any browser)`);
   }
   console.log(`\n${DIM}snapshots: ${maskPath(SNAP_DIR)} (sync this dir between machines to merge histories)${RESET}`);
 }
