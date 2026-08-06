@@ -1,0 +1,26 @@
+{
+  "name": "starforge",
+  "version": "0.1.0",
+  "description": "Privacy-first developer wrapped: scans your local AI-coding session logs (Claude Code, Codex, Cowork), redacts secrets and masks paths BEFORE anything is written, keeps rolling monthly snapshots for longitudinal velocity, and renders your skill star live in the terminal. Everything stays on your machine.",
+  "type": "module",
+  "bin": {
+    "starforge": "./src/cli.mjs"
+  },
+  "main": "./src/cli.mjs",
+  "scripts": {
+    "start": "node src/cli.mjs",
+    "test": "node --test tests/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "developer",
+    "wrapped",
+    "claude-code",
+    "privacy",
+    "redaction",
+    "cli"
+  ],
+  "license": "MIT"
+}
