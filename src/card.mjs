@@ -1,12 +1,21 @@
 // Porter-Grade HUD card: self-contained SVG, no deps. Dark holographic look —
 // pentagram web, glow, per-axis levels, skill-overview + attributes panels.
-import { AXES } from "./star.mjs";
+import {
+  AXES,
+  ARMS,
+  MAX_LEVEL,
+  VALLEY_RATIO,
+  armAngle,
+  armRadius,
+  armTips,
+  starPoints,
+} from "./starsvg.mjs";
 
 const W = 1280, H = 720;
 const CX = 640, CY = 380, R = 230;
 
 function tip(i, radius) {
-  const a = -Math.PI / 2 + (i * 2 * Math.PI) / 5;
+  const a = armAngle(i);
   return [CX + radius * Math.cos(a), CY + radius * Math.sin(a)];
 }
 
@@ -16,35 +25,40 @@ function fmt(n) {
 
 export function renderCard(levels, agg, vel, opts = {}) {
   const name = opts.name ?? "SKILL SCREEN";
-  const tips = levels.map((lv, i) => tip(i, (Math.max(lv, 0.5) / 5) * R));
+  // Geometry comes from starsvg.mjs so this card, the terminal frame and the
+  // per-month chips are all literally the same shape. Arm length is that axis
+  // and nothing else; the valleys are fixed, so a lopsided profile stays
+  // lopsided instead of being averaged back toward a circle.
+  const tips = armTips(levels, R, CX, CY);
   const maxTips = levels.map((_, i) => tip(i, R));
-  const inner = levels.map((_, i) => {
-    const a = -Math.PI / 2 + ((i + 0.5) * 2 * Math.PI) / 5;
-    const r =
-      R * 0.38 *
-      ((Math.max(levels[i], 0.5) + Math.max(levels[(i + 1) % 5], 0.5)) / 10);
-    return [CX + r * Math.cos(a), CY + r * Math.sin(a)];
-  });
   const pt = ([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`;
+  const hull = starPoints(levels, R, CX, CY).map(pt);
+  const maxHull = starPoints(new Array(ARMS).fill(MAX_LEVEL), R, CX, CY).map(pt);
 
-  // star hull path: tip0 inner0 tip1 inner1 ...
-  const hull = [];
-  for (let i = 0; i < 5; i++) hull.push(pt(tips[i]), pt(inner[i]));
+  // Reference rings at every whole level, so an arm's length is countable.
+  let ringSvg = "";
+  for (let k = 1; k <= MAX_LEVEL; k++)
+    ringSvg += `<circle cx="${CX}" cy="${CY}" r="${armRadius(k, R).toFixed(1)}" stroke-dasharray="${k === MAX_LEVEL ? "none" : "1 7"}" opacity="${k === MAX_LEVEL ? 0.45 : 0.22}"/>`;
+  ringSvg += `<circle cx="${CX}" cy="${CY}" r="${(R * VALLEY_RATIO).toFixed(1)}" opacity="0.3"/>`;
 
-  // pentagram web: every tip to every other tip + spokes
+  // Pentagram web + spokes drawn at FULL extent, not at the current levels:
+  // this is the frame the silhouette is read against, so it has to stay still.
+  // Wiring it to the live tips instead made the backdrop move with the data and
+  // left nothing fixed to judge the shape against.
   let web = "";
-  for (let i = 0; i < 5; i++) {
-    for (let j = i + 1; j < 5; j++)
-      web += `<line x1="${tips[i][0]}" y1="${tips[i][1]}" x2="${tips[j][0]}" y2="${tips[j][1]}"/>`;
-    web += `<line x1="${CX}" y1="${CY}" x2="${tips[i][0]}" y2="${tips[i][1]}"/>`;
+  for (let i = 0; i < ARMS; i++) {
+    for (let j = i + 1; j < ARMS; j++)
+      web += `<line x1="${maxTips[i][0].toFixed(1)}" y1="${maxTips[i][1].toFixed(1)}" x2="${maxTips[j][0].toFixed(1)}" y2="${maxTips[j][1].toFixed(1)}"/>`;
+    web += `<line x1="${CX}" y1="${CY}" x2="${maxTips[i][0].toFixed(1)}" y2="${maxTips[i][1].toFixed(1)}"/>`;
   }
 
-  // node dots along each spoke
+  // Node dots stepping out along each arm, one per whole level it has reached —
+  // the arm's length is also readable as a count.
   let nodes = "";
-  for (let i = 0; i < 5; i++) {
-    for (let k = 1; k <= 3; k++) {
-      const [x, y] = tip(i, ((Math.max(levels[i], 0.5) / 5) * R * k) / 3);
-      nodes += `<circle cx="${x}" cy="${y}" r="3" fill="#bfefff"/>`;
+  for (let i = 0; i < ARMS; i++) {
+    for (let k = 1; k <= Math.floor(levels[i]); k++) {
+      const [x, y] = tip(i, armRadius(k, R));
+      nodes += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="#bfefff"/>`;
     }
   }
 
@@ -72,6 +86,10 @@ export function renderCard(levels, agg, vel, opts = {}) {
   <radialGradient id="bg" cx="50%" cy="52%" r="75%">
     <stop offset="0%" stop-color="#04121e"/><stop offset="100%" stop-color="#010409"/>
   </radialGradient>
+  <radialGradient id="hull" gradientUnits="userSpaceOnUse" cx="${CX}" cy="${CY}" r="${R}">
+    <stop offset="0%" stop-color="#7fe0ff" stop-opacity="0.42"/>
+    <stop offset="100%" stop-color="#2aa8e0" stop-opacity="0.13"/>
+  </radialGradient>
   <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
     <feGaussianBlur stdDeviation="6" result="b"/>
     <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
@@ -97,18 +115,21 @@ export function renderCard(levels, agg, vel, opts = {}) {
 <!-- ambient rings -->
 <g stroke="#0e3a55" fill="none" opacity="0.8">
   <circle cx="${CX}" cy="${CY}" r="${R + 24}" stroke-dasharray="2 7"/>
-  <circle cx="${CX}" cy="${CY}" r="${R * 0.62}" stroke-dasharray="1 5" opacity="0.6"/>
   <circle cx="${CX}" cy="${CY}" r="${R * 1.22}" stroke-dasharray="14 40" stroke-width="3" opacity="0.5"/>
 </g>
 
-<!-- max-extent ghost star -->
-<polygon points="${levels.map((_, i) => pt(maxTips[i])).join(" ")}" fill="none" stroke="#123c58" stroke-dasharray="3 6"/>
+<!-- level rings: one per whole level -->
+<g stroke="#1d5f83" fill="none">${ringSvg}</g>
+
+<!-- max-extent ghost star: the same silhouette with every arm at 5, so the
+     gap between the hull and this outline is the part not yet earned -->
+<polygon points="${maxHull.join(" ")}" fill="none" stroke="#1b587d" stroke-dasharray="4 7"/>
 
 <!-- web -->
 <g stroke="#2fa8dd" stroke-width="1" opacity="0.55" filter="url(#glow)">${web}</g>
 
 <!-- hull -->
-<polygon points="${hull.join(" ")}" fill="#39c2ff18" stroke="#7fe0ff" stroke-width="2.5" filter="url(#bigglow)"/>
+<polygon points="${hull.join(" ")}" fill="url(#hull)" stroke="#8be6ff" stroke-width="2.5" stroke-linejoin="round" filter="url(#bigglow)"/>
 
 <!-- nodes + tips -->
 ${nodes}

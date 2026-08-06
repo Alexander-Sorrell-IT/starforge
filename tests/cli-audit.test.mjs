@@ -137,16 +137,26 @@ test("a normal run logs the snapshots it writes (not just --json/--card/--page)"
   const snapDir = join(home, ".starforge", "snapshots");
   const snaps = existsSync(snapDir) ? readdirSync(snapDir).filter((f) => f.endsWith(".json")) : [];
   assert.ok(snaps.length > 0, "the fixture must produce at least one monthly snapshot");
-  assert.equal(
-    log.writes.length,
-    snaps.length,
-    `every snapshot written must appear in the log: ${JSON.stringify(log.writes)}`
+  // A default run also writes one SVG star per snapshot. Those are writes like
+  // any other and must be logged like any other, so the assertion is set
+  // equality against what is actually on disk rather than a count: that catches
+  // an unlogged write AND a logged write that never happened, and it does not
+  // quietly pass when a future artifact is added without an audit entry.
+  const starDir = join(home, ".starforge", "stars");
+  const stars = existsSync(starDir) ? readdirSync(starDir).filter((f) => f.endsWith(".svg")) : [];
+  assert.equal(stars.length, snaps.length, "every snapshot must get its own star");
+  const onDisk = [
+    ...snaps.map((s) => `/snapshots/${s}`),
+    ...stars.map((s) => `/stars/${s}`),
+  ].sort();
+  const logged = log.writes
+    .map((w) => w.path.replace(/^.*(\/(?:snapshots|stars)\/)/, "$1"))
+    .sort();
+  assert.deepEqual(
+    logged,
+    onDisk,
+    `the log's writes must be exactly the files on disk: ${JSON.stringify(log.writes)}`
   );
-  for (const s of snaps)
-    assert.ok(
-      log.writes.some((w) => w.path.endsWith(`/snapshots/${s}`)),
-      `snapshot ${s} missing from the log's writes: ${JSON.stringify(log.writes)}`
-    );
   // and the log states the coverage it does NOT have
   assert.match(log.writes_scope, /--join-fleet/);
 });

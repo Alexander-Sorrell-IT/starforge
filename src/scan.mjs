@@ -127,12 +127,24 @@ function session(stats, id, ts) {
       project: null,
       models: new Map(),
       tok: { in: 0, out: 0, cr: 0, cw: 0 },
+      // Per-session copies of the quantities the five axes are computed from.
+      // The global totals alone cannot give a single month its own star, and a
+      // star per month is the whole point of the snapshot timeline.
+      tools: 0,
+      exts: new Map(),
+      hours: new Array(24).fill(0),
+      days: new Set(),
     };
     stats.sessions.set(id, s);
   }
   if (ts < s.firstTs) s.firstTs = ts;
   if (ts > s.lastTs) s.lastTs = ts;
   s.minutes.add(Math.floor(ts / 60000));
+  const d = new Date(ts);
+  if (!isNaN(d.getTime())) {
+    s.hours[d.getHours()] += 1;
+    s.days.add(d.toISOString().slice(0, 10));
+  }
   return s;
 }
 
@@ -190,11 +202,17 @@ export async function parseClaudeFile(filePath, stats, opts = {}) {
                 item.name,
                 (stats.toolCounts.get(item.name) || 0) + 1
               );
+            s.tools += 1;
             const input = item.input;
             for (const key of ["file_path", "path", "notebook_path"]) {
               const p = input?.[key];
-              if (typeof p === "string" && stats.filePaths.size < 5000) {
-                if (!opts.excluded?.(p)) stats.filePaths.add(maskPath(p));
+              if (typeof p === "string") {
+                if (opts.excluded?.(p)) continue;
+                if (stats.filePaths.size < 5000) stats.filePaths.add(maskPath(p));
+                // Only the extension, never the path: a month bucket has to be
+                // safe to sync, and an extension is not a filename.
+                const ext = extOf(p);
+                if (ext) s.exts.set(ext, (s.exts.get(ext) ?? 0) + 1);
               }
             }
           }
@@ -237,6 +255,7 @@ export async function parseCodexFile(filePath, stats, opts = {}) {
       if (payload.type === "function_call" || payload.type === "local_shell_call") {
         const name = payload.name || "shell";
         stats.toolCounts.set(name, (stats.toolCounts.get(name) || 0) + 1);
+        s.tools += 1;
       } else if (payload.role === "user") {
         stats.userTurns += 1;
       }
@@ -279,12 +298,28 @@ export function finalize(stats) {
       const key = new Date(s.firstTs).toISOString().slice(0, 7);
       const b = monthly.get(key) ?? {
         sessions: 0, durationMs: 0, in: 0, out: 0, cache: 0,
+        tools: 0,
+        exts: new Map(),
+        models: new Map(),
+        projects: new Set(),
+        hours: new Array(24).fill(0),
+        days: new Set(),
       };
       b.sessions += 1;
       b.durationMs += dur;
       b.in += s.tok.in;
       b.out += s.tok.out;
       b.cache += s.tok.cr + s.tok.cw;
+      // A session is attributed whole to the month it STARTED in — the same
+      // rule the stats page states for days ("sessions past midnight count
+      // entirely toward their start date"). Splitting a session across a month
+      // boundary here would make the two numbers disagree.
+      b.tools += s.tools;
+      for (const [e, n] of s.exts) b.exts.set(e, (b.exts.get(e) ?? 0) + n);
+      for (const [m, n] of s.models) b.models.set(m, (b.models.get(m) ?? 0) + n);
+      if (s.project && s.project !== "[excluded]") b.projects.add(s.project);
+      for (let h = 0; h < 24; h++) b.hours[h] += s.hours[h];
+      for (const d of s.days) b.days.add(d);
       monthly.set(key, b);
     }
   }
@@ -326,6 +361,15 @@ export function finalize(stats) {
         input_tokens: b.in,
         output_tokens: b.out,
         cache_tokens: b.cache,
+        // Axis inputs, so this month can draw its own star with no reference to
+        // any other month and without carrying a project name or a file path.
+        tool_calls: b.tools,
+        languages: langsFromExts(b.exts),
+        projects_count: b.projects.size,
+        models: Object.fromEntries([...b.models.entries()].sort((x, y) => y[1] - x[1])),
+        hour_buckets: b.hours,
+        active_days: b.days.size,
+        longest_streak_days: computeStreaks(b.days).longest,
       })),
   };
 }
@@ -341,6 +385,26 @@ const EXT_TO_LANG = {
 };
 const GENERATED_RE =
   /(^|\/)(node_modules|dist|build|out|coverage|vendor|\.next|\.cache)(\/|$)|package-lock\.json$/i;
+
+// The extension alone, lowercased, and only when it maps to a language we
+// name. Returns null for generated/vendored paths so a month's language count
+// is not inflated by node_modules.
+export function extOf(p) {
+  if (typeof p !== "string" || GENERATED_RE.test(p)) return null;
+  const base = p.toLowerCase().split("/").pop() ?? "";
+  if (!base.includes(".")) return null;
+  const ext = base.split(".").pop();
+  return EXT_TO_LANG[ext] ? ext : null;
+}
+
+function langsFromExts(exts) {
+  const langs = {};
+  for (const [ext, n] of exts) {
+    const lang = EXT_TO_LANG[ext];
+    if (lang) langs[lang] = (langs[lang] || 0) + n;
+  }
+  return Object.fromEntries(Object.entries(langs).sort((a, b) => b[1] - a[1]));
+}
 
 function inferLanguages(filePaths) {
   const langs = {};

@@ -20,20 +20,20 @@ node src/cli.mjs --yes --card --page    # no prompts; also write the SVG card + 
 ```
 
 One real frame of the live star, ANSI colour stripped and the middle rows
-elided — the whole 61×27 frame, printed verbatim, is under
+elided — the whole 78×26 frame, printed verbatim, is under
 [What you get](#what-you-get):
 
 ```
-                   FIRST PRINCIPLES LV.4.8
-                             ···
-                            ·····
-                           · ··· ··
-                         ··  ···  ··
- TENACITY LV.4.5    ✦   ··   ····  ··   ✦  ENGINEERING LV.4.6
-                    …  8 rows elided  …
-OUTSIDE THE BOX LV.4.4   ···     ···   CODING LV.4.7
-                    …  11 rows elided  …
-             SKILL POINTS 23.0/25  scan complete
+
+
+                            FIRST PRINCIPLES LV.4.8
+
+                    …  6 rows elided  …
+   TENACITY LV.4.5      ██████▒▒▒▒▒▒██▒▒▒██▒▒▒▒▒███████     ENGINEERING LV.4.6
+                    …  10 rows elided  …
+   OUTSIDE THE BOX LV.4.4                            CODING LV.4.7
+                    …  3 rows elided  …
+                     SKILL POINTS 23.0/25  scan complete
 ```
 
 ## Why this is not `npx standout`
@@ -113,47 +113,88 @@ strongest first, with what each rung does *not* prove.
 ## What you get
 
 **A skill star that builds while it scans.** `src/star.mjs` redraws a five-axis
-61×27 frame in place in the terminal every five files, so you watch the rays
-grow as the logs are read. One whole frame, verbatim from `renderStar()` with
-the ANSI colour stripped (example levels; the elided block at the top of this
-page is the same frame):
+78×26 frame in place in the terminal every five files, so you watch the arms
+grow as the logs are read. It is drawn as an image, not as character art: each
+cell carries two pixels (the half-block `▀` painted in the foreground colour
+over a background colour), the shape is supersampled for anti-aliasing, and
+because a terminal cell is about twice as tall as it is wide those pixels come
+out roughly square. Below is one whole frame, verbatim from `renderStar()` with
+colour disabled — the colour version shades the same field through a 256-colour
+ramp instead of the `░▒▓█` density ramp you see here. A test asserts this exact
+block still matches the renderer, so the README cannot drift from the binary:
 
 ```
-                   FIRST PRINCIPLES LV.4.8
-                             ···
-                            ·····
-                           · ··· ··
-                         ··  ···  ··
- TENACITY LV.4.5    ✦   ··   ····  ··   ✦  ENGINEERING LV.4.6
-                       ··   ··· ·   ··
-                      ··    ·····    ··
-                     ·· ····· ········ ··
-                    ·····················
-                    ··     · · · ·     ··
-                    ···    ··· ···    ···
-                    ····✦  ··   ··· ··· ·
-                     ·  ·····   ·····✦ ··
-OUTSIDE THE BOX LV.4.4   ···     ···   CODING LV.4.7
-                     ··   ··     ··    ·
-                      ·  ····  ·· ··   ·
-                      ·  ··  ···  ··  ·
-                      ·· ··  ···  ··  ·
-                       · ·  ·· ··  ·· ·
-                       ·····    ··*····
-                       ····       ····
-                        ···        ···
-                          ············
 
 
-             SKILL POINTS 23.0/25  scan complete
+                            FIRST PRINCIPLES LV.4.8
+
+                                       ▒
+                                      ▒█▒
+                                      ███
+                                     ▒███▒
+                                     ██▒██
+                                    ▒█▓▒▓█▒
+   TENACITY LV.4.5      ██████▒▒▒▒▒▒██▒▒▒██▒▒▒▒▒███████     ENGINEERING LV.4.6
+                        ▒████████████▓▒▒▒▓████████████▒
+                           ▒████▓▒▒▒▒▒▒▒▒▒▒▒▒▒▓████▒
+                              ░████▒▒▒▒▒▒▒▒▒████░
+                                 ▒█▓▒▒▒▒▒▒▒▓█▒
+                                ▒█▓▒▒▒▓█▓▒▒▒▓█▒
+                               ░██▒▒███████▒▒██▒
+                               ██▓███░   ░███▓██░
+                              ▓███▒         ▒████
+                              ██░             ▒██▒
+
+   OUTSIDE THE BOX LV.4.4                            CODING LV.4.7
+
+
+
+                     SKILL POINTS 23.0/25  scan complete
 ```
 
 Redrawing in place needs a TTY. Piped or redirected, the frame is printed once
 at the end instead of animating — same numbers, no cursor tricks.
 
-**`--card` — a self-contained dark-HUD SVG.** 1280×720: glowing pentagram web
-(every tip joined to every other, plus spokes), three node dots stepping out
-along each ray, a letter RATING (C / B / A / S / S+, off the skill total), a
+**The silhouette is the data.** Each arm's length is set by its own axis and by
+nothing else, and the valleys between arms sit at a fixed radius — so a maxed
+axis is a long spike, a weak one is a stub, and the outline is a fingerprint you
+read before you read a number. A lopsided star says "here is the actual shape of
+this person"; a symmetric one says "balanced generalist". That only works if the
+arms are genuinely independent: an earlier version placed each valley at the
+average of its two neighbours, which quietly pulled long arms back toward their
+short neighbours and made a 5/1 pair draw almost the same outline as a 3/3 pair.
+`tests/star.test.mjs` now pins the property — raising one axis must move that
+arm and provably leave the other four where they were — plus the consequence
+that two profiles with the *same total* and different distributions cannot draw
+the same shape. Level 0 lands on the valley ring rather than at the centre, so
+the star floors at a regular pentagon and the hull can never self-intersect,
+whatever the five levels are. The geometry lives in one module
+(`src/starsvg.mjs`) and is shared by the terminal frame, the card and the month
+chips, so what you watch during the scan is the shape that lands on disk — also
+a test.
+
+**A star per snapshot.** Every monthly snapshot gets its own star, computed
+*only* from that month's activity, written to `~/.starforge/stars/YYYY-MM.svg`
+and laid out as a strip on the stats page under "the shape over time". This is
+the part a single lifetime-average star cannot show: the average is exactly what
+hides a month where the shape changed. A thin month renders as a small tight
+silhouette, not as a gap. To make that possible each snapshot carries its own
+axis inputs (tool calls, language counts, project *count*, models, hour buckets,
+active days, streak) — counts only, never a path and never a project name, so a
+snapshot stays as safe to sync as it was before. Where one month exists on more
+than one machine the additive axes are summed, but **active days and streak take
+the largest single machine's value, never the sum**: a calendar day you worked
+on two laptops is one day, and two 4-day streaks are not an 8-day streak. The
+day-sets themselves are not recoverable from the stored counts, so that axis is
+reported as a floor rather than reconstructed.
+
+**`--card` — a self-contained dark-HUD SVG.** 1280×720: a glowing pentagram web
+with a reference ring per whole level, one node dot stepping out along each arm
+per level it has actually reached, and a dashed all-fives outline behind the
+hull so the gap between the two is the part not yet earned. The web and the
+spokes are drawn at full extent, not at the current levels — the backdrop has to
+hold still for the silhouette to be readable against it. Plus a letter RATING
+(C / B / A / S / S+, off the skill total), a
 SKILL OVERVIEW panel (total skill points, sessions, active hours) and an
 ATTRIBUTES panel (tokens in+out, cache share, longest streak, active days,
 velocity), footed `STARFORGE • LOCAL-ONLY SCAN • SECRETS REDACTED • PATHS
@@ -201,7 +242,7 @@ starforge-cli --accounts       # per-account split + floor (files get acct-<hash
 starforge-cli --no-projects    # write proj-<hash> into the files instead of project names
 starforge-cli --show-accounts  # opt in: write the RAW account email addresses into the files
 starforge-cli --no-providers   # skip the multi-CLI scan (Gemini/Copilot/…)
-starforge-cli --no-snapshot    # don't touch ~/.starforge/snapshots
+starforge-cli --no-snapshot    # don't touch ~/.starforge/snapshots or ~/.starforge/stars
 starforge-cli --name=NAME      # title printed on the card and the stats page
 starforge-cli --roots=/Volumes/other-mac/Users/me   # merge another machine's logs
 starforge-cli --join-fleet=DIR [--machine=NAME] [--label=LABEL]   # write this machine's folder into a
@@ -232,7 +273,8 @@ your control — [PROVE-IT.md](PROVE-IT.md) §6.
 | **Interactive exclusion** | Asks before scanning which folders/topics to exclude entirely. `--yes` skips the prompt; so does a non-TTY stdin (a pipe, CI) — and in that case the run prints that it was skipped and that nothing was excluded, rather than letting you believe you were asked |
 | **Metadata over transcripts** | Reads the low-level token-usage records (deduped by message id) and session metadata — it never stores prompt text or conversation content at all |
 | **Multi-account / multi-machine** | `--roots` merges log stores from other home directories; the snapshot dir is designed to be synced between machines and merges per-month per-host |
-| **Rolling snapshots** | Every run (unless you pass `--no-snapshot`) updates `~/.starforge/snapshots/YYYY-MM.json` — your history survives the ~30-day retention of the raw logs |
+| **Rolling snapshots** | Every run (unless you pass `--no-snapshot`) updates `~/.starforge/snapshots/YYYY-MM.json` — your history survives the ~30-day retention of the raw logs. Each snapshot carries its own axis inputs as **counts only** (no paths, no project names), which is what lets it draw its own star |
+| **A star per month** | The same run writes `~/.starforge/stars/YYYY-MM.svg`, one silhouette per snapshot, each computed only from that month — the strip on the stats page is the shape changing over time, which the lifetime average hides |
 | **Velocity tracking** | Month-over-month deltas + linear trend across every snapshot |
 | **Open & verifiable** | Small, dependency-free, readable source. The only network code in this tree is one deliberate outbound probe in `src/confine.mjs` that exists to be refused, plus `src/tripwire.mjs` importing network modules only to disarm them — everything else is checked mechanically by `starforge-cli verify`, and [PROVE-IT.md](PROVE-IT.md) shows what that does and doesn't cover |
 | **Tamper-evident run log** | Every run writes `~/.starforge/audit/run-<timestamp>.json`: what was read, what was written **through the audited path** (masked path + sha256 + bytes — a `--join-fleet` dir is written outside it, and each log's `writes_scope` field says so), the sha256 of every source file that ran, redacted argv, any tripwire hits, the confinement mode the run *claims* (`verified: false` — any process can set it), a monotonic `run_index` mirrored in a counter kept outside the audit dir, and the previous log's hash — a chain `verify` re-walks. Tamper-*evident*, not tamper-*proof*: PROVE-IT.md §4 states the limit plainly |

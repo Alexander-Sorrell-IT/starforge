@@ -364,3 +364,29 @@ test("PROVE-IT states the three-way exit-code contract verify itself prints", ()
   assert.match(PROVE, /SKIP \(nothing to inspect — NOT a pass\)/);
   assert.match(VERIFY, /nothing to inspect — NOT a pass/, "the SKIP badge text must still exist");
 });
+
+// The README prints one whole terminal frame and calls it verbatim output. That
+// claim rots the moment the renderer's size, ramp or layout changes, and a
+// stale picture of your own product is the kind of thing a reader checks first.
+// So: regenerate the frame and require the doc to contain it byte for byte.
+test("the star frame printed in the README is exactly what renderStar produces", async () => {
+  const { renderStar } = await import("../src/star.mjs");
+  // The levels the README's caption names.
+  const frame = renderStar([4.8, 4.6, 4.7, 4.4, 4.5], {
+    color: false,
+    status: "scan complete",
+  });
+  assert.ok(
+    README.includes(frame),
+    "README's verbatim star frame no longer matches renderStar(). Regenerate it:\n" +
+      "  node -e 'import(\"./src/star.mjs\").then(({renderStar})=>console.log(renderStar([4.8,4.6,4.7,4.4,4.5],{color:false,status:\"scan complete\"})))'\n" +
+      "and paste the result into both fenced star blocks."
+  );
+  // And the dimensions the prose states must be the dimensions it actually has.
+  const rows = frame.split("\n");
+  const cols = Math.max(...rows.map((r) => r.length));
+  assert.ok(
+    README.includes(`${cols}×${rows.length}`),
+    `README must state the real frame size (${cols}×${rows.length})`
+  );
+});

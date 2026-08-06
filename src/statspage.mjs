@@ -13,6 +13,7 @@
 // other tool — becomes its stable pseudonym unless renderStatsPage is called
 // with { showAccounts: true }.
 import { redactSecrets, maskPath, maskIdentities } from "./redact.mjs";
+import { renderStarSvg, AXES } from "./starsvg.mjs";
 
 // ---- palette ---------------------------------------------------------------
 // Data accent (single-series marks) + a 4-slot categorical set for the token
@@ -296,6 +297,34 @@ export function renderStatsPage(input = {}) {
   ].join("");
   const hero = `<section class="hero">${starSvg ? `<div class="star">${starSvg}</div>` : ""}<div class="tiles hero-tiles">${heroTiles}</div></section>`;
 
+  // -- S1b star timeline -----------------------------------------------------
+  // One star per month, each computed only from that month's activity. Read
+  // left to right the silhouettes show the work changing shape — the single
+  // hero star above is the average that hides exactly that.
+  const tl = Array.isArray(input.timeline) ? input.timeline.filter((m) => m?.levels) : [];
+  const starStrip = tl.length
+    ? panel(
+        "the shape over time",
+        `<div class="strip">${tl
+          .slice(-18)
+          .map(
+            (m) =>
+              `<figure class="chip">${renderStarSvg(m.levels, {
+                size: 150,
+                labels: false,
+                rings: true,
+                bare: true,
+                title: `${m.month} — ${AXES.map((ax, i) => `${ax} ${m.levels[i]}`).join(", ")}`,
+              })}<figcaption>${esc(m.month)}<span class="dim"> · ${(m.levels.reduce((x, y) => x + y, 0)).toFixed(1)}</span></figcaption></figure>`
+          )
+          .join("")}</div>
+        <div class="cap">${
+          tl.length > 18 ? `most recent 18 of ${tl.length} months. ` : ""
+        }where a month exists on more than one machine the additive axes are summed, but active days and streak are the largest single machine's, never the sum — two 4-day streaks on two laptops are not an 8-day streak.</div>`,
+        "each star is drawn from that month alone, same axes and same scale as the big one: arm length is that axis and nothing else, dotted outline is all-fives. A thin month is a small tight shape, not a gap."
+      )
+    : "";
+
   // -- S2 judgment signals ---------------------------------------------------
   const s2 = panel(
     "JUDGMENT SIGNALS",
@@ -478,6 +507,12 @@ export function renderStatsPage(input = {}) {
   .hero .star { flex: 1 1 420px; min-width: 300px; background: ${C.panel}; border: 1px solid ${C.border}; padding: 6px; }
   .hero .star svg { width: 100%; height: auto; display: block; }
   .hero-tiles { flex: 1 1 320px; align-content: start; }
+  /* The month strip scrolls inside itself; the page body must never scroll
+     sideways, however many months are on disk. */
+  .strip { display: flex; gap: 10px; overflow-x: auto; padding: 4px 2px 8px; }
+  .chip { flex: 0 0 auto; margin: 0; width: 150px; background: ${C.panel}; border: 1px solid ${C.border}; }
+  .chip svg { display: block; width: 100%; height: auto; }
+  .chip figcaption { font-size: 11px; letter-spacing: 1px; text-align: center; padding: 4px 0 6px; color: ${C.muted}; }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
   .tiles.six { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
   .tile { background: ${C.bg}; border: 1px solid ${C.grid}; padding: 12px; }
@@ -526,6 +561,7 @@ export function renderStatsPage(input = {}) {
     <div class="sub">LOCAL STATS &#183; ${esc(today)} &#183; sources: ${sourcesLine}</div>
   </header>
   ${hero}
+  ${starStrip}
   ${s2}
   ${s3}
   ${s4}

@@ -6,8 +6,11 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { auditWrite } from "./audit.mjs";
+import { computeLevels } from "./star.mjs";
+import { renderStarSvg } from "./starsvg.mjs";
 
 export const SNAP_DIR = join(homedir(), ".starforge", "snapshots");
+export const STAR_DIR = join(homedir(), ".starforge", "stars");
 
 // Pass { audit } so these writes land in the run log — snapshots are written on
 // every default run, and an audit log that skipped them would report no writes
@@ -46,6 +49,13 @@ export function loadTimeline() {
         input_tokens: 0,
         output_tokens: 0,
         cache_tokens: 0,
+        tool_calls: 0,
+        languages: {},
+        models: {},
+        projects_count: 0,
+        hour_buckets: new Array(24).fill(0),
+        active_days: 0,
+        longest_streak_days: 0,
         machines: Object.keys(snap.machines ?? {}),
       };
       for (const m of Object.values(snap.machines ?? {})) {
@@ -54,12 +64,56 @@ export function loadTimeline() {
         merged.input_tokens += m.input_tokens ?? 0;
         merged.output_tokens += m.output_tokens ?? 0;
         merged.cache_tokens += m.cache_tokens ?? 0;
+        // Additive across machines: work done on one laptop does not overlap
+        // work done on another.
+        merged.tool_calls += m.tool_calls ?? 0;
+        merged.projects_count += m.projects_count ?? 0;
+        for (const [k, v] of Object.entries(m.languages ?? {}))
+          merged.languages[k] = (merged.languages[k] ?? 0) + v;
+        for (const [k, v] of Object.entries(m.models ?? {}))
+          merged.models[k] = (merged.models[k] ?? 0) + v;
+        const hb = m.hour_buckets ?? [];
+        for (let h = 0; h < 24; h++) merged.hour_buckets[h] += hb[h] ?? 0;
+        // NOT additive: a calendar day you worked on two machines is one day,
+        // and two 4-day streaks on two machines are not an 8-day streak. Max is
+        // a floor, not a total — the union of the day sets is not recoverable
+        // from the counts each machine stored, and inventing it would overstate
+        // the one axis (TENACITY) that is meant to be hard to inflate.
+        merged.active_days = Math.max(merged.active_days, m.active_days ?? 0);
+        merged.longest_streak_days = Math.max(
+          merged.longest_streak_days,
+          m.longest_streak_days ?? 0
+        );
       }
       merged.duration_hours = +merged.duration_hours.toFixed(1);
+      merged.levels = computeLevels(merged);
       months.push(merged);
     } catch {}
   }
   return months;
+}
+
+// One SVG star per month, written next to the snapshots. Every month gets its
+// own silhouette computed only from that month's activity, so laying them out
+// in order shows the shape of the work changing — which is the thing a single
+// lifetime-average star cannot show. Returns the paths written.
+export function writeSnapshotStars(timeline, { audit = null, limit = 36 } = {}) {
+  if (!timeline.length) return [];
+  mkdirSync(STAR_DIR, { recursive: true });
+  const written = [];
+  for (const m of timeline.slice(-limit)) {
+    const levels = m.levels ?? computeLevels(m);
+    const svg = renderStarSvg(levels, {
+      size: 300,
+      labels: false,
+      footer: m.month,
+      title: `skill star — ${m.month}`,
+    });
+    const file = join(STAR_DIR, `${m.month}.svg`);
+    writeFileSync(file, auditWrite(audit, file, svg));
+    written.push(file);
+  }
+  return written;
 }
 
 // Simple velocity profile: last vs previous month + linear trend over the run.

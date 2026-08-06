@@ -30,7 +30,10 @@
 //                                 write this machine's folder into the fleet
 //                                 (--machine/--label default to this machine's
 //                                 hostname)
-//   starforge-cli --no-snapshot   don't update ~/.starforge/snapshots
+//   starforge-cli --no-snapshot   don't update ~/.starforge/snapshots (which
+//                                 also skips the per-month stars in
+//                                 ~/.starforge/stars, since they are drawn from
+//                                 the snapshots)
 //   starforge-cli --reset-audit[=WHY]
 //                                 delete every run log in ~/.starforge/audit and
 //                                 start a fresh chain whose first entry RECORDS
@@ -58,7 +61,14 @@ import {
   defaultRoots,
 } from "./scan.mjs";
 import { LiveStar, computeLevels, AXES } from "./star.mjs";
-import { writeSnapshots, loadTimeline, velocity, SNAP_DIR } from "./snapshots.mjs";
+import {
+  writeSnapshots,
+  writeSnapshotStars,
+  loadTimeline,
+  velocity,
+  SNAP_DIR,
+  STAR_DIR,
+} from "./snapshots.mjs";
 import { maskPath, maskText, maskIdentities, maskProjects } from "./redact.mjs";
 import { renderCard } from "./card.mjs";
 import { scanAllProviders } from "./scanners.mjs";
@@ -90,6 +100,8 @@ const opt = (name) => {
   return hit ? hit.split("=").slice(1).join("=") : null;
 };
 const fmt = (n) => (n ?? 0).toLocaleString("en-US");
+// "…/stars/2026-08.svg" -> "2026-08"
+const monthOf = (p) => String(p).split("/").pop().replace(/\.svg$/, "");
 
 // Subcommands are explicit. An unknown positional argument EXITS NON-ZERO
 // rather than falling through to a scan — a proof command that silently runs
@@ -405,6 +417,12 @@ async function main() {
   if (!flag("--no-snapshot")) writeSnapshots(agg.monthly_buckets, {}, { audit });
   const timeline = loadTimeline();
   const vel = velocity(timeline);
+  // Every snapshot gets its own star, drawn only from that month's activity.
+  // Laid out in order they show the silhouette changing shape over time, which
+  // a single lifetime-average star averages away.
+  let starFiles = [];
+  if (!flag("--no-snapshot") && timeline.length)
+    starFiles = writeSnapshotStars(timeline, { audit });
 
   // ---- summary -------------------------------------------------------------
   console.log(`\n${BOLD}── profile ─────────────────────────────${RESET}`);
@@ -477,6 +495,14 @@ async function main() {
     console.log(`\n${BOLD}── velocity (${vel.months_tracked} months tracked) ──────${RESET}`);
     const s = (v, unit) => (v === null ? "n/a" : `${v > 0 ? "+" : ""}${v}${unit}`);
     console.log(`hours ${s(vel.hours_mom_pct, "%")} MoM   sessions ${s(vel.sessions_mom_pct, "%")} MoM   tokens ${s(vel.tokens_mom_pct, "%")} MoM   trend ${s(vel.hours_trend_per_month, "h/mo")}`);
+  }
+  if (starFiles.length) {
+    console.log(
+      // Range comes from what was actually written, not from the timeline:
+      // writeSnapshotStars caps how many months it draws, and printing the full
+      // timeline span here would name months that have no star on disk.
+      `\nstars: ${starFiles.length} monthly star${starFiles.length === 1 ? "" : "s"} in ${maskPath(STAR_DIR)} — one silhouette per snapshot, ${monthOf(starFiles[0])}..${monthOf(starFiles[starFiles.length - 1])}`
+    );
   }
 
   // ---- fleet read ----------------------------------------------------------
@@ -654,6 +680,7 @@ async function main() {
         fleet: fleetView,
         providers: providers?.providers ?? null,
         starSvg: cardSvg,
+        timeline,
         velocity: vel,
         name,
         showAccounts,
