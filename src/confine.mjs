@@ -1,0 +1,241 @@
+// OS-level confinement — the only layer that actually proves no-egress.
+//
+// Everything else in starforge is policy ("we don't call the network").
+// This module is enforcement: it re-runs starforge inside an OS sandbox
+// where the KERNEL refuses network syscalls. That closes every bypass an
+// in-process monkey-patch leaves open — Worker-thread realms, spawned
+// child processes, dgram UDP, process.binding('tcp_wrap'), patch
+// restoration — because the sandbox binds the whole process tree, below
+// the JS layer.
+//
+//   macOS : /usr/bin/sandbox-exec with a deny-network profile.
+//           Marked DEPRECATED in Apple's man page, but it still enforces
+//           (verified on macOS 15). We do not trust that: the positive
+//           control below re-verifies enforcement live on every run.
+//   Linux : unshare -rn — a fresh user+network namespace with no
+//           interfaces and no routes.
+//
+// Scope, stated honestly: this seals SOCKETS for the confined process and
+// all of its descendants. It cannot stop a file written into a
+// cloud-synced directory from leaving the machine later. starforge writes
+// reports only under ~/.starforge.
+//
+// ---------------------------------------------------------------------------
+// INTENTIONAL, NAMED EXCEPTION TO THE NO-NETWORK RULE
+// @starforge-intentional-egress
+//
+// proveEgressBlocked() DELIBERATELY attempts ONE outbound TCP connect
+// (1.1.1.1:443, a public resolver, short timeout) so the proof can say
+// "we tried to leave and the kernel stopped us" — a positive control,
+// strictly stronger than "we did not try". This file is the single
+// allowed importer of node:net in starforge; the static warden allowlists
+// src/confine.mjs by name for exactly this function.
+//
+// node:child_process is also imported here and ONLY here: runConfined()
+// is the launcher that spawns the confined child. The child gets the
+// sandbox; the launcher is what applies it.
+// ---------------------------------------------------------------------------
+import { existsSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process"; // launcher exception — spawns the CONFINED child
+import { connect } from "node:net"; // @starforge-intentional-egress — used only by proveEgressBlocked()
+import { join, dirname } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { maskPath } from "./redact.mjs";
+
+const SRC_DIR = dirname(fileURLToPath(import.meta.url));
+const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
+
+const PROBE_HOST = "1.1.1.1";
+const PROBE_PORT = 443;
+const PROBE_TIMEOUT_MS = 3000;
+
+// errno values that mean "the OS refused before a packet could leave".
+// EPERM  : sandbox-exec denies the connect() syscall.
+// ENETUNREACH / ENETDOWN : network namespace with no interfaces/routes.
+// EACCES : seccomp / LSM refusal.
+const KERNEL_REFUSAL_CODES = new Set(["EPERM", "EACCES", "ENETUNREACH", "ENETDOWN"]);
+
+// ---- detection -------------------------------------------------------------
+export function detectConfinement() {
+  const platform = process.platform;
+  const available = [];
+  if (platform === "darwin" && existsSync(SANDBOX_EXEC)) available.push("sandbox-exec");
+  if (platform === "linux" && which("unshare")) available.push("netns");
+  const recommended = available[0] ?? null;
+
+  const notes = [];
+  if (available.includes("sandbox-exec")) {
+    notes.push(
+      "sandbox-exec is marked DEPRECATED in Apple's man page but still enforces; " +
+        "the positive control verifies enforcement live instead of trusting it."
+    );
+  }
+  notes.push(
+    "OS confinement seals sockets, not files: a report written into a cloud-synced " +
+      "folder can still leave the machine later. starforge writes only under ~/.starforge."
+  );
+  if (!recommended) {
+    notes.push(
+      "no OS-level confinement found on this system — without it there is no real " +
+        "no-egress proof, only policy. An in-process patch would be a tripwire, not a control."
+    );
+  }
+  return { platform, available, recommended, notes };
+}
+
+function which(cmd) {
+  for (const dir of (process.env.PATH ?? "").split(":")) {
+    if (dir && existsSync(join(dir, cmd))) return join(dir, cmd);
+  }
+  return null;
+}
+
+// ---- the sandbox profile ---------------------------------------------------
+// Shown to the user as part of the proof. Allow everything by default so the
+// scan behaves normally; deny only the network — explicitly in both
+// directions, plus the wildcard so no network-* operation slips through.
+export function sandboxProfile() {
+  return [
+    "(version 1)",
+    ";; starforge no-egress profile: allow everything EXCEPT the network.",
+    ";; Applied by the kernel to the whole process tree — Workers, child",
+    ";; processes, and raw tcp_wrap binds inside are all equally confined.",
+    "(allow default)",
+    "(deny network*)",
+    "(deny network-outbound)",
+    "(deny network-inbound)",
+  ].join("\n");
+}
+
+// One-line, comment-free form for embedding in a shell command.
+function profileOneLine() {
+  return sandboxProfile()
+    .split("\n")
+    .filter((l) => !l.startsWith(";;"))
+    .join(" ");
+}
+
+// ---- building the confined command -----------------------------------------
+// Returns the argv array actually spawned, so the printed command string and
+// the executed process can never drift apart.
+function buildParts({ argv = [], srcDir = SRC_DIR, mode } = {}) {
+  const cli = join(srcDir, "cli.mjs");
+  if (mode === "sandbox-exec") {
+    return [SANDBOX_EXEC, "-p", profileOneLine(), process.execPath, cli, ...argv];
+  }
+  if (mode === "netns") {
+    return ["unshare", "-rn", process.execPath, cli, ...argv];
+  }
+  throw new Error(
+    "no OS-level confinement available on this system (need sandbox-exec on macOS " +
+      "or unshare on Linux) — cannot build a real no-egress proof, and will not fake one"
+  );
+}
+
+function shQuote(s) {
+  if (/^[A-Za-z0-9_\-./=:,~*]+$/.test(s)) return s;
+  return `'${s.replaceAll("'", `'\\''`)}'`;
+}
+
+// The exact shell command that re-runs starforge under confinement. This is
+// PRINTED for the user: they can run it themselves and see there is nothing
+// hidden in it. A command the user runs is legitimate proof — the user
+// controls it.
+export function buildProofCommand({ argv = [], srcDir = SRC_DIR } = {}) {
+  const mode = detectConfinement().recommended;
+  return buildParts({ argv, srcDir, mode }).map(shQuote).join(" ");
+}
+
+// ---- running under confinement ---------------------------------------------
+// The ONE place starforge spawns a child process: the launcher for the
+// confined re-run. Streams the child's output straight through.
+export async function runConfined({ argv = [], srcDir = SRC_DIR } = {}) {
+  const det = detectConfinement();
+  if (!det.recommended) {
+    return { ok: false, code: null, mode: null, command: null, error: det.notes.at(-1) };
+  }
+  const parts = buildParts({ argv, srcDir, mode: det.recommended });
+  const command = parts.map(shQuote).join(" ");
+  console.log(`confined run (${det.recommended}): ${maskPath(command)}`);
+  const child = spawn(parts[0], parts.slice(1), { stdio: "inherit" });
+  const code = await new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", resolve);
+  });
+  return { ok: code === 0, code, mode: det.recommended, command };
+}
+
+// ---- the positive control ---------------------------------------------------
+// @starforge-intentional-egress
+// Actively TRIES to open TCP 1.1.1.1:443. Run inside confinement, the kernel
+// must refuse it; run outside, it should connect — together those two results
+// prove the wall is real. `blocked` is true ONLY for a definite kernel
+// refusal. A timeout is reported as NOT blocked, because dropped packets may
+// still have left the machine — an honest proof does not round ambiguity up.
+export async function proveEgressBlocked() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (r) => {
+      if (!settled) {
+        settled = true;
+        resolve(r);
+      }
+    };
+    let sock;
+    try {
+      sock = connect({ host: PROBE_HOST, port: PROBE_PORT, timeout: PROBE_TIMEOUT_MS });
+    } catch (e) {
+      return done({ attempted: true, blocked: KERNEL_REFUSAL_CODES.has(e.code), error: `${e.code ?? "?"}: ${e.message}` });
+    }
+    sock.on("connect", () => {
+      sock.destroy();
+      done({
+        attempted: true,
+        blocked: false,
+        error: `connected to ${PROBE_HOST}:${PROBE_PORT} — egress is OPEN in this context`,
+      });
+    });
+    sock.on("timeout", () => {
+      sock.destroy();
+      done({
+        attempted: true,
+        blocked: false,
+        error: `timeout after ${PROBE_TIMEOUT_MS}ms — ambiguous (packets may have left and been dropped); not a kernel refusal`,
+      });
+    });
+    sock.on("error", (e) => {
+      const refused = KERNEL_REFUSAL_CODES.has(e.code);
+      done({
+        attempted: true,
+        blocked: refused,
+        error: refused
+          ? `${e.code} on connect() — the kernel refused before any packet could leave (${e.message})`
+          : `${e.code ?? "?"}: ${e.message} — reached the network stack; NOT a kernel refusal`,
+      });
+    });
+  });
+}
+
+// Self-check used by tests: does the one-line profile actually parse on this
+// system? Runs /usr/bin/true under it — no network involved.
+export function profileParses() {
+  if (!existsSync(SANDBOX_EXEC)) return null;
+  const r = spawnSync(SANDBOX_EXEC, ["-p", profileOneLine(), "/usr/bin/true"]);
+  return r.status === 0;
+}
+
+// ---- CLI entry: `node src/confine.mjs --probe` ------------------------------
+// Used by bin/starforge-proof.sh so the probe logic lives HERE, in the one
+// warden-allowlisted file, instead of hiding in a shell one-liner.
+// Exit codes: 0 = kernel blocked the attempt, 1 = egress open, 2 = ambiguous.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  if (process.argv[2] === "--probe") {
+    const r = await proveEgressBlocked();
+    console.log(`egress attempt: TCP ${PROBE_HOST}:${PROBE_PORT} (timeout ${PROBE_TIMEOUT_MS}ms)`);
+    console.log(`result: ${r.blocked ? "BLOCKED" : "NOT BLOCKED"} — ${r.error}`);
+    process.exit(r.blocked ? 0 : r.error.startsWith("timeout") ? 2 : 1);
+  } else {
+    const det = detectConfinement();
+    console.log(JSON.stringify({ ...det, proofCommand: det.recommended ? maskPath(buildProofCommand({ argv: ["--yes"] })) : null }, null, 2));
+  }
+}

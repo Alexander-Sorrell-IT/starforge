@@ -37,6 +37,10 @@ import { discoverAccounts, floorTotals } from "./accounts.mjs";
 import { readFleet, writeMachineFolder } from "./fleet.mjs";
 import { collectProfileSignals, computeProfile } from "./profile.mjs";
 import { renderStatsPage } from "./statspage.mjs";
+import { startAudit, auditRead, auditWrite, finishAudit } from "./audit.mjs";
+import { armTripwire } from "./tripwire.mjs";
+import { runVerify, printVerify } from "./verify.mjs";
+import { detectConfinement, buildProofCommand, sandboxProfile } from "./confine.mjs";
 
 const BOLD = "\x1b[1m", DIM = "\x1b[2m", CYAN = "\x1b[36m", RESET = "\x1b[0m";
 
@@ -48,7 +52,55 @@ const opt = (name) => {
 };
 const fmt = (n) => (n ?? 0).toLocaleString("en-US");
 
+// Subcommands are explicit. An unknown positional argument EXITS NON-ZERO
+// rather than falling through to a scan — a proof command that silently runs
+// something else and prints success would be worse than having none.
+const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove"]);
+const positional = args.filter((a) => !a.startsWith("-"));
+const subcommand = positional[0] ?? "scan";
+if (!KNOWN_SUBCOMMANDS.has(subcommand)) {
+  console.error(
+    `starforge: unknown command "${subcommand}". Expected one of: ${[...KNOWN_SUBCOMMANDS].join(", ")}.`
+  );
+  process.exit(2);
+}
+
+// `starforge verify` — the adversarial self-check. Runs the static scan, the
+// audit chain, the output scrub, and the confinement report, and prints each
+// check's limits underneath its result.
+if (subcommand === "verify") {
+  const results = runVerify();
+  printVerify(results);
+  process.exit(results.ok ? 0 : 1);
+}
+
+// `starforge prove` — prints the OS-confinement command (the only real proof)
+// without running anything, so the user can inspect it and run it themselves.
+if (subcommand === "prove") {
+  const det = detectConfinement();
+  console.log(`${BOLD}${CYAN}starforge prove${RESET} — OS-level no-egress proof\n`);
+  console.log(`platform: ${det.platform}   available: ${det.available.join(", ") || "none"}`);
+  for (const n of det.notes ?? []) console.log(`  note: ${n}`);
+  if (det.recommended === "sandbox-exec") {
+    console.log(`\n${BOLD}sandbox profile${RESET}\n${sandboxProfile()}`);
+  }
+  try {
+    console.log(`\n${BOLD}run this yourself${RESET}\n${buildProofCommand({ argv: ["--yes", "--no-snapshot"] })}`);
+  } catch (e) {
+    console.log(`\nno OS confinement available here: ${e.message}`);
+  }
+  console.log(
+    `\nfull scripted proof (scan in-sandbox + positive control):\n  sh ${maskPath(new URL("../bin/starforge-proof.sh", import.meta.url).pathname)}`
+  );
+  process.exit(0);
+}
+
 async function main() {
+  // Armed before anything is read. The audit log is automatic; the tripwire is
+  // a tripwire, not a boundary (see src/tripwire.mjs TRIPWIRE_LIMITS).
+  const audit = startAudit(args);
+  armTripwire(audit.recorder);
+
   console.log(`${BOLD}${CYAN}starforge${RESET} ${DIM}— local-only developer wrapped. Nothing leaves this machine.${RESET}\n`);
 
   const roots = [...defaultRoots(), ...(opt("roots")?.split(",").filter(Boolean) ?? [])];
@@ -91,6 +143,7 @@ async function main() {
   star.draw(computeLevels(finalize(stats)), `scanning 0/${sources.length}`);
   for (const src of sources) {
     try {
+      auditRead(audit, src.source);
       if (src.source === "codex") await parseCodexFile(src.path, stats, { excluded });
       else await parseClaudeFile(src.path, stats, { excluded });
     } catch {}
@@ -280,8 +333,8 @@ async function main() {
     };
     const p1 = join(outDir, `baseline-${stamp}.json`);
     const p2 = join(outDir, `expanded-${stamp}.json`);
-    writeFileSync(p1, JSON.stringify(baseline, null, 2));
-    writeFileSync(p2, JSON.stringify(expanded, null, 2));
+    writeFileSync(p1, auditWrite(audit, p1, JSON.stringify(baseline, null, 2)));
+    writeFileSync(p2, auditWrite(audit, p2, JSON.stringify(expanded, null, 2)));
     console.log(`\nreports: ${maskPath(p1)}\n         ${maskPath(p2)}`);
   }
 
@@ -291,7 +344,7 @@ async function main() {
     if (flag("--card")) {
       mkdirSync(outDir, { recursive: true });
       const cardPath = join(outDir, `star-${stamp}.svg`);
-      writeFileSync(cardPath, cardSvg);
+      writeFileSync(cardPath, auditWrite(audit, cardPath, cardSvg));
       console.log(`\ncard: ${maskPath(cardPath)} (open in any browser)`);
     }
   }
@@ -309,11 +362,14 @@ async function main() {
       name,
     });
     const pagePath = join(outDir, `stats-${stamp}.html`);
-    writeFileSync(pagePath, html);
+    writeFileSync(pagePath, auditWrite(audit, pagePath, html));
     console.log(`page: ${maskPath(pagePath)} (open in any browser — computed locally, nothing uploaded)`);
   }
 
+  const auditPath = finishAudit(audit);
   console.log(`\n${DIM}snapshots: ${maskPath(SNAP_DIR)} (sync this dir between machines to merge histories)${RESET}`);
+  if (auditPath)
+    console.log(`${DIM}run log:   ${maskPath(auditPath)} — verify it with \`starforge verify\`${RESET}`);
 }
 
 main().catch((e) => {
