@@ -126,6 +126,13 @@ export function emptyStats() {
     totalEvents: 0,
     userTurns: 0,
     seenMessageIds: new Map(),
+    // Projects counted from the TRANSCRIPTS, independent of how sessions merge.
+    // A sub-agent transcript carries its PARENT's sessionId while living in its
+    // own project directory, so session-based counting credits only whichever
+    // directory was read first: on the fleet corpus that turned 350 project
+    // directories into 104. A project is a place work happened, not a property
+    // of a session id.
+    projectsSeen: new Set(),
   };
 }
 
@@ -282,8 +289,53 @@ function temporal(stats, ts) {
 }
 
 // Claude Code + Cowork share the transcript format.
+/**
+ * The project a transcript belongs to, from its DIRECTORY.
+ *
+ * Claude Code stores each project's sessions in ~/.claude/projects/<dir>, where
+ * <dir> is the working directory with separators replaced by dashes. That
+ * directory IS the project identity; `cwd` inside the rows is a convenience copy
+ * of the same thing.
+ *
+ * Reading only `cwd` loses the identity whenever the two disagree. On the merged
+ * fleet corpus every row's cwd had been redacted to the single string
+ * "/workspace" while the 401 project directories survived intact, so 401
+ * projects were counted as ONE — and ENGINEERING, which is scored partly on
+ * project count, was measuring the redaction rather than the person.
+ *
+ * cwd is still preferred when it says something: it is the un-encoded path and
+ * makes the nicer label. This is the fallback for when it does not.
+ */
+// A cwd that cannot distinguish one project from another: a single path
+// segment, i.e. a bare root. "/workspace" is what the fleet corpus redaction
+// leaves behind for every session it exports.
+function uninformativeCwd(cwd) {
+  return String(cwd ?? "").split(/[/\\]/).filter(Boolean).length <= 1;
+}
+
+export function projectFromPath(filePath) {
+  const parts = String(filePath ?? "").split(/[/\\]/).filter(Boolean);
+  // .../projects/<dir>/<session>.jsonl  -> <dir>
+  const dir = parts.length >= 2 ? parts[parts.length - 2] : null;
+  if (!dir || dir === "projects") return null;
+  // Claude Code's encoding: leading dash is the root, inner dashes are
+  // separators. Decoding is lossy for names that contain dashes, which is fine
+  // — this is a LABEL, and the identity is the string either way.
+  const decoded = dir.startsWith("-") ? "/" + dir.slice(1).replace(/-/g, "/") : dir;
+  return projectLabel(decoded) ?? dir;
+}
+
 export async function parseClaudeFile(filePath, stats, opts = {}) {
-  let sessionId = filePath.split("/").pop().replace(/\.jsonl$/, "");
+  // Resolved once per file, used only when cwd cannot identify the project.
+  const dirProject = projectFromPath(filePath);
+  if (dirProject && !opts.excluded?.(dirProject)) stats.projectsSeen?.add(dirProject);
+  // The fallback session id must be unique across the WHOLE scan, so it carries
+  // the project directory too. A bare basename is not an identity: 83 different
+  // projects in the fleet corpus each had a "journal.jsonl", and all 83 merged
+  // into one session — taking 82 projects with them, because a session's project
+  // is set once and the first directory seen wins.
+  const parts = filePath.split(/[/\\]/).filter(Boolean);
+  let sessionId = parts.slice(-2).join("/").replace(/\.jsonl$/, "");
   await streamLines(filePath, (line) => {
     let d;
     try {
@@ -298,9 +350,15 @@ export async function parseClaudeFile(filePath, stats, opts = {}) {
     const s = session(stats, sessionId, ts);
     if (typeof d.cwd === "string" && !s.project) {
       const label = projectLabel(d.cwd);
-      if (label && !opts.excluded?.(d.cwd)) s.project = label;
-      else if (opts.excluded?.(d.cwd)) s.project = "[excluded]";
+      if (opts.excluded?.(d.cwd)) s.project = "[excluded]";
+      // The directory wins when cwd is UNINFORMATIVE — a bare root like
+      // "/workspace" that every session in every directory shares. Preferring
+      // cwd otherwise keeps normal scans byte-identical, since there the two
+      // encode the same path.
+      else if (label) s.project = uninformativeCwd(d.cwd) && dirProject ? dirProject : label;
     }
+    // No cwd at all (redacted away, or a transcript that never carried one).
+    if (!s.project && dirProject) s.project = dirProject;
     const msg = d.message;
     if (d.type === "user" && msg && typeof msg.content === "string") {
       stats.userTurns += 1;
@@ -539,7 +597,14 @@ export function finalize(stats) {
       .sort(byCountThenKey)
       .slice(0, 20)
       .map(([name, count]) => ({ name, sessions: count })),
-    projects_count: projects.size,
+    // The UNION of projects reached by a session and projects seen on disk.
+    // Session-derived alone under-counts (sub-agent transcripts share their
+    // parent's session id across directories); file-derived alone would miss a
+    // caller that builds sessions without files. Either witness counts.
+    projects_count: new Set([
+      ...[...projects.keys()].filter((p) => p && p !== "[excluded]"),
+      ...(stats.projectsSeen ?? []),
+    ]).size,
     models: Object.fromEntries(
       [...models.entries()].sort(byCountThenKey)
     ),
