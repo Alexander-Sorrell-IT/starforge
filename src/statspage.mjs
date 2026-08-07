@@ -378,7 +378,6 @@ export function renderStatsPage(input = {}) {
     <div class="tiles" style="margin-top:14px">${[
       tile("new content", hval(tok.new_content), "fresh input + cache write + output"),
       tile("work vs cache", tok.work_tokens != null ? `${hval(tok.work_tokens)} <span class="dim">/</span> ${hval(tok.cache_tokens)}` : DASH, "in+out vs cache read+write"),
-      tile("retail cost", tok.retail_cost_usd != null ? `$${fmt(tok.retail_cost_usd)}` : DASH, esc(tok.cost_note ?? "retail estimate")),
     ].join("")}</div>
     <div class="chart-title" style="margin-top:14px">tokens by month (last 6)</div>
     ${monthlyBarsSvg(
@@ -387,7 +386,7 @@ export function renderStatsPage(input = {}) {
       "tokens"
     )}
     ${tok.codex_note ? `<div class="cap">${esc(tok.codex_note)}</div>` : ""}`,
-    "retail estimate — not what you paid"
+    "usage, not cost — this tool does not price your work"
   );
 
   // -- S5 tools & models -----------------------------------------------------

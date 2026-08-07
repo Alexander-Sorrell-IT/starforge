@@ -6,7 +6,6 @@ import { join } from "node:path";
 import {
   CORRECTION_RE,
   classifyProvider,
-  rateForModel,
   computeStreaks,
   sweepConcurrency,
   computeToolRelationship,
@@ -116,14 +115,6 @@ test("classifyProvider ports verbatim", () => {
   assert.equal(classifyProvider("gpt-5-codex"), "openai");
   assert.equal(classifyProvider("o3-mini"), "openai");
   assert.equal(classifyProvider("llama-3"), "other");
-});
-
-test("rateForModel: known models + default", () => {
-  assert.equal(rateForModel("claude-opus-4-6").input, 7.5);
-  assert.equal(rateForModel("claude-sonnet-4-5").output, 15);
-  assert.equal(rateForModel("gpt-4o").input, 2.5);
-  assert.equal(rateForModel("mystery-model").input, 5);
-  assert.equal(rateForModel(null).output, 25);
 });
 
 test("computeStreaks: zY9 semantics — current walks back from TODAY", () => {
@@ -255,7 +246,7 @@ test("computeProfile: delegation, tool mix, craft exclusions", () => {
   assert.deepEqual(p.languages, { python: 5, javascript: 3 });
 });
 
-test("computeProfile: tokens split, retail cost, records, streak override", () => {
+test("computeProfile: tokens split, records, streak override", () => {
   const now = Date.parse("2026-08-02T12:00:00Z");
   const p = computeProfile(syntheticSignals(), { now });
   assert.equal(p.tokens.fresh_input, 1.6e6);
@@ -266,7 +257,6 @@ test("computeProfile: tokens split, retail cost, records, streak override", () =
   assert.equal(p.tokens.work_tokens, 3.2e6);
   // month 2026-08 dominant model = sonnet (2 sessions vs 1 opus):
   // (1.6M*3 + 1.6M*15 + 4M*0.3 + 1M*3.75)/1M = 4.8+24+1.2+3.75 = 33.75
-  assert.equal(p.tokens.retail_cost_usd, 33.75);
   // records: longest session by DURATION
   assert.equal(p.records.longest_session.id, "aaaa1111");
   assert.equal(p.records.most_tokens_session.id, "aaaa1111");
@@ -292,7 +282,6 @@ test("computeProfile: zero prompt turns -> ratios are null, not 0", () => {
   assert.equal(p.delegation.delegation_ratio, null);
   assert.equal(p.rhythm.weekend_ratio, null);
   assert.equal(p.proficiency, null);
-  assert.equal(p.tokens.retail_cost_usd, null);
 });
 
 test("computeProfile: tolerates completely empty/undefined input", () => {

@@ -194,14 +194,15 @@ function sparkline(buckets) {
 }
 
 // ---------------------------------------------------------------------------
-// Retail-cost estimate.
+// There is no cost estimate here, and that is deliberate.
 //
-// These are ASSUMPTIONS, not a price lookup — this tool makes no network calls,
-// so it cannot know today's rates. They are printed on the card next to the
-// number so the figure is auditable instead of authoritative, and overridable
-// with --rates=in,out,cache. Sanity-check them before quoting the dollar figure
-// anywhere that matters.
-export const DEFAULT_RATES = { in: 15, out: 75, cache: 1.5, note: "assumed $/Mtok, not fetched" };
+// This tool reports USAGE. It used to print a retail dollar figure from assumed
+// per-Mtok rates, labelled as an assumption — and an assumption with a dollar
+// sign on it still gets quoted as a price. The same model bills differently
+// depending on the route it was reached through, so a single rate table cannot
+// be right for one person let alone a fleet, and a tool that makes no network
+// calls cannot look up what changed. Tokens are a fact; the price of them is
+// someone else's number.
 
 /**
  * Accept whatever the caller has and return [{name, tokens}], biggest first.
@@ -230,12 +231,6 @@ export function normaliseProviders(providers) {
     .slice(0, 5);
 }
 
-export function estimateCost(agg, rates = DEFAULT_RATES) {
-  const inTok = agg.total_input_tokens ?? 0;
-  const outTok = agg.total_output_tokens ?? 0;
-  const cacheTok = (agg.total_cache_read_tokens ?? 0) + (agg.total_cache_write_tokens ?? 0);
-  return (inTok / 1e6) * rates.in + (outTok / 1e6) * rates.out + (cacheTok / 1e6) * rates.cache;
-}
 
 // ---------------------------------------------------------------------------
 // Cards. Each returns an array of lines, or null when it has nothing to say —
@@ -323,23 +318,26 @@ export function cardHistory(rawTimeline) {
   ].filter(keep);
 }
 
-export function cardTokens(rawAgg, providers, rawRates) {
+export function cardTokens(rawAgg, providers) {
   const agg = obj(rawAgg);
-  const rates = { ...DEFAULT_RATES, ...obj(rawRates) };
   const work = (agg.total_input_tokens ?? 0) + (agg.total_output_tokens ?? 0);
   const cache = (agg.total_cache_read_tokens ?? 0) + (agg.total_cache_write_tokens ?? 0);
   if (work + cache === 0) return null;
   const cachePct = ((cache / (work + cache)) * 100).toFixed(1);
-  const cost = estimateCost(agg, rates);
   const lines = [
     head("YOU BURNED THIS MANY TOKENS"),
     "",
     `  ${big(human(work + cache))} ${WH}tokens${R}`,
     `  ${WH}${human(work)}${R} actually generated · ${WH}${cachePct}%${R} served from cache`,
     "",
-    `  ${D}~$${Math.round(cost).toLocaleString("en-US")} at ${rates.in}/${rates.out}/${rates.cache} per Mtok (in/out/cached)${R}`,
-    `  ${D}${rates.note ?? "assumed rates"} — this tool makes no network calls,${R}`,
-    `  ${D}so it cannot look up today's prices. Check before quoting it.${R}`,
+    // wrapWords, not hand-counted lines — box() clips instead of wrapping, and
+    // hand-counting has now lost the end of a line on three separate cards.
+    ...wrapWords(
+      "usage, not cost. this tool does not price your work: the same model " +
+        "bills differently through different routes, and a rate it cannot " +
+        "fetch would be a guess wearing a dollar sign.",
+      W - 4
+    ).map((l) => `  ${D}${l}${R}`),
   ];
   // scanAllProviders() returns an OBJECT keyed by provider name, with rows of
   // {sessions, input, output, cacheRead, cacheWrite} — not an array, and not a
@@ -577,14 +575,14 @@ export function shareQrLines(rawLevels, agg, url) {
  * dropped, so a thin history produces a short story rather than empty boxes.
  */
 export function buildCards(input) {
-  const { levels, agg, profile, timeline, providers, rates, confinement, url } = input;
+  const { levels, agg, profile, timeline, providers, confinement, url } = input;
   const specs = [
     [cardStar(levels, agg), CY],
     [cardScoring(agg), "\x1b[38;5;120m"],
     [cardSources(input.corpusMonth ?? null, agg, input.fleetAgg ?? null), "\x1b[38;5;220m"],
     [cardManaged(agg, timeline), "\x1b[38;5;220m"],
     [cardHistory(timeline), CY],
-    [cardTokens(agg, providers, rates ?? DEFAULT_RATES), "\x1b[38;5;213m"],
+    [cardTokens(agg, providers), "\x1b[38;5;213m"],
     [cardShapeOverTime(timeline), CY],
     [cardRhythm(profile), "\x1b[38;5;213m"],
     [cardHowYouDrive(profile), "\x1b[38;5;220m"],
@@ -621,7 +619,7 @@ export function buildCardsSafe(input) {
       ["CORPUS vs FLEET", () => cardSources(input.corpusMonth ?? null, input.agg, input.fleetAgg ?? null)],
       ["YOU MANAGED", () => cardManaged(input.agg, input.timeline)],
       ["YOUR CODING HISTORY", () => cardHistory(input.timeline)],
-      ["YOU BURNED THIS MANY TOKENS", () => cardTokens(input.agg, input.providers, input.rates ?? DEFAULT_RATES)],
+      ["YOU BURNED THIS MANY TOKENS", () => cardTokens(input.agg, input.providers)],
       ["THE SHAPE OVER TIME", () => cardShapeOverTime(input.timeline)],
       ["WHEN YOU CODE", () => cardRhythm(input.profile)],
       ["HOW YOU DRIVE THE MACHINE", () => cardHowYouDrive(input.profile)],

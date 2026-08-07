@@ -20,8 +20,6 @@
 //   starforge-cli --wrapped       (default) the paced story, one card at a time
 //   starforge-cli --no-wrapped    skip the story, print the summary only
 //   starforge-cli --no-pace       print every wrapped card at once (no [enter])
-//   starforge-cli --rates=I,O,C   $/Mtok assumed for the cost estimate
-//                                 (input,output,cached). No rate is ever fetched.
 //   starforge-cli --page          write the full HTML stats page (implies profile)
 //   starforge-cli --profile       compute the judgment/craft profile without
 //                                 writing the HTML page
@@ -89,7 +87,7 @@ import {
 } from "./snapshots.mjs";
 import { maskPath, maskText, maskIdentities, maskProjects } from "./redact.mjs";
 import { renderCard } from "./card.mjs";
-import { buildCardsSafe, renderAll, box, shareQrLines, DEFAULT_RATES } from "./wrapped.mjs";
+import { buildCardsSafe, renderAll, box, shareQrLines } from "./wrapped.mjs";
 import { writeSchedule, removeSchedule, daemonStatus, describeSchedule } from "./daemon.mjs";
 import { buildReceipt, renderReceipt } from "./receipt.mjs";
 import { scanAllProviders } from "./scanners.mjs";
@@ -181,7 +179,6 @@ const FLAG_SPEC = Object.freeze({
   "--wrapped": "bool",
   "--no-wrapped": "bool",
   "--no-pace": "bool",
-  "--rates": "value",
   "--page": "bool",
   "--profile": "bool",
   "--accounts": "bool",
@@ -978,14 +975,6 @@ async function main() {
   // prints where you sit in YOUR OWN history — the only comparison a machine
   // that has never seen anyone else's data can honestly make.
   if (!flag("--no-wrapped")) {
-    let rates = DEFAULT_RATES;
-    const raw = opt("rates");
-    if (raw) {
-      const parts = raw.split(",").map((n) => Number(n.trim()));
-      if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n) || n < 0))
-        flagError(`--rates wants three non-negative numbers: --rates=input,output,cached (got "${raw}")`);
-      rates = { in: parts[0], out: parts[1], cache: parts[2], note: "rates you passed with --rates" };
-    }
     const cards = buildCardsSafe({
       levels,
       agg,
@@ -996,7 +985,6 @@ async function main() {
       profile,
       timeline,
       providers: providers?.providers ?? null,
-      rates,
       confinement: detectConfinement()?.mode ?? null,
       url: "https://github.com/Alexander-Sorrell-IT/starforge",
     });

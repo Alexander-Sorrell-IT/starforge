@@ -245,7 +245,7 @@ test asserts that a plain scan never writes one.
 
 **The cards.** Twelve boxed cards, one keypress at a time,
 in the format everyone already recognises from a hosted wrapped: the shape of
-your work, hours, history, tokens (with a cost estimate), the month-by-month
+your work, hours, history, tokens, the month-by-month
 silhouette, when you code, how you drive the machine, how many agents you juggle,
 tools and models, top projects, and a share card. Piped or `--no-pace`, the
 whole story prints at once.
@@ -284,10 +284,15 @@ against the snapshots on your disk. And the last card accounts for what left the
 machine: nothing, plus the command that makes the kernel prove it rather than
 asking you to believe it.
 
-The cost estimate is arithmetic on **assumed** rates, printed on the card next
-to the number and overridable with `--rates=in,out,cached`. Nothing is ever
-fetched — this tool makes no network calls, so it cannot know today's prices.
-Sanity-check the figure before quoting it anywhere that matters.
+**There is no cost estimate, deliberately.** Earlier versions multiplied your
+tokens by an assumed per-Mtok table and printed a dollar figure, labelled as an
+assumption — which changes nothing, because a number with a currency sign on it
+gets quoted as a price. The same model bills differently depending on the route
+it was reached through, so one table cannot be right for a single person, let
+alone across machines, and a tool that makes no network calls cannot know what
+changed since it was written. Tokens are a fact the API returned; what they cost
+is somebody else's number. A test fails the build if a currency figure reappears
+in any module, report or page.
 
 **The silhouette is the data.** Each arm's length is set by its own axis and by
 nothing else, and the valleys between arms sit at a fixed radius — so a maxed

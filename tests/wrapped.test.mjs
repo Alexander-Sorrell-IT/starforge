@@ -15,8 +15,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  box, bar, miniStar, ownRank, estimateCost, buildCards, renderAll,
-  wrapWords, DEFAULT_RATES,
+  box, bar, miniStar, ownRank, buildCards, renderAll,
+  wrapWords,
 } from "../src/wrapped.mjs";
 import { ARMS, MAX_LEVEL } from "../src/starsvg.mjs";
 
@@ -129,21 +129,6 @@ test("ownRank compares you to yourself, and refuses to guess from thin history",
     assert.doesNotMatch(strip(s), /users|percentile|globally/i);
 });
 
-test("the cost estimate is arithmetic on the stated rates, and prints them", () => {
-  const cost = estimateCost(
-    { total_input_tokens: 1e6, total_output_tokens: 1e6, total_cache_read_tokens: 1e6, total_cache_write_tokens: 0 },
-    { in: 10, out: 20, cache: 1 }
-  );
-  assert.equal(cost, 31);
-  assert.equal(estimateCost({}, DEFAULT_RATES), 0, "no tokens must cost nothing, not NaN");
-  // The rates are assumptions — the card has to say so, because this tool makes
-  // no network calls and cannot look up a real price.
-  const cards = buildCards({ levels: LEVELS, agg: AGG, profile: PROFILE, timeline: TIMELINE, url: "https://example.com/x" });
-  const text = strip(renderAll(cards));
-  assert.match(text, /per Mtok/, "the card must print the rates it used");
-  assert.match(text, /assumed|rates you passed/, "the card must mark the rates as an assumption");
-});
-
 test("the wrapped never claims to know about other users", () => {
   // The entire point: a tool that has seen exactly one person's data must not
   // borrow the hosted wrapped's "top N% of users" framing.
@@ -207,7 +192,7 @@ test("providers come as an OBJECT keyed by name — the shape the scanner return
   assert.ok(norm[0].tokens > norm[1].tokens);
 
   // The card must render with the real shape and not throw.
-  const lines = cardTokens(AGG, real, DEFAULT_RATES);
+  const lines = cardTokens(AGG, real);
   assert.ok(Array.isArray(lines) && lines.length);
   const text = strip(lines.join("\n"));
   assert.match(text, /gemini/);
@@ -267,7 +252,7 @@ test("no card can be made to throw, whatever it is handed", async () => {
     for (const a of hostile) {
       for (const b of hostile) {
         try {
-          const out = fn(a, b, W.DEFAULT_RATES);
+          const out = fn(a, b);
           if (out !== null && !Array.isArray(out))
             failures.push(`${name} returned ${typeof out}, expected array or null`);
           if (Array.isArray(out))

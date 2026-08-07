@@ -35,24 +35,19 @@ const MAX_LANG_PATHS = 5000;
 export const CORRECTION_RE =
   /\b(no|nope|actually|wrong|incorrect|instead|revert|undo|don'?t|stop|not what|that'?s not)\b/i;
 
-// Ported verbatim from standout wrapped/aggregate.ts (RETAIL_RATES, $/Mtok).
-export const RETAIL_RATES = [
-  { match: /claude.*opus/i, input: 7.5, output: 37.5, cacheRead: 0.75, cacheWrite: 9.375 },
-  { match: /claude.*sonnet/i, input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-  { match: /claude.*haiku/i, input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
-  { match: /gpt-?5(-mini|-nano)?/i, input: 7.5, output: 37.5, cacheRead: 0.75, cacheWrite: 9.375 },
-  { match: /gpt-?4/i, input: 2.5, output: 10, cacheRead: 0.25, cacheWrite: 2.5 },
-];
-
-export function rateForModel(model) {
-  if (model) {
-    for (const r of RETAIL_RATES) {
-      if (r.match.test(model))
-        return { input: r.input, output: r.output, cacheRead: r.cacheRead, cacheWrite: r.cacheWrite };
-    }
-  }
-  return { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
-}
+// There is no rate table here any more, and there will not be one.
+//
+// This file used to port standout's RETAIL_RATES verbatim and multiply tokens by
+// it, emitting `retail_cost_usd` per month and for the lifetime. That number was
+// a guess with a dollar sign on it. The same model bills differently depending
+// on the route it was reached through — direct, through Copilot, through some
+// other provider — so one table cannot be right for one person, let alone for
+// five machines. And a tool that makes no network calls cannot know what changed
+// since the table was written.
+//
+// This tool counts USAGE. Tokens are a fact the API returned. What they cost is
+// somebody else's number, and publishing an estimate is how it becomes a quoted
+// price.
 
 // Ported verbatim from standout wrapped/aggregate.ts (classifyProvider).
 export function classifyProvider(model) {
@@ -711,7 +706,7 @@ export function computeProfile(rawSignals, opts = {}) {
     tCw += s.tok?.cw ?? 0;
   }
   const tokTotal = tIn + tOut + tCr + tCw;
-  // Retail cost keyed on the dominant model of each monthly bucket.
+  // Per-month volume, keyed to the dominant model of each bucket.
   const monthAgg = new Map(); // month -> {tok, models:Map}
   for (const s of sessions) {
     if (!isFinite(s.start_ts)) continue;
@@ -728,21 +723,15 @@ export function computeProfile(rawSignals, opts = {}) {
     m.sessions += 1;
     if (s.model) m.models.set(s.model, (m.models.get(s.model) ?? 0) + 1);
   }
-  let retail = 0;
   const monthly = [];
   for (const [month, m] of [...monthAgg.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     const dom = [...m.models.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
-    const r = rateForModel(dom);
-    const cost =
-      (m.in * r.input + m.out * r.output + m.cr * r.cacheRead + m.cw * r.cacheWrite) / 1e6;
-    retail += cost;
     monthly.push({
       month,
       sessions: m.sessions,
       tokens: m.in + m.out + m.cr + m.cw,
       new_content: m.in + m.cw + m.out,
       dominant_model: dom,
-      retail_cost_usd: +cost.toFixed(2),
     });
   }
   const pctOf = (n) => (tokTotal > 0 ? +((n / tokTotal) * 100).toFixed(1) : null);
@@ -761,8 +750,6 @@ export function computeProfile(rawSignals, opts = {}) {
     new_content: tIn + tCw + tOut,
     work_tokens: tIn + tOut,
     cache_tokens: tCr + tCw,
-    retail_cost_usd: tokTotal > 0 ? +retail.toFixed(2) : null,
-    cost_note: "retail estimate at list per-Mtok rates, dominant model per month",
     codex_note: perSource.codex
       ? "codex reports no cache-write counter; its share shows 0 by source limitation"
       : null,
