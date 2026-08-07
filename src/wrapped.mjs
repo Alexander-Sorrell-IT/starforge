@@ -31,6 +31,13 @@ const DIMC = "\x1b[38;5;38m";
 const W = 60; // inner width of every card
 
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
+
+// NO_COLOR is a standard, and every OTHER renderer here honours it — the star,
+// the emblem headings, the receipt. The cards did not: they build their colour
+// into the strings themselves, so `--no-pace > wrapped.txt` produced a file of
+// escape codes and every capture had to be piped through sed. Read at call time
+// rather than at import, so a test can set it per case.
+const plain = () => Boolean(process.env.NO_COLOR);
 const vis = (s) => strip(s).length;
 
 function pad(s, width) {
@@ -41,7 +48,14 @@ function pad(s, width) {
 /** A rounded box, sized to W, that tolerates ANSI inside its lines. */
 export function box(lines, { color = CY } = {}) {
   const out = [];
-  out.push(`${color}╭${"─".repeat(W + 2)}╮${R}`);
+  // Strip INSIDE the box, not at the call sites: cards are built by a dozen
+  // functions and printed from three places, and a rule enforced at the edge is
+  // a rule that holds for whatever gets added next.
+  if (plain()) {
+    color = "";
+    lines = lines.map((l) => strip(String(l)));
+  }
+  out.push(plain() ? `╭${"─".repeat(W + 2)}╮` : `${color}╭${"─".repeat(W + 2)}╮${R}`);
   for (const line of lines) {
     // A line longer than the box would break the frame, so clip on VISIBLE
     // width while carrying the escape sequences through. The first version bailed
@@ -63,11 +77,13 @@ export function box(lines, { color = CY } = {}) {
         count++;
         i++;
       }
-      l = acc + R;
+      // No reset when there was no colour: this runs AFTER the plain() strip
+      // above, so appending R here put an escape back into every clipped line.
+      l = acc + (plain() ? "" : R);
     }
-    out.push(`${color}│${R} ${pad(l, W)} ${color}│${R}`);
+    out.push(plain() ? `│ ${pad(l, W)} │` : `${color}│${R} ${pad(l, W)} ${color}│${R}`);
   }
-  out.push(`${color}╰${"─".repeat(W + 2)}╯${R}`);
+  out.push(plain() ? `╰${"─".repeat(W + 2)}╯` : `${color}╰${"─".repeat(W + 2)}╯${R}`);
   return out.join("\n");
 }
 
@@ -549,7 +565,7 @@ export function cardShare(rawLevels, agg, url) {
 export function shareQrLines(rawLevels, agg, url) {
   const payload = sharePayload(lv5(rawLevels), agg, url ?? "https://github.com/Alexander-Sorrell-IT/starforge");
   try {
-    return qrToTerminal(payload, { color: true }).split("\n").map((r) => "  " + r);
+    return qrToTerminal(payload, { color: !plain() }).split("\n").map((r) => "  " + r);
   } catch (e) {
     return [`  ${D}(could not encode the QR: ${String(e?.message ?? e).slice(0, 60)})${R}`];
   }

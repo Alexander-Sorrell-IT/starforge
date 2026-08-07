@@ -112,7 +112,16 @@ import { armTripwire } from "./tripwire.mjs";
 import { verifyCli } from "./verify.mjs";
 import { detectConfinement, buildProofCommand, sandboxProfile, runConfined, runProbe } from "./confine.mjs";
 
-const BOLD = "\x1b[1m", DIM = "\x1b[2m", CYAN = "\x1b[36m", RESET = "\x1b[0m";
+// NO_COLOR emptied at the source. These four constants are interpolated into
+// roughly a hundred template literals in this file — the banner, the summary,
+// the fleet rollup, the menu, the pager counter — and gating each one at its
+// call site is a hundred chances to miss one. Emptying them here means a
+// redirect produces text, whatever gets added later.
+const PLAIN = Boolean(process.env.NO_COLOR);
+const BOLD = PLAIN ? "" : "\x1b[1m",
+  DIM = PLAIN ? "" : "\x1b[2m",
+  CYAN = PLAIN ? "" : "\x1b[36m",
+  RESET = PLAIN ? "" : "\x1b[0m";
 
 const args = process.argv.slice(2);
 const flag = (f) => args.includes(f);
@@ -131,12 +140,8 @@ const starOnly = flag("--star") || flag("--dual");
 // NO_COLOR is honoured by every other renderer here, and these headings go
 // straight into redirected captures — `--dual > stars.txt` must not come out
 // full of escape codes.
-const starHeading = (what, detail) => {
-  const plain = Boolean(process.env.NO_COLOR);
-  const head = plain ? `★ ${what}` : `${BOLD}${CYAN}★ ${what}${RESET}`;
-  const tail = !detail ? "" : plain ? ` — ${detail}` : ` ${DIM}— ${detail}${RESET}`;
-  console.log(`\n${head}${tail}`);
-};
+const starHeading = (what, detail) =>
+  console.log(`\n${BOLD}${CYAN}★ ${what}${RESET}${detail ? ` ${DIM}— ${detail}${RESET}` : ""}`);
 // "…/stars/2026-08.svg" -> "2026-08"
 const monthOf = (p) => String(p).split("/").pop().replace(/\.svg$/, "");
 

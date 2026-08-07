@@ -1,6 +1,6 @@
 {
   "name": "starforge-cli",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Privacy-first developer wrapped: scans your local AI-coding session logs (Claude Code, Codex, Cowork), redacts secrets and masks paths BEFORE anything is written, keeps rolling monthly snapshots for longitudinal velocity, and renders your skill star live in the terminal. No network code on the scan path — and PROVE-IT.md shows you how to have the kernel confirm it rather than taking the claim on faith.",
   "type": "module",
   "bin": {
