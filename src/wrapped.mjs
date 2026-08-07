@@ -16,6 +16,7 @@
 
 import { AXES, ARMS, MAX_LEVEL, starPoints, clampLevel } from "./starsvg.mjs";
 import { rating, archetype, signature } from "./archetype.mjs";
+import { emblem } from "./emblem.mjs";
 import { qrToTerminal } from "./qr.mjs";
 
 const R = "\x1b[0m";
@@ -571,6 +572,7 @@ export function buildCards(input) {
     [cardStack(agg, profile), "\x1b[38;5;120m"],
     [cardProjects(agg), "\x1b[38;5;120m"],
     [cardProof(confinement), "\x1b[38;5;220m"],
+    [cardRank(levels, agg, timeline), "\x1b[38;5;213m"],
     [cardShare(levels, agg, url ?? "https://github.com/Alexander-Sorrell-IT/starforge"), CY],
   ];
   return specs.filter(([lines]) => Array.isArray(lines) && lines.length).map(([lines, color]) => ({ lines, color }));
@@ -605,6 +607,7 @@ export function buildCardsSafe(input) {
       ["YOUR TOOLS & MODELS", () => cardStack(input.agg, input.profile)],
       ["YOUR TOP PROJECTS", () => cardProjects(input.agg)],
       ["WHAT LEFT THIS MACHINE", () => cardProof(input.confinement)],
+      ["YOUR RANK", () => cardRank(input.levels, input.agg, input.timeline)],
       ["SHARE IT", () => cardShare(input.levels, input.agg, input.url ?? "https://github.com/Alexander-Sorrell-IT/starforge")],
     ];
     for (const [name, fn] of each) {
@@ -627,4 +630,50 @@ export function buildCardsSafe(input) {
 /** Render every card as one string (no pacing) — used when stdout is not a TTY. */
 export function renderAll(cards) {
   return cards.map(({ lines, color }) => box(lines, { color })).join("\n");
+}
+
+/**
+ * The rank card: emblem, tier, score, archetype.
+ *
+ * This is the one card modelled directly on the hosted wrapped's finale — big
+ * art, a tier under it, then who you are. The deliberate omission is the line
+ * that card puts between them, "top 1% of 3,756 users". That number needs a
+ * server holding 3,756 other people's logs. This tool has one person's data and
+ * says so, so the slot holds YOUR OWN history instead, which is checkable from
+ * the snapshots on disk.
+ */
+export function cardRank(rawLevels, agg, timeline) {
+  const levels = lv5(rawLevels);
+  const total = levels.reduce((a, b) => a + b, 0);
+  const tier = rating(total);
+  const arc = archetype(levels);
+  const centre = (s) => " ".repeat(Math.max(0, Math.floor((W - vis(s)) / 2))) + s;
+
+  const lines = [head("YOUR RANK"), ""];
+  for (const row of emblem(tier)) lines.push(`${CY}${centre(row)}${R}`);
+  lines.push("");
+  lines.push(centre(`${WH}${B}──  ${tier}  ──${R}`));
+  lines.push(centre(`${WH}${total.toFixed(1)} / ${ARMS * MAX_LEVEL}${R}`));
+
+  // Where this sits in YOUR history — the honest occupant of the percentile slot.
+  const months = arr(timeline);
+  const totals = months
+    .map((m) => (Array.isArray(m?.levels) ? m.levels.reduce((a, b) => a + num(b), 0) : null))
+    .filter((n) => Number.isFinite(n));
+  const own = ownRank(total, totals);
+  lines.push(centre(own ?? `${D}your first months — not enough history to place it yet${R}`));
+
+  lines.push("");
+  lines.push(centre(`${WH}${arc.name}${R}`));
+  for (const l of wrapWords(arc.blurb, W - 6)) lines.push(centre(`${D}${l}${R}`));
+  lines.push("");
+
+  // The two arms that chose the archetype, so the name is auditable rather than
+  // decorative — you can see WHY it picked this one.
+  for (const i of arr(arc.top))
+    lines.push(`  ${pad(AXES[i], 17)} ${bar(levels[i], MAX_LEVEL, 10)} ${WH}${levels[i]}${R}`);
+  lines.push("");
+  lines.push(`  ${D}${signature(agg)}${R}`);
+  lines.push(`  ${D}tier is your average arm out of ${MAX_LEVEL} — not a percentile${R}`);
+  return lines;
 }

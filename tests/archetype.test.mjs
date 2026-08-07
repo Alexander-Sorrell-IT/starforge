@@ -51,10 +51,13 @@ test("the tier never decreases as the score increases", () => {
 test("no shipped file still carries its own copy of the thresholds", () => {
   // The root cause was duplication: three copies, one constant change, zero
   // updated. This asserts the copies are gone rather than that they agree.
+  // Match the LADDER (a numeric threshold deciding a grade), not the mere
+  // mention of a tier name — emblem.mjs legitimately keys its art by tier, and
+  // a check that flags that would be flagging the wrong thing.
   for (const f of readdirSync(SRC).filter((n) => n.endsWith(".mjs") && n !== "archetype.mjs"))
     assert.doesNotMatch(
       readFileSync(join(SRC, f), "utf8"),
-      /"S\+"\s*:/,
+      /[><]=?\s*\d+(\.\d+)?\s*\?\s*"(S\+|S|A|B|C)"/,
       `${f} inlines the rating ladder — import it from archetype.mjs instead`
     );
 });
