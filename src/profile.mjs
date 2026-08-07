@@ -25,7 +25,7 @@ import { redactSecrets, maskPath, projectLabel } from "./redact.mjs";
 // scan.mjs next to `"model_sessions": {"/home/<person>/private/models": 6}`
 // from here, and the raw path went on to the HTML page. A second copy of a
 // redaction rule is a rule that will be fixed once.
-import { sanitizeModel } from "./scan.mjs";
+import { sanitizeModel, localDayKey } from "./scan.mjs";
 
 const MAX_ACTIVE_GAP_MIN = 15;
 const MIN_PROMPT_CHARS = 16; // Standout's low-signal floor
@@ -137,7 +137,18 @@ function temporal(col, src, ts) {
   col.hourCounts[d.getHours()] += 1;
   const day = d.getDay();
   if (day === 0 || day === 6) col.weekendEvents += 1;
-  col.activeDays.add(d.toISOString().slice(0, 10));
+  // LOCAL, matching the hour histogram two lines up. This file read hours on
+  // the local clock and days on the UTC one, so an evening session in a
+  // US timezone crossed midnight in UTC and was filed as TWO active days: a
+  // Chicago user working 10:00 and 20:00 on one day got active_days 2 and a
+  // 2-day streak here, while scan.mjs — reading the same events — said 1 and 1.
+  // One generated report, two answers, and the inflated one fed
+  // proficiency.consistency, the axis that is meant to be hardest to inflate.
+  //
+  // scan.mjs fixed this months ago and the README says so in the past tense.
+  // The fix never crossed into this file because this file is a second copy of
+  // that logic — so it imports the helper now instead of owning a third.
+  col.activeDays.add(localDayKey(d));
   if (ts < src.firstTs) src.firstTs = ts;
   if (ts > src.lastTs) src.lastTs = ts;
 }
@@ -376,11 +387,11 @@ export function computeStreaks(activeDays, todayIso = null) {
   const days = [...new Set(activeDays ?? [])].sort();
   if (days.length === 0) return { current: 0, longest: 0 };
   const have = new Set(days);
-  const today = todayIso ?? new Date().toISOString().slice(0, 10);
+  const today = todayIso ?? localDayKey(new Date());
   const dayMs = 864e5;
   let cur = 0;
   let probe = Date.parse(today);
-  while (have.has(new Date(probe).toISOString().slice(0, 10))) {
+  while (have.has(localDayKey(new Date(probe)))) {
     cur += 1;
     probe -= dayMs;
   }
@@ -528,7 +539,7 @@ const lg = (v, mid) => 5 * (Math.log1p(Math.max(v, 0)) / Math.log1p(mid * 10));
 export function computeProfile(rawSignals, opts = {}) {
   const sig = rawSignals ?? {};
   const now = opts.now ?? Date.now();
-  const todayIso = new Date(now).toISOString().slice(0, 10);
+  const todayIso = localDayKey(new Date(now));
   const perSource = sig.per_source ?? {};
   const sessions = Array.isArray(sig.sessions) ? sig.sessions : [];
   const sources = Object.keys(perSource);
@@ -650,7 +661,7 @@ export function computeProfile(rawSignals, opts = {}) {
   const dayHours = new Map();
   for (const s of sessions) {
     if (!isFinite(s.start_ts)) continue;
-    const day = new Date(s.start_ts).toISOString().slice(0, 10);
+    const day = localDayKey(new Date(s.start_ts));
     const tok = (s.tok?.in ?? 0) + (s.tok?.out ?? 0) + (s.tok?.cr ?? 0) + (s.tok?.cw ?? 0);
     dayTokens.set(day, (dayTokens.get(day) ?? 0) + tok);
     dayHours.set(day, (dayHours.get(day) ?? 0) + s.active_ms / 3.6e6);
@@ -750,7 +761,7 @@ export function computeProfile(rawSignals, opts = {}) {
           id: s.id ?? null,
           project: s.project ?? null,
           source: s.source ?? null,
-          date: isFinite(s.start_ts) ? new Date(s.start_ts).toISOString().slice(0, 10) : null,
+          date: isFinite(s.start_ts) ? localDayKey(new Date(s.start_ts)) : null,
         }
       : null;
   const mostTokens = sessions.reduce((best, s) => {
@@ -765,8 +776,8 @@ export function computeProfile(rawSignals, opts = {}) {
   for (const [source, b] of Object.entries(perSource)) {
     firstLast[source] = {
       label: SOURCE_LABELS[source] ?? source,
-      first_seen: b.first_ts != null ? new Date(b.first_ts).toISOString().slice(0, 10) : null,
-      last_seen: b.last_ts != null ? new Date(b.last_ts).toISOString().slice(0, 10) : null,
+      first_seen: b.first_ts != null ? localDayKey(new Date(b.first_ts)) : null,
+      last_seen: b.last_ts != null ? localDayKey(new Date(b.last_ts)) : null,
       files: b.files ?? null,
     };
   }
