@@ -155,6 +155,25 @@ block still matches the renderer, so the README cannot drift from the binary:
 Redrawing in place needs a TTY. Piped or redirected, the frame is printed once
 at the end instead of animating — same numbers, no cursor tricks.
 
+**`--wrapped` — the paced story.** Twelve boxed cards, one keypress at a time,
+in the format everyone already recognises from a hosted wrapped: the shape of
+your work, hours, history, tokens (with a cost estimate), the month-by-month
+silhouette, when you code, how you drive the machine, how many agents you juggle,
+tools and models, top projects, and a share card with a QR you can scan off the
+screen. Piped or `--no-pace`, the whole story prints at once.
+
+Two differences from a hosted wrapped, and they are the point. **There is no
+"top 17% of users" anywhere in it** — this tool has never seen anyone else's
+data, so it benchmarks you against *your own months*, which you can check
+against the snapshots on your disk. And the last card accounts for what left the
+machine: nothing, plus the command that makes the kernel prove it rather than
+asking you to believe it.
+
+The cost estimate is arithmetic on **assumed** rates, printed on the card next
+to the number and overridable with `--rates=in,out,cached`. Nothing is ever
+fetched — this tool makes no network calls, so it cannot know today's prices.
+Sanity-check the figure before quoting it anywhere that matters.
+
 **The silhouette is the data.** Each arm's length is set by its own axis and by
 nothing else, and the valleys between arms sit at a fixed radius — so a maxed
 axis is a long spike, a weak one is a stub, and the outline is a fingerprint you

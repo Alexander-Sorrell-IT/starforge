@@ -4,8 +4,8 @@
 // keeps rolling monthly snapshots, and renders your skill star live.
 //
 // The npm package is `starforge-cli` (the bare name `starforge` on npm is an
-// unrelated 2017 package — `npx starforge` is NOT this tool). Not published
-// yet: run these as `node src/cli.mjs …` from a checkout until it is.
+// unrelated 2017 package — `npx starforge` is NOT this tool). Published: run
+// `npx starforge-cli …`, or `node src/cli.mjs …` from a checkout you have read.
 //
 // Usage:
 //   starforge-cli                 scan with interactive exclusion prompts
@@ -13,6 +13,11 @@
 //   starforge-cli --roots=a,b     extra home roots (other accounts/machines)
 //   starforge-cli --json          write baseline + expanded JSON reports
 //   starforge-cli --card          write the Porter-Grade SVG card
+//   starforge-cli --wrapped       the paced story: your wrapped, one card at a
+//                                 time, computed entirely on this machine
+//   starforge-cli --no-pace       print every wrapped card at once (no [enter])
+//   starforge-cli --rates=I,O,C   $/Mtok assumed for the cost estimate
+//                                 (input,output,cached). No rate is ever fetched.
 //   starforge-cli --page          write the full HTML stats page (implies profile)
 //   starforge-cli --profile       compute the judgment/craft profile without
 //                                 writing the HTML page
@@ -71,6 +76,7 @@ import {
 } from "./snapshots.mjs";
 import { maskPath, maskText, maskIdentities, maskProjects } from "./redact.mjs";
 import { renderCard } from "./card.mjs";
+import { buildCards, renderAll, box, DEFAULT_RATES } from "./wrapped.mjs";
 import { scanAllProviders } from "./scanners.mjs";
 import { discoverAccounts, floorTotals } from "./accounts.mjs";
 import { readFleet, writeMachineFolder } from "./fleet.mjs";
@@ -131,6 +137,9 @@ const FLAG_SPEC = Object.freeze({
   "--yes": "bool",
   "--json": "bool",
   "--card": "bool",
+  "--wrapped": "bool",
+  "--no-pace": "bool",
+  "--rates": "value",
   "--page": "bool",
   "--profile": "bool",
   "--accounts": "bool",
@@ -696,6 +705,49 @@ async function main() {
     console.log(
       `page: ${maskPath(pagePath)} (open in any browser — rendered on this machine from your local logs, with no remote references in it; no process can prove its own no-egress claim, see PROVE-IT.md §1)`
     );
+  }
+
+  // ---- the wrapped ---------------------------------------------------------
+  // Paced like the hosted wrapped everyone recognises, but every number in it
+  // came from this process. Where a hosted tool prints "top 17% of users", this
+  // prints where you sit in YOUR OWN history — the only comparison a machine
+  // that has never seen anyone else's data can honestly make.
+  if (flag("--wrapped")) {
+    let rates = DEFAULT_RATES;
+    const raw = opt("rates");
+    if (raw) {
+      const parts = raw.split(",").map((n) => Number(n.trim()));
+      if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n) || n < 0))
+        flagError(`--rates wants three non-negative numbers: --rates=input,output,cached (got "${raw}")`);
+      rates = { in: parts[0], out: parts[1], cache: parts[2], note: "rates you passed with --rates" };
+    }
+    const cards = buildCards({
+      levels,
+      agg,
+      profile,
+      timeline,
+      providers: providers?.providers ?? null,
+      rates,
+      confinement: detectConfinement()?.mode ?? null,
+      url: "https://github.com/Alexander-Sorrell-IT/starforge",
+    });
+    // Pacing needs a TTY and stdin. Piped or --no-pace, print the whole story at
+    // once so `| less` and CI both get the full thing instead of hanging on a
+    // keypress that will never come.
+    const paced = process.stdout.isTTY && process.stdin.isTTY && !flag("--no-pace");
+    console.log("");
+    if (!paced) {
+      console.log(renderAll(cards));
+    } else {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      for (let i = 0; i < cards.length; i++) {
+        console.log(box(cards[i].lines, { color: cards[i].color }));
+        const last = i === cards.length - 1;
+        console.log(`  ${DIM}[${i + 1}/${cards.length}]${RESET}${last ? "" : `                                        ${DIM}[press ↵]${RESET}`}`);
+        if (!last) await rl.question("");
+      }
+      rl.close();
+    }
   }
 
   const auditPath = finishAudit(audit);
