@@ -67,6 +67,50 @@ export function byCountThenKey(a, b) {
   return b[1] - a[1] || String(a[0]).localeCompare(String(b[0]));
 }
 
+/**
+ * Credit one assistant message's usage, correcting for repeated writes.
+ *
+ * Claude Code writes the SAME assistant message more than once — up to 19 times
+ * in this corpus — as it streams. Every copy carries the same message.id and the
+ * same input/cache figures, so counting each row multiplied those by the number
+ * of writes: 42.4B tokens claimed where 18.4B were spent.
+ *
+ * Deduplicating was right. Keeping the FIRST row was not. The early writes hold
+ * a PARTIAL output_tokens — literally 8 while the real answer was 434 — and the
+ * final value only lands on the last write. First-wins therefore threw away
+ * 35.6% of all output tokens (31,005,673 of 87,199,429) on the merged corpus,
+ * silently, in the direction that flatters nobody.
+ *
+ * So: keep the running maximum per field, and credit only the increase. Max
+ * rather than last, because a later row must never be able to REDUCE a total —
+ * a truncated final write would otherwise erase work that really happened.
+ *
+ * Returns the deltas to add. `seen` is a Map the caller owns.
+ */
+export function creditUsage(seen, id, usage) {
+  const cur = {
+    in: usage?.input_tokens ?? 0,
+    out: usage?.output_tokens ?? 0,
+    cr: usage?.cache_read_input_tokens ?? 0,
+    cw: usage?.cache_creation_input_tokens ?? 0,
+  };
+  // No id means nothing to correlate it with, so it is its own message.
+  if (!id) return cur;
+  const prev = seen.get(id);
+  if (!prev) {
+    seen.set(id, { ...cur });
+    return cur;
+  }
+  const delta = { in: 0, out: 0, cr: 0, cw: 0 };
+  for (const k of ["in", "out", "cr", "cw"]) {
+    if (cur[k] > prev[k]) {
+      delta[k] = cur[k] - prev[k];
+      prev[k] = cur[k];
+    }
+  }
+  return delta;
+}
+
 export function emptyStats() {
   return {
     sessions: new Map(), // sessionId -> {firstTs,lastTs,minutes:Set,project,models:Map,tok:{in,out,cr,cw}}
@@ -81,7 +125,7 @@ export function emptyStats() {
     weekendEvents: 0,
     totalEvents: 0,
     userTurns: 0,
-    seenMessageIds: new Set(),
+    seenMessageIds: new Map(),
   };
 }
 
@@ -269,12 +313,12 @@ export async function parseClaudeFile(filePath, stats, opts = {}) {
       if (model) s.models.set(model, (s.models.get(model) ?? 0) + 1);
       const u = msg.usage;
       const id = typeof msg.id === "string" ? msg.id : null;
-      if (u && !(id && stats.seenMessageIds.has(id))) {
-        if (id) stats.seenMessageIds.add(id);
-        s.tok.in += u.input_tokens ?? 0;
-        s.tok.out += u.output_tokens ?? 0;
-        s.tok.cr += u.cache_read_input_tokens ?? 0;
-        s.tok.cw += u.cache_creation_input_tokens ?? 0;
+      if (u) {
+        const d = creditUsage(stats.seenMessageIds, id, u);
+        s.tok.in += d.in;
+        s.tok.out += d.out;
+        s.tok.cr += d.cr;
+        s.tok.cw += d.cw;
       }
       if (Array.isArray(msg.content)) {
         for (const item of msg.content) {

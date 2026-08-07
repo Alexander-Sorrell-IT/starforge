@@ -25,7 +25,7 @@ import { redactSecrets, maskPath, projectLabel } from "./redact.mjs";
 // scan.mjs next to `"model_sessions": {"/home/<person>/private/models": 6}`
 // from here, and the raw path went on to the HTML page. A second copy of a
 // redaction rule is a rule that will be fixed once.
-import { sanitizeModel, localDayKey } from "./scan.mjs";
+import { sanitizeModel, localDayKey, creditUsage } from "./scan.mjs";
 
 const MAX_ACTIVE_GAP_MIN = 15;
 const MIN_PROMPT_CHARS = 16; // Standout's low-signal floor
@@ -93,7 +93,7 @@ function emptyCollector() {
   return {
     perSource: new Map(), // source -> mutable counters
     sessions: new Map(),  // sessionId -> {source, firstTs, lastTs, minutes:Set, models:Map, tok, turns, project}
-    seenMessageIds: new Set(),
+    seenMessageIds: new Map(),
     activeDays: new Set(),
     hourCounts: new Array(24).fill(0),
     weekendEvents: 0,
@@ -225,12 +225,14 @@ async function collectClaudeFile(filePath, source, col, opts) {
         s.models.set(model, (s.models.get(model) ?? 0) + 1);
       const u = msg.usage;
       const id = typeof msg.id === "string" ? msg.id : null;
-      if (u && !(id && col.seenMessageIds.has(id))) {
-        if (id) col.seenMessageIds.add(id);
-        s.tok.in += u.input_tokens ?? 0;
-        s.tok.out += u.output_tokens ?? 0;
-        s.tok.cr += u.cache_read_input_tokens ?? 0;
-        s.tok.cw += u.cache_creation_input_tokens ?? 0;
+      if (u) {
+        // Same correction as scan.mjs, via the SAME function — these two halves
+        // read the same events and have diverged before.
+        const d = creditUsage(col.seenMessageIds, id, u);
+        s.tok.in += d.in;
+        s.tok.out += d.out;
+        s.tok.cr += d.cr;
+        s.tok.cw += d.cw;
       }
       if (Array.isArray(msg.content)) {
         for (const item of msg.content) {
