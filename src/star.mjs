@@ -284,6 +284,28 @@ export function renderCompare(monthly, lifetime, opts = {}) {
   return out.join("\n");
 }
 
+// The five axes as data. Weights are exactly the ones the star has always used;
+// `mid` is the value at which a term reads about 2.5 before weighting.
+//
+// ENGINEERING's language term is written 0.8 rather than the old `0.4 * 2`,
+// which is the same number said once.
+const AXIS_SPEC = [
+  { terms: [{ input: "tokensM", label: "tokens in+out", unit: "M", mid: 5, weight: 1 }] },
+  { terms: [
+      { input: "projects", label: "projects", unit: "", mid: 4, weight: 0.6 },
+      { input: "langs", label: "languages", unit: "", mid: 2, weight: 0.8 },
+  ] },
+  { terms: [{ input: "toolCalls", label: "tool calls", unit: "", mid: 2000, weight: 1 }] },
+  { terms: [
+      { input: "models", label: "models used", unit: "", mid: 1, weight: 0.7 },
+      { input: "nightHours", label: "night hours", unit: "h", mid: 60, weight: 0.5 },
+  ] },
+  { terms: [
+      { input: "streak", label: "longest streak", unit: "d", mid: 3, weight: 0.5 },
+      { input: "activeDays", label: "active days", unit: "d", mid: 8, weight: 0.5 },
+  ] },
+];
+
 export function computeLevels(agg) {
   // The 5 in lg() is the SCALE, not the ceiling: an axis reads 5.0 at v =
   // 10*mid and ~2.5 at mid, and that meaning is fixed so a level means the
@@ -322,14 +344,68 @@ export function computeLevels(agg) {
   // than intended, and sensitive to how verbose a tool's logging happens to be.
   const nightHours =
     agg.night_hours ?? buckets.slice(0, 6).reduce((a, b) => a + b, 0);
-  return [
-    clamp(lg(tokens / 1e6, 5)),                                  // FIRST PRINCIPLES
-    clamp(lg(projects, 4) * 0.6 + lg(langs, 2) * 0.4 * 2),       // ENGINEERING
-    clamp(lg(toolCalls, 2000)),                                  // CODING
-    clamp(lg(models, 1) * 0.7 + lg(nightHours, 60) * 0.5),       // OUTSIDE THE BOX
-    clamp(
-      lg(agg.longest_streak_days ?? 0, 3) * 0.5 +
-        lg(agg.active_days ?? 0, 8) * 0.5
-    ),                                                           // TENACITY
-  ].map((v) => +v.toFixed(1));
+
+  // The axes are declared ONCE, as data, and both the score and the explanation
+  // are computed from this same list. A card that re-implemented the formula to
+  // show its working would be a second copy of the scoring — and the copies in
+  // this codebase have never stayed in step (the rating ladder missed a rescale
+  // in three files, the /25 denominator in five). Here a card that disagreed
+  // with the star would be worse than no card: it would look like an audit.
+  const inputs = {
+    tokensM: tokens / 1e6,
+    projects,
+    langs,
+    toolCalls,
+    models,
+    nightHours,
+    streak: agg.longest_streak_days ?? 0,
+    activeDays: agg.active_days ?? 0,
+  };
+  const levels = AXIS_SPEC.map((axis) =>
+    +clamp(
+      axis.terms.reduce((sum, t) => sum + lg(inputs[t.input], t.mid) * t.weight, 0)
+    ).toFixed(1)
+  );
+  return levels;
+}
+
+/**
+ * What each arm was measured FROM — same spec, same numbers as computeLevels.
+ *
+ * Returns one entry per axis: its level, and every term with the value that was
+ * actually read and what that term contributed. This is the card's data source,
+ * so "why is ENGINEERING short" has an answer that cannot drift from the score.
+ */
+export function explainLevels(agg) {
+  const a = agg && typeof agg === "object" ? agg : {};
+  const levels = computeLevels(a);
+  const lg = (v, mid) => 5 * (Math.log1p(Math.max(0, v)) / Math.log1p(mid * 10));
+  const tokens =
+    (a.total_input_tokens ?? a.input_tokens ?? 0) + (a.total_output_tokens ?? a.output_tokens ?? 0);
+  const inputs = {
+    tokensM: tokens / 1e6,
+    projects: a.projects_count ?? (a.projects ?? []).length,
+    langs: Object.keys(a.languages ?? {}).length,
+    toolCalls:
+      a.tool_calls ?? Object.values(a.tool_call_counts ?? {}).reduce((x, y) => x + y, 0),
+    models: Object.keys(a.models ?? {}).length,
+    nightHours: a.night_hours ?? (a.hour_buckets ?? []).slice(0, 6).reduce((x, y) => x + y, 0),
+    streak: a.longest_streak_days ?? 0,
+    activeDays: a.active_days ?? 0,
+  };
+  return AXIS_SPEC.map((axis, i) => ({
+    axis: AXES[i],
+    level: levels[i],
+    // A saturated arm is worth flagging: it means the axis stopped measuring,
+    // and more work will not lengthen it.
+    capped: levels[i] >= MAX_LEVEL,
+    terms: axis.terms.map((t) => ({
+      label: t.label,
+      value: +(Number(inputs[t.input]) || 0).toFixed(1),
+      unit: t.unit ?? "",
+      contribution: +(lg(inputs[t.input], t.mid) * t.weight).toFixed(2),
+      // "half marks at" — the value where this term reads ~2.5 before weighting.
+      mid: t.mid,
+    })),
+  }));
 }

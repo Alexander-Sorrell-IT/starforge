@@ -17,6 +17,7 @@
 import { AXES, ARMS, MAX_LEVEL, starPoints, clampLevel } from "./starsvg.mjs";
 import { rating, archetype, signature } from "./archetype.mjs";
 import { emblem } from "./emblem.mjs";
+import { explainLevels } from "./star.mjs";
 import { qrToTerminal } from "./qr.mjs";
 
 const R = "\x1b[0m";
@@ -562,6 +563,7 @@ export function buildCards(input) {
   const { levels, agg, profile, timeline, providers, rates, confinement, url } = input;
   const specs = [
     [cardStar(levels, agg), CY],
+    [cardScoring(agg), "\x1b[38;5;120m"],
     [cardManaged(agg, timeline), "\x1b[38;5;220m"],
     [cardHistory(timeline), CY],
     [cardTokens(agg, providers, rates ?? DEFAULT_RATES), "\x1b[38;5;213m"],
@@ -597,6 +599,7 @@ export function buildCardsSafe(input) {
     const out = [];
     const each = [
       ["THE SHAPE OF YOUR WORK", () => cardStar(input.levels, input.agg)],
+      ["HOW THE STAR WAS SCORED", () => cardScoring(input.agg)],
       ["YOU MANAGED", () => cardManaged(input.agg, input.timeline)],
       ["YOUR CODING HISTORY", () => cardHistory(input.timeline)],
       ["YOU BURNED THIS MANY TOKENS", () => cardTokens(input.agg, input.providers, input.rates ?? DEFAULT_RATES)],
@@ -675,5 +678,43 @@ export function cardRank(rawLevels, agg, timeline) {
   lines.push("");
   lines.push(`  ${D}${signature(agg)}${R}`);
   lines.push(`  ${D}tier is your average arm out of ${MAX_LEVEL} — not a percentile${R}`);
+  return lines;
+}
+
+/**
+ * How each arm got its length — the categories, and what was measured for each.
+ *
+ * Read from explainLevels(), which is computed from the SAME axis spec as the
+ * score. A card that re-derived the formula to "show its working" would be a
+ * second copy of the scoring, and every copy in this codebase has eventually
+ * disagreed with its original. Here disagreement would be worse than silence:
+ * it would look like an audit.
+ */
+export function cardScoring(agg) {
+  let rows;
+  try {
+    rows = explainLevels(obj(agg));
+  } catch {
+    return null;
+  }
+  const lines = [head("HOW THE STAR WAS SCORED"), ""];
+  for (const r of rows) {
+    const cap = r.capped ? `  ${D}maxed${R}` : "";
+    lines.push(`  ${WH}${pad(r.axis, 18)}${R}${bar(r.level, MAX_LEVEL, 8)} ${WH}${r.level}${R}${cap}`);
+    for (const t of r.terms) {
+      const val = `${human(t.value)}${t.unit}`;
+      lines.push(`    ${D}${pad(t.label, 15)} ${pad(val, 8)} +${t.contribution.toFixed(2)}${R}`);
+    }
+  }
+  lines.push("");
+  // wrapWords, not hand-counted lines: the first version ran one column over
+  // and box() clipped "doing" to "doin".
+  for (const l of wrapWords(
+    "each arm answers to its own inputs and nothing else — doing more of one " +
+      `thing can never shorten a different arm. "maxed" means the axis stopped ` +
+      `measuring at ${MAX_LEVEL}.`,
+    W - 4
+  ))
+    lines.push(`  ${D}${l}${R}`);
   return lines;
 }
