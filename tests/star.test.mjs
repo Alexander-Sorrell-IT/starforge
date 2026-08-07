@@ -349,3 +349,56 @@ test("a model id from a log cannot carry a path, a secret or prose into a snapsh
   assert.equal(sanitizeModel(hostile[0]), sanitizeModel(hostile[0]));
   assert.notEqual(sanitizeModel(hostile[0]), sanitizeModel(hostile[1]));
 });
+
+test("axis labels stay inside the canvas instead of rendering clipped", () => {
+  // Caught by looking at a rendered PNG, not by any assertion: at the old radius
+  // and font size, "OUTSIDE THE BOX" (the longest axis name, end-anchored and
+  // hanging leftward) ran off the left edge and the label came out cut in half.
+  // A star whose labels are sheared off is not a portfolio artifact.
+  for (const size of [320, 520, 900]) {
+    const svg = renderStarSvg([5, 5, 5, 5, 5], { size, labels: true });
+    const texts = [...svg.matchAll(
+      /<text x="([-\d.]+)" y="([-\d.]+)" text-anchor="(\w+)" class="(ax|lvn)" font-size="([\d.]+)">([^<]+)<\/text>/g
+    )];
+    assert.ok(texts.length >= ARMS * 2, `expected ${ARMS * 2} label texts, got ${texts.length}`);
+    for (const [, xs, , anchor, , fss, content] of texts) {
+      const x = Number(xs), fontSize = Number(fss);
+      // Monospace at the declared size, plus the 1.5px letter-spacing the
+      // stylesheet applies. Deliberately a slight over-estimate.
+      const width = content.length * (fontSize * 0.62 + 1.5);
+      const left = anchor === "end" ? x - width : anchor === "middle" ? x - width / 2 : x;
+      const right = left + width;
+      assert.ok(
+        left >= -1 && right <= size + 1,
+        `size ${size}: "${content}" spans ${left.toFixed(0)}..${right.toFixed(0)}, outside 0..${size}`
+      );
+    }
+  }
+});
+
+test("the animated star is the same shape, and still has no script in it", () => {
+  // Animation must be presentation only. The frozen final frame has to be the
+  // exact geometry the static render produces, or the picture people screenshot
+  // disagrees with the picture the tests check.
+  const levels = [5, 1.2, 4.7, 5, 4];
+  const size = 400;
+  const anim = renderStarSvg(levels, { size, labels: false, ghost: false, animate: true });
+
+  assert.match(anim, /<animate /, "expected SMIL animation");
+  assert.doesNotMatch(anim, /<script/i, "animation must never need script");
+  assert.doesNotMatch(anim, /https?:\/\/(?!www\.w3\.org)/, "no remote references");
+
+  // The LAST value in the hull's animation must equal the static geometry.
+  const vals = /<animate attributeName="points"[^>]*values="([^"]+)"/.exec(anim);
+  assert.ok(vals, "hull animation not found");
+  const finalFrame = vals[1].split(";").pop().trim();
+  const cx = size / 2, R = size * 0.42;
+  const expected = starPoints(levels, R, cx, cx)
+    .map(([x, y]) => `${(Math.round(x * 10) / 10).toFixed(1).replace(/\.0$/, "")},${(Math.round(y * 10) / 10).toFixed(1).replace(/\.0$/, "")}`)
+    .join(" ");
+  assert.equal(finalFrame, expected, "the animation settles on a different shape than the static render");
+
+  // And it must start collapsed, or there is no growth to watch.
+  const firstFrame = vals[1].split(";")[0].trim();
+  assert.notEqual(firstFrame, finalFrame, "the animation must start somewhere other than its end state");
+});

@@ -44,6 +44,30 @@ export function renderCard(rawLevels, agg, vel, opts = {}) {
   const hull = starPoints(levels, R, CX, CY).map(pt);
   const maxHull = starPoints(new Array(ARMS).fill(MAX_LEVEL), R, CX, CY).map(pt);
 
+  // The arms grow out of the level-0 pentagon and settle. Presentation only —
+  // the frozen end state is the static geometry, which a test asserts, because
+  // the frame people screenshot has to be the frame the tests check. SMIL, not
+  // script: this file is meant to be openable and auditable, and a card that
+  // needed JS to draw itself would undercut the whole pitch.
+  const animate = opts.animate !== false;
+  const DUR = 1.6;
+  const SPLINE = `calcMode="spline" keyTimes="0;0.72;1" keySplines="0.16 0.8 0.3 1;0.4 0 0.2 1"`;
+  const zero = new Array(ARMS).fill(0);
+  const over = levels.map((v) => Math.min(MAX_LEVEL, v + (MAX_LEVEL - v) * 0.06 + 0.12));
+  const frame = (lv) => starPoints(lv, R, CX, CY).map(pt).join(" ");
+  const hullAnim = animate
+    ? `<animate attributeName="points" dur="${DUR}s" fill="freeze" ${SPLINE}
+        values="${frame(zero)};${frame(over)};${frame(levels)}"/>`
+    : "";
+  const tipAnim = (i) => {
+    if (!animate) return "";
+    const only = (lv) => { const p = new Array(ARMS).fill(0); p[i] = lv[i]; return armTips(p, R, CX, CY)[i]; };
+    const [x0, y0] = only(zero), [x1, y1] = only(over), [x2, y2] = only(levels);
+    const b = (i * 0.06).toFixed(2);
+    return `<animate attributeName="cx" dur="${DUR}s" begin="${b}s" fill="freeze" ${SPLINE} values="${x0.toFixed(1)};${x1.toFixed(1)};${x2.toFixed(1)}"/>` +
+      `<animate attributeName="cy" dur="${DUR}s" begin="${b}s" fill="freeze" ${SPLINE} values="${y0.toFixed(1)};${y1.toFixed(1)};${y2.toFixed(1)}"/>`;
+  };
+
   // Reference rings at every whole level, so an arm's length is countable.
   let ringSvg = "";
   for (let k = 1; k <= MAX_LEVEL; k++)
@@ -138,11 +162,11 @@ export function renderCard(rawLevels, agg, vel, opts = {}) {
 <g stroke="#2fa8dd" stroke-width="1" opacity="0.55" filter="url(#glow)">${web}</g>
 
 <!-- hull -->
-<polygon points="${hull.join(" ")}" fill="url(#hull)" stroke="#8be6ff" stroke-width="2.5" stroke-linejoin="round" filter="url(#bigglow)"/>
+<polygon points="${animate ? frame(zero) : hull.join(" ")}" fill="url(#hull)" stroke="#8be6ff" stroke-width="2.5" stroke-linejoin="round" filter="url(#bigglow)">${hullAnim}</polygon>
 
 <!-- nodes + tips -->
 ${nodes}
-${tips.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="5.5" fill="#eaffff" filter="url(#glow)"/>`).join("")}
+${tips.map(([x, y], i) => `<circle cx="${animate ? CX : x}" cy="${animate ? CY : y}" r="5.5" fill="#eaffff" filter="url(#glow)">${tipAnim(i)}</circle>`).join("")}
 <circle cx="${CX}" cy="${CY}" r="4" fill="#eaffff" filter="url(#glow)"/>
 
 <!-- labels -->

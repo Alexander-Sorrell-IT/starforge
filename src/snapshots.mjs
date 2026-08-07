@@ -113,6 +113,7 @@ export function writeSnapshotStars(timeline, { audit = null, limit = 36 } = {}) 
     const svg = renderStarSvg(levels, {
       size: 300,
       labels: false,
+      animate: true,
       footer: m.month,
       title: `skill star — ${m.month}`,
     });

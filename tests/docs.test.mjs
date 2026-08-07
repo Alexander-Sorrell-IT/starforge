@@ -77,11 +77,26 @@ test("prose that mentions the bare npm name marks it as NOT this tool", () => {
 test("docs name the published package, and keep warning about the bare name", () => {
   for (const [name, md] of [["README.md", README], ["PROVE-IT.md", PROVE]]) {
     assert.match(md, /starforge-cli/, `${name} must name the published package`);
-    assert.doesNotMatch(
-      md,
-      /not published yet|not on npm yet|not published to npm yet/i,
-      `${name}: starforge-cli is published — this disclosure is stale and must be removed, not reworded`
-    );
+    // Deliberately matches the SHAPE of the claim, not the exact wording I
+    // happened to write. The first version of this guard listed literal
+    // phrases, and PROVE-IT.md's "Neither the npm package nor the GitHub repo
+    // is published yet" walked straight past it — a stale claim surviving the
+    // very test written to kill stale claims.
+    for (const stale of [
+      /\bis(n't| not)? published yet\b/i,
+      /\bnot (yet )?(published|on npm)\b/i,
+      /\bbefore publish\b/i,
+      /\buntil publish day\b/i,
+      /\bonce (the package |it )?is published\b/i,
+      /\bwill be called\b/i,
+      /→\s*404|-> 404/,
+    ]) {
+      assert.doesNotMatch(
+        md,
+        stale,
+        `${name}: starforge-cli IS published — a pre-publish claim matching ${stale} is stale and must be removed, not reworded`
+      );
+    }
   }
   assert.match(
     README,

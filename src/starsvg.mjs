@@ -124,12 +124,46 @@ export function renderStarSvg(levels, opts = {}) {
   const cx = size / 2;
   // With labels the top/bottom text needs room, so the star sits slightly high
   // and smaller; without labels it uses the whole box.
-  const cy = size * (labels ? 0.5 : 0.5);
-  const R = size * (labels ? 0.29 : 0.42);
+  const cy = size * 0.5;
+  // Labelled mode has to leave room for the longest axis name on BOTH sides —
+  // "OUTSIDE THE BOX" is 15 characters and hangs left off an end-anchored point.
+  // At the old radius it ran off the canvas and rendered clipped.
+  const R = size * (labels ? 0.24 : 0.42);
 
   const hull = starPoints(lv, R, cx, cy);
   const tips = armTips(lv, R, cx, cy);
   const maxHull = starPoints(new Array(ARMS).fill(MAX_LEVEL), R, cx, cy);
+
+  // Animation: the arms GROW out of the level-0 pentagon to their real length,
+  // overshoot slightly, then settle. It is the same silhouette either way — the
+  // motion just makes the lopsidedness legible, because you watch one arm keep
+  // going after its neighbours have stopped. SMIL rather than CSS because the
+  // thing that has to move is a polygon's `points`, which CSS cannot animate,
+  // and SMIL keeps the file self-contained with no script (a <script> would be
+  // both a CSP problem and a thing a reader has to audit).
+  const animate = opts.animate ?? false;
+  const dur = opts.duration ?? 1.6;
+  const zero = new Array(ARMS).fill(0);
+  // Overshoot each arm 6% past its final radius, clamped so nothing escapes R.
+  const over = lv.map((v) => Math.min(MAX_LEVEL, v + (MAX_LEVEL - v) * 0.06 + 0.12));
+  const framePts = (levels) => poly(starPoints(levels, R, cx, cy));
+  const hullAnim = animate
+    ? `<animate attributeName="points" dur="${dur}s" fill="freeze" calcMode="spline"
+        keyTimes="0;0.72;1" keySplines="0.16 0.8 0.3 1;0.4 0 0.2 1"
+        values="${framePts(zero)};${framePts(over)};${framePts(lv)}"/>`
+    : "";
+  // Each tip rides its own arm out, staggered so they do not all arrive at once.
+  const tipAnim = (i) => {
+    if (!animate) return "";
+    const at = (levels) => armTips(levels, R, cx, cy)[i];
+    const step = (levels) => { const p = new Array(ARMS).fill(0); p[i] = levels[i]; return at(p); };
+    const [x0, y0] = step(zero), [x1, y1] = step(over), [x2, y2] = step(lv);
+    const begin = (i * 0.06).toFixed(2);
+    return `<animate attributeName="cx" dur="${dur}s" begin="${begin}s" fill="freeze" calcMode="spline"
+        keyTimes="0;0.72;1" keySplines="0.16 0.8 0.3 1;0.4 0 0.2 1" values="${f(x0)};${f(x1)};${f(x2)}"/>
+      <animate attributeName="cy" dur="${dur}s" begin="${begin}s" fill="freeze" calcMode="spline"
+        keyTimes="0;0.72;1" keySplines="0.16 0.8 0.3 1;0.4 0 0.2 1" values="${f(y0)};${f(y1)};${f(y2)}"/>`;
+  };
 
   // Reference rings at each whole level, so the arms are countable and not
   // just vibes.
@@ -151,15 +185,17 @@ export function renderStarSvg(levels, opts = {}) {
   }
 
   const tipDots = tips
-    .map(([x, y]) => `<circle cx="${f(x)}" cy="${f(y)}" r="${f(size * 0.011)}" fill="#eaffff" filter="url(#${ns}g)"/>`)
+    .map(([x, y], i) =>
+      `<circle cx="${f(animate ? cx : x)}" cy="${f(animate ? cy : y)}" r="${f(size * 0.011)}" fill="#eaffff" filter="url(#${ns}g)">${tipAnim(i)}</circle>`
+    )
     .join("");
 
   let labelSvg = "";
   if (labels) {
-    const fs = size * 0.032;
+    const fs = size * 0.026;
     for (let i = 0; i < ARMS; i++) {
       const a = armAngle(i);
-      const lr = R + size * 0.055;
+      const lr = R + size * 0.045;
       const x = cx + lr * Math.cos(a);
       let y = cy + lr * Math.sin(a);
       const anchor = i === 0 ? "middle" : i === 1 || i === 2 ? "start" : "end";
@@ -204,7 +240,7 @@ ${bare ? "" : `<rect width="${size}" height="${size}" fill="#03101a"/>`}
 <g stroke="#1d5f83" fill="none">${ringSvg}</g>
 <g stroke="#164e6f" fill="none" opacity="0.7">${spokes}</g>
 ${ghost ? `<polygon points="${poly(maxHull)}" fill="none" stroke="#1b587d" stroke-width="1" stroke-dasharray="4 7"/>` : ""}
-<polygon points="${poly(hull)}" fill="url(#${ns}fill)" stroke="#8be6ff" stroke-width="${f(size * 0.005)}" stroke-linejoin="round" filter="url(#${ns}G)"/>
+<polygon points="${animate ? framePts(zero) : poly(hull)}" fill="url(#${ns}fill)" stroke="#8be6ff" stroke-width="${f(size * 0.005)}" stroke-linejoin="round" filter="url(#${ns}G)">${hullAnim}</polygon>
 ${tipDots}
 <circle cx="${f(cx)}" cy="${f(cy)}" r="${f(size * 0.007)}" fill="#bfefff"/>
 ${labelSvg}

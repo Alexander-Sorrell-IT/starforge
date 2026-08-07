@@ -314,6 +314,10 @@ export function renderStatsPage(input = {}) {
                 labels: false,
                 rings: true,
                 bare: true,
+                // Staggered along the strip, so the months grow left-to-right
+                // and you watch the shape change rather than diffing 18 stills.
+                animate: true,
+                duration: 1.2,
                 title: `${m.month} — ${AXES.map((ax, i) => `${ax} ${m.levels[i]}`).join(", ")}`,
               })}<figcaption>${esc(m.month)}<span class="dim"> · ${(m.levels.reduce((x, y) => x + y, 0)).toFixed(1)}</span></figcaption></figure>`
           )
