@@ -70,12 +70,24 @@ test("prose that mentions the bare npm name marks it as NOT this tool", () => {
   }
 });
 
-test("docs disclose that starforge-cli is not published yet", () => {
-  // The npx path is advertised; it must not be advertised as working today.
+// starforge-cli IS published now, so the old "must disclose it is unpublished"
+// guard is retired rather than softened — a stale disclosure is its own kind of
+// false claim. What survives is the half that never changes: the BARE name is
+// somebody else's package, so the docs must keep saying which name to install.
+test("docs name the published package, and keep warning about the bare name", () => {
   for (const [name, md] of [["README.md", README], ["PROVE-IT.md", PROVE]]) {
-    assert.match(md, /not published yet|not on npm yet/i, `${name} must disclose publish status`);
+    assert.match(md, /starforge-cli/, `${name} must name the published package`);
+    assert.doesNotMatch(
+      md,
+      /not published yet|not on npm yet|not published to npm yet/i,
+      `${name}: starforge-cli is published — this disclosure is stale and must be removed, not reworded`
+    );
   }
-  assert.match(README, /404/, "README should cite the npm 404 as the evidence");
+  assert.match(
+    README,
+    /registered on npm in 2017|unrelated maintainer/i,
+    "README must keep explaining that the bare name is someone else's package"
+  );
 });
 
 test("the CLI's own usage header uses the real package name", () => {
@@ -225,26 +237,18 @@ test("`prove` and bin/starforge-proof.sh are documented in both docs", () => {
   assert.ok(existsSync(root + "bin/starforge-proof.sh"));
 });
 
-// The repo IS pushed now, so a clone instruction is honest and this guard has
-// flipped: what must not be claimed is the half that is still false. npm has no
-// starforge-cli on it, so nothing may read as though `npx starforge-cli` works
-// today — that would send a reader to the registry for a package that isn't
-// there (and the bare name `starforge` IS taken by an unrelated 2017 package,
-// which is how a reader gets a stranger's code instead).
-test("docs never imply the npm package is installable while it is unpublished", () => {
+// Both halves are live now — the repo is public and the package is published —
+// so this guard has flipped again, to the one thing that is still permanently
+// dangerous: a copyable `npx starforge` (bare name) runs an unrelated 2017
+// package. Every copyable npx line must carry the -cli suffix.
+test("every copyable npx line installs starforge-cli, never the bare name", () => {
   for (const [name, md] of [["README.md", README], ["PROVE-IT.md", PROVE]]) {
-    assert.match(
-      md,
-      /not published yet|not on npm yet|not published\s*\n?to npm yet/i,
-      `${name} must disclose that npm publication has not happened`
-    );
-    // An `npx starforge-cli` line is allowed only in the future tense or inside
-    // an explicit not-yet warning — never as a bare run instruction in a fenced
-    // block, which is the thing people copy.
     for (const line of codeBlockLines(md)) {
+      const m = /^\s*(?:\$\s*)?npx\s+(?:--yes\s+)?(\S+)/.exec(line);
+      if (!m) continue;
       assert.ok(
-        !/^\s*(\$\s*)?npx\s+starforge/.test(line),
-        `${name}: a copyable line tells the reader to npx a package that is not published: ${line.trim()}`
+        /^starforge-cli(@|$)/.test(m[1]),
+        `${name}: a copyable line npx-es "${m[1]}" — it must be starforge-cli: ${line.trim()}`
       );
     }
   }
@@ -337,23 +341,25 @@ test("README showcases the star card and the stats page", () => {
 });
 
 test("README states publication status and how to run it today, up top", () => {
-  const head = README.split("\n").slice(0, 32).join("\n");
+  const head = README.split("\n").slice(0, 34).join("\n");
   assert.match(head, /\*\*Status:\*\*/, "a Status line must sit near the top");
-  // Two different facts, and they must not be collapsed into one: the source is
-  // live on GitHub, the npm package is not published. A reader who assumes the
-  // second from the first goes to the registry and finds someone else's 2017
-  // package under the bare name.
-  assert.match(head, /not published\s*\n?to npm yet|not published to npm yet/i);
+  // Both facts are live now: published on npm, source on GitHub. The reader has
+  // to be able to see BOTH at the top — the install name because that is what
+  // they will type, and the repo because reading the source before running it
+  // is the entire pitch.
+  assert.match(head, /starforge-cli/, "the Status line must name the published package");
   assert.match(
     head,
     /github\.com\/Alexander-Sorrell-IT\/starforge/,
     "the Status line must name where the source actually is"
   );
-  assert.doesNotMatch(
-    head,
-    /not pushed yet/i,
-    "the repo IS pushed — this claim is stale and must be removed, not softened"
-  );
+  for (const stale of [/not pushed yet/i, /not published to npm yet/i]) {
+    assert.doesNotMatch(
+      head,
+      stale,
+      `stale status claim in the README head: ${stale} — remove it, do not soften it`
+    );
+  }
   assert.match(head, /node src\/cli\.mjs/, "say how to run it from a checkout");
 });
 

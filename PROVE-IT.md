@@ -328,11 +328,11 @@ Any difference under `src/` means you are not running the code you read — stop
 and read the diff. `diff -r` prints `No such file or directory` (not a diff) if
 `package/src` is missing, which is the wrong-package case above.
 
-**What you can run today, before publish.** `starforge-cli` is not on npm yet
-(`npm view starforge-cli` → 404), so the two registry commands above have
-nothing to fetch. The rest of the recipe works right now against a tarball you
-build from the checkout, and that is how the hash algorithms above were
-verified:
+**Comparing against a tarball you build yourself.** The registry commands above
+work against the published package (`starforge-cli@0.1.0`). This variant needs
+no network at all — it packs THIS checkout and is how the hash algorithms above
+were verified in the first place. Running both and comparing the two shasums is
+the actual check that what npm serves is what this tree builds:
 
 ```
 npm pack --pack-destination /tmp/sfpack --json     # packs THIS checkout; prints filename, shasum, integrity

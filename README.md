@@ -1,28 +1,26 @@
 # starforge
 
-A local-only **developer wrapped** for AI-coding work. It reads the session
-logs Claude Code, Claude Cowork and Codex already wrote on your disk, and turns
-them into a Porter-Grade skill star — live in the terminal while it scans, then
-as a self-contained SVG card and a full HTML stats page. No account, no upload,
-no server-side scoring.
+A local-only **developer wrapped** for AI-coding work. It reads the session logs
+Claude Code, Claude Cowork and Codex already wrote on your disk and turns them
+into a Porter-Grade skill star — live in the terminal while it scans, then as a
+self-contained SVG card and a full HTML stats page. No account, no upload, no
+server-side scoring. The thesis is not "trust us": **run it under OS confinement
+and let the kernel answer.**
 
-The thesis is not "trust us." It is: **run it under OS confinement and let the
-kernel answer.**
-
-**Status:** the source lives at
-`github.com/Alexander-Sorrell-IT/starforge` and is **not published to npm yet** —
-nothing to `npx`, no tarball to trust, so run it from a checkout. Zero
-dependencies, so there is no install step. (Why the npm name matters anyway:
-[Install](#install--about-the-name).)
+**Status:** published as **`starforge-cli`**, source at
+`github.com/Alexander-Sorrell-IT/starforge`. Zero dependencies. Install the
+`-cli` name — bare `starforge` on npm is an unrelated 2017 package, **not this
+tool** ([Install](#install--about-the-name)).
 
 ```bash
+npx starforge-cli                       # scan, with the live star
+npx starforge-cli --yes --card --page   # no prompts; also write the SVG card + HTML page
 git clone https://github.com/Alexander-Sorrell-IT/starforge.git && cd starforge
-node src/cli.mjs                        # scan, with the live star
-node src/cli.mjs --yes --card --page    # no prompts; also write the SVG card + HTML page
+node src/cli.mjs                        # or read the source first, then run the tree you read
 ```
 
 One real frame of the live star, rendered with colour disabled and the middle
-rows elided — the whole 78×26 frame, printed verbatim, is under
+rows elided — the whole 78×26 frame, verbatim, is under
 [What you get](#what-you-get):
 
 ```
@@ -226,13 +224,12 @@ report actually contains" below for exactly what is in there.
 **The npm package is `starforge-cli`, not `starforge`.** The bare name was
 registered on npm in 2017 by an unrelated maintainer (`resure`):
 **`npx starforge` runs a stranger's package, not this tool — don't run it.**
-`starforge-cli` is free but **not published yet** (`npm view starforge-cli` →
-404), so every `starforge-cli …` command below is what the published CLI *will*
-be called; today, run the same thing as `node src/cli.mjs …` from this
-checkout. When it is published, `npx starforge-cli` will fetch a tarball, and
-that tarball is *not* the tree you grepped — [PROVE-IT.md](PROVE-IT.md) §5 is
-the recipe for checking they match. The repo name (`starforge`) and the package
-name (`starforge-cli`) differ on purpose; both are this project.
+This project is published as **`starforge-cli`** (`npm view starforge-cli`).
+`npx starforge-cli` fetches a tarball from the registry, and **that tarball is
+not the tree you grepped** — [PROVE-IT.md](PROVE-IT.md) §5 is the recipe for
+checking the two match, which matters more now that there is something to
+install than it did when there wasn't. The repo name (`starforge`) and the
+package name (`starforge-cli`) differ on purpose; both are this project.
 
 ## Usage
 
