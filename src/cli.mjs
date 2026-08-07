@@ -10,6 +10,10 @@
 // Usage:
 //   starforge-cli                 scan with interactive exclusion prompts
 //   starforge-cli --yes           skip prompts (exclude nothing)
+//   starforge-cli --star          print ONLY the lifetime star, nothing else
+//   starforge-cli --dual          print ONLY this month beside lifetime
+//                                 (--star/--dual suppress the summary, cards,
+//                                 QR and menu — the default run shows them all)
 //   starforge-cli --roots=a,b     extra home roots (other accounts/machines)
 //   starforge-cli --json          write baseline + expanded JSON reports
 //   starforge-cli --card          write the Porter-Grade SVG card
@@ -73,7 +77,7 @@ import {
   finalize,
   defaultRoots,
 } from "./scan.mjs";
-import { LiveStar, computeLevels, renderCompare, AXES } from "./star.mjs";
+import { LiveStar, computeLevels, renderCompare, renderStar, AXES } from "./star.mjs";
 import {
   writeSnapshots,
   writeSnapshotStars,
@@ -117,6 +121,10 @@ const opt = (name) => {
   return hit ? hit.split("=").slice(1).join("=") : null;
 };
 const fmt = (n) => (n ?? 0).toLocaleString("en-US");
+// --star / --dual: the star is the whole output. Read once, here, because it
+// gates three separate things (the scan animation, the scan's own star, and
+// everything after the summary) and they must never disagree.
+const starOnly = flag("--star") || flag("--dual");
 // "…/stars/2026-08.svg" -> "2026-08"
 const monthOf = (p) => String(p).split("/").pop().replace(/\.svg$/, "");
 
@@ -146,6 +154,8 @@ if (!KNOWN_SUBCOMMANDS.has(subcommand)) {
 // is armed would write a run log recording a crash that never happened.
 const FLAG_SPEC = Object.freeze({
   "--yes": "bool",
+  "--star": "bool",
+  "--dual": "bool",
   "--json": "bool",
   "--card": "bool",
   "--wrapped": "bool",
@@ -339,11 +349,14 @@ async function main() {
   // Banner honesty: this process cannot prove its own no-egress claim (see
   // README "Privacy model" #2), so it states only what it can back and hands
   // you the command that lets the kernel answer.
-  console.log(
-    `${BOLD}${CYAN}starforge${RESET} ${DIM}— local-only developer wrapped: reads local logs, writes under ~/.starforge (plus any --join-fleet dir you name).${RESET}\n` +
-      `${DIM}  the scan path makes no network calls — but no process can prove that about itself.${RESET}\n` +
-      `${DIM}  run \`starforge-cli prove\` (or \`sh bin/starforge-proof.sh\`) and let the kernel answer.${RESET}\n`
-  );
+  // ...except in the star-only modes, where the star IS the output. The claim
+  // is not being dropped: `prove` still exists and the README still carries it.
+  if (!starOnly)
+    console.log(
+      `${BOLD}${CYAN}starforge${RESET} ${DIM}— local-only developer wrapped: reads local logs, writes under ~/.starforge (plus any --join-fleet dir you name).${RESET}\n` +
+        `${DIM}  the scan path makes no network calls — but no process can prove that about itself.${RESET}\n` +
+        `${DIM}  run \`starforge-cli prove\` (or \`sh bin/starforge-proof.sh\`) and let the kernel answer.${RESET}\n`
+    );
 
   // ---- --reset-audit: the supported way out of a poisoned history ----------
   // A log written by an older version can fail today's leak scan, and deleting
@@ -401,12 +414,13 @@ async function main() {
 
   const bySource = {};
   for (const s of sources) bySource[s.source] = (bySource[s.source] ?? 0) + 1;
-  console.log(
-    "Found: " +
-      Object.entries(bySource)
-        .map(([k, v]) => `${k} (${v} files)`)
-        .join(", ")
-  );
+  if (!starOnly)
+    console.log(
+      "Found: " +
+        Object.entries(bySource)
+          .map(([k, v]) => `${k} (${v} files)`)
+          .join(", ")
+    );
 
   // ---- interactive exclusion ----------------------------------------------
   // The prompt needs a TTY. When there isn't one — `| tee run.log`, CI, a
@@ -438,7 +452,11 @@ async function main() {
   // ---- scan with live star -------------------------------------------------
   const stats = emptyStats();
   const star = new LiveStar();
+  // In star-only mode the animation is "something else" too: its last frame
+  // stays on screen above the star we actually want.
+  if (starOnly) star.enabled = false;
   let done = 0;
+  let lastDraw = 0;
   star.draw(computeLevels(finalize(stats)), `scanning 0/${sources.length}`);
   for (const src of sources) {
     try {
@@ -447,7 +465,19 @@ async function main() {
       else await parseClaudeFile(src.path, stats, { excluded });
     } catch {}
     done += 1;
-    if (done % 5 === 0 || done === sources.length) {
+    // Throttled by TIME, not by file count. `done % 5` meant a 20,217-file
+    // corpus redrew 4,043 times, and each redraw runs finalize() — a full
+    // re-aggregation of every session — then repaints 26 lines. The result was
+    // slow AND ugly: the terminal could not keep up, so the star juddered
+    // instead of growing, and most of the scan was spent recomputing totals
+    // nobody saw.
+    //
+    // ~12 frames a second is smooth to the eye and costs the same whether the
+    // corpus is 200 files or 200,000. The last frame is always drawn, so the
+    // finished star is never a stale one.
+    const now = Date.now();
+    if (done === sources.length || now - lastDraw >= 80) {
+      lastDraw = now;
       star.draw(
         computeLevels(finalize(stats)),
         `scanning ${done}/${sources.length}`
@@ -456,7 +486,10 @@ async function main() {
   }
   const agg = finalize(stats);
   const levels = computeLevels(agg);
-  star.finish(levels, "scan complete");
+  // The star-only modes print their own star, deliberately labelled and drawn
+  // from the LIFETIME numbers. Letting finish() land here too would leave the
+  // scan's star sitting above it — two stars for --star, three for --dual.
+  if (!starOnly) star.finish(levels, "scan complete");
 
   // ---- multi-CLI providers (fast, on by default) ---------------------------
   let providers = null;
@@ -511,6 +544,77 @@ async function main() {
   let starFiles = [];
   if (!flag("--no-snapshot") && timeline.length)
     starFiles = writeSnapshotStars(timeline, { audit });
+
+  // ---- star-only modes -------------------------------------------------------
+  //
+  // The default run is the whole thing — cards, summary, QR, menu — and there
+  // is no reason to hold any of it back. These two flags are the opposite
+  // request: give me the star and NOTHING else, so it can be screenshotted,
+  // piped, or dropped into a README without trimming twenty lines off it.
+  //
+  //   --star   the lifetime star, alone
+  //   --dual   this month's star and the lifetime star, alone
+  //
+  // They exit before the summary rather than suppressing pieces one by one,
+  // because "just the star" is a promise that a later addition somewhere else
+  // in this function would quietly break.
+  if (flag("--star") || flag("--dual")) {
+    const color = !process.env.NO_COLOR;
+    const star = (lv, status) => {
+      console.log("");
+      console.log(renderStar(lv, { color, status }));
+    };
+    if (flag("--dual")) {
+      // Stacked, not side by side: one star is 78 columns wide, so a pair would
+      // need 156 and wrap into noise on any normal terminal.
+      const month = timeline[timeline.length - 1] ?? null;
+      // ONE month is the case to guard, not zero: writeSnapshots() above always
+      // seeds the current month, so a first run reaches here with a timeline of
+      // length 1 and lifetime IS this month. Drawing both would put two
+      // byte-identical stars on screen under different labels — a comparison
+      // that reads as "no change since last month" on a first run.
+      if (timeline.length <= 1) {
+        star(month?.levels ?? levels, "this month · lifetime starts next month");
+      } else {
+        star(month.levels ?? computeLevels(month), `this month · ${month.month ?? ""}`.trimEnd());
+        const life = lifetimeFromTimeline(timeline);
+        star(life.levels, `lifetime · ${life.months} month(s)`);
+      }
+    } else {
+      // Prefer the accumulated lifetime over this scan. They are not the same
+      // thing: the logs are retained for about a month, so the scan alone is
+      // "recently", and calling that "lifetime" would overstate a shrinking
+      // window as a total. Snapshots are what outlive the logs.
+      const life = timeline.length ? lifetimeFromTimeline(timeline) : null;
+      if (life) star(life.levels, `lifetime · ${life.months} month(s)`);
+      else star(levels, "this scan · no snapshot history yet");
+    }
+    console.log("");
+    finishAudit(audit);
+    return;
+  }
+
+  // ---- the second star, in the DEFAULT run ---------------------------------
+  //
+  // The star drawn during the scan is "every log still on disk" — about a
+  // month, because that is how long the logs are retained. The lifetime star is
+  // the one built from snapshots, and it is the number that keeps growing. Only
+  // showing the first left the default run looking like a single-star tool and
+  // buried the accumulated shape behind the [c] menu, which is a bar table
+  // rather than a star.
+  //
+  // Skipped at one month, where lifetime IS this month and the second star
+  // would be a byte-identical copy of the first.
+  if (timeline.length > 1) {
+    const life = lifetimeFromTimeline(timeline);
+    console.log("");
+    console.log(
+      renderStar(life.levels, {
+        color: !process.env.NO_COLOR,
+        status: `lifetime · ${life.months} month(s)`,
+      })
+    );
+  }
 
   // ---- summary -------------------------------------------------------------
   console.log(`\n${BOLD}── profile ─────────────────────────────${RESET}`);

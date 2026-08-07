@@ -154,6 +154,20 @@ block still matches the renderer, so the README cannot drift from the binary:
 Redrawing in place needs a TTY. Piped or redirected, the frame is printed once
 at the end instead of animating — same numbers, no cursor tricks.
 
+**Two stars, not one.** The star that draws during the scan is *every log still
+on disk* — roughly a month, because that is how long the logs are kept. The
+second star is your **lifetime**, rebuilt from the monthly snapshots, and it is
+the one that keeps growing after the logs are gone. A default run shows both.
+They are deliberately different numbers; the labels under them say which is
+which, and on a first run only one is drawn, since lifetime *is* this month and
+a second copy would imply a comparison nothing measured.
+
+**Star-only modes.** `--star` prints the lifetime star and nothing else — no
+banner, no source tally, no summary, no cards, no QR, no menu, and no scan
+animation above it. `--dual` prints two stars the same way: this month, then
+lifetime. Both are for screenshots, pipes, and READMEs, where the other twenty
+lines are in the way.
+
 **The wrapped is the default.** `npx starforge-cli` scans and then tells the
 story; `--no-wrapped` gives you the summary only, and `--no-pace` prints every
 card at once instead of waiting for a keypress (which is also what happens
@@ -360,6 +374,8 @@ line takes the same flags.
 ```bash
 starforge-cli                  # node src/cli.mjs        interactive: prompts for exclusions, live star
 starforge-cli --yes            # node src/cli.mjs --yes   no prompts (excludes nothing)
+starforge-cli --star           # ONLY the lifetime star — no summary, cards, QR or menu
+starforge-cli --dual           # ONLY two stars: this month, then lifetime
 starforge-cli --card           # write the Porter-Grade SVG card
 starforge-cli --page           # write the full HTML stats page (runs the deeper profile pass)
 starforge-cli --json           # write both a compact baseline and the full expanded JSON report
