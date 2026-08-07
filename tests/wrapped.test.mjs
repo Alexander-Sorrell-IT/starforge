@@ -99,11 +99,18 @@ test("bar never overflows its width and is monotonic", () => {
 test("the mini star uses its whole box and grows with the levels", () => {
   // It was fitted as if the star were centred in a circle, which left the
   // bottom rows of every card permanently blank.
+  // Box-filling is a property of a FULL-SCALE star, so it is asserted with one.
+  // This used to use a ~5-level profile, which filled the box only while
+  // MAX_LEVEL happened to be 5; raising the ceiling left real headroom above
+  // those levels and the bottom row went blank again — reporting a renderer
+  // regression when the renderer was right and the fixture was stale.
+  const full = miniStar(new Array(ARMS).fill(MAX_LEVEL), 23, 11);
+  assert.notEqual(full[full.length - 1].trim(), "", "the last row must not be dead space");
+  assert.notEqual(full[0].trim(), "", "the first row must not be dead space");
+
   const rows = miniStar(LEVELS, 23, 11);
   assert.equal(rows.length, 11);
   for (const r of rows) assert.equal([...r].length, 23, "every row must be the full width");
-  assert.notEqual(rows[rows.length - 1].trim(), "", "the last row must not be dead space");
-  assert.notEqual(rows[0].trim(), "", "the first row must not be dead space");
 
   const ink = (lv) => miniStar(lv, 23, 11).join("").replace(/ /g, "").length;
   assert.ok(ink([5, 5, 5, 5, 5]) > ink([1, 1, 1, 1, 1]), "a bigger profile must draw a bigger shape");

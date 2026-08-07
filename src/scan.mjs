@@ -58,12 +58,25 @@ export function sanitizeModel(model) {
 
 const MAX_ACTIVE_GAP_MIN = 15;
 
+// Count DESC, then key ASC. The second term is the whole point: `b[1]-a[1]`
+// alone leaves ties in insertion order, and insertion order came from the
+// filesystem — so two machines with the same corpus could disagree about which
+// of three equally-used tools is listed first. A total order has no ties left
+// to break, so the output is a function of the DATA and nothing else.
+export function byCountThenKey(a, b) {
+  return b[1] - a[1] || String(a[0]).localeCompare(String(b[0]));
+}
+
 export function emptyStats() {
   return {
     sessions: new Map(), // sessionId -> {firstTs,lastTs,minutes:Set,project,models:Map,tok:{in,out,cr,cw}}
     toolCounts: new Map(),
-    filePaths: new Set(), // masked
+    filePaths: new Set(), // masked, CAPPED at 5000 — a memory bound, not a tally
+    filePathTotal: 0, // every path seen, so the cap cannot understate the count
+    langCounts: new Map(), // accumulated per path as it arrives, so the cap cannot hide a language
     hourCounts: new Array(24).fill(0),
+    nightMinutes: new Set(), // distinct minutes in 00:00-05:59, i.e. real hours
+
     activeDays: new Set(),
     weekendEvents: 0,
     totalEvents: 0,
@@ -108,7 +121,20 @@ function listJsonl(base, maxDepth) {
     if (depth > maxDepth) return;
     let entries;
     try {
-      entries = readdirSync(dir);
+      // SORTED. readdirSync returns filesystem order, which differs between
+      // machines, between filesystems, and after a file is rewritten — so an
+      // unsorted walk made the scan order an input the user cannot see.
+      //
+      // Order does not change any TOTAL (a sum is a sum), but it does decide:
+      //   - which cwd wins a session's project label, since the first one seen
+      //     is kept and later ones ignored
+      //   - how ties break in every `sort((a,b) => b[1]-a[1])` below, because
+      //     V8's sort is stable and therefore falls back to insertion order
+      //
+      // Two machines holding an identical corpus could publish different
+      // reports, which is fatal for a tool whose whole argument is "check it
+      // yourself". Same bytes in, same bytes out.
+      entries = readdirSync(dir).sort();
     } catch {
       return;
     }
@@ -195,6 +221,17 @@ function temporal(stats, ts) {
   if (isNaN(d.getTime())) return;
   stats.totalEvents += 1;
   stats.hourCounts[d.getHours()] += 1;
+  // Distinct night MINUTES, so OUTSIDE THE BOX can be scored in hours.
+  // hourCounts is a per-EVENT tally, and computeLevels was reading
+  // `buckets.slice(0,6)` as if it were hours: lg(nightHours, 60) is calibrated
+  // to saturate at 600 hours (~25 solid nights) but was saturating at 600 log
+  // LINES, which is about two late sessions. Measured: 5 sessions inside one
+  // single night, active_days 1, scored the axis a full 5.0.
+  //
+  // A minute is the unit the session tracker already uses for real elapsed
+  // time, and de-duplicating it means a chattier tool loop cannot buy a longer
+  // arm than a quieter one doing the same work.
+  if (d.getHours() < 6) stats.nightMinutes.add(Math.floor(ts / 60000));
   const day = d.getDay();
   if (day === 0 || day === 6) stats.weekendEvents += 1;
   stats.activeDays.add(localDayKey(d));
@@ -242,18 +279,47 @@ export async function parseClaudeFile(filePath, stats, opts = {}) {
       if (Array.isArray(msg.content)) {
         for (const item of msg.content) {
           if (item?.type === "tool_use") {
-            if (item.name)
-              stats.toolCounts.set(
-                item.name,
-                (stats.toolCounts.get(item.name) || 0) + 1
-              );
+            // A tool NAME is attacker-supplied text, not an identifier from a
+            // fixed vocabulary: MCP servers name their own tools, and anything
+            // that constructs one from a variable can put a credential in it.
+            // Unredacted, these keys went straight into `tool_call_counts` in
+            // reports/expanded-*.json — a live sk-ant key and a full JWT,
+            // verbatim, in the same file where profile.mjs's `tool_mix` had
+            // already rendered the identical strings as "[redacted]".
+            //
+            // sanitizeModel, not redactSecrets: the model field two fields over
+            // solved this exact problem properly — redact, then shape-check,
+            // then pseudonymise whatever fails — and a name that survives
+            // redaction but still looks like a path or an address is no more
+            // publishable than the key was.
+            if (item.name) {
+              const tool = sanitizeModel(item.name);
+              if (tool)
+                stats.toolCounts.set(tool, (stats.toolCounts.get(tool) || 0) + 1);
+            }
             s.tools += 1;
             const input = item.input;
             for (const key of ["file_path", "path", "notebook_path"]) {
               const p = input?.[key];
               if (typeof p === "string") {
                 if (opts.excluded?.(p)) continue;
-                if (stats.filePaths.size < 5000) stats.filePaths.add(maskPath(p));
+                // The 5,000-path cap bounds MEMORY, which is legitimate — but
+                // the same Set was the only input to inferLanguages(), so on a
+                // large history the language list was whatever happened to be
+                // touched first. Measured on a real corpus: capped gave 12
+                // languages and a total of 23.9; uncapped gave 14 (sql and
+                // swift were simply never reached) and 24.1. A published score
+                // was wrong by 0.2 because of a memory guard nobody connected
+                // to scoring.
+                //
+                // Languages are now counted as each path ARRIVES, so the tally
+                // is complete however small the cap gets, and the cap goes back
+                // to doing only its own job. `filePathTotal` keeps the true
+                // count, because `filePaths.size` stops being one at 5,000.
+                stats.filePathTotal += 1;
+                const masked = maskPath(p);
+                if (stats.filePaths.size < 5000) stats.filePaths.add(masked);
+                countLanguage(stats.langCounts, masked);
                 // Only the extension, never the path: a month bucket has to be
                 // safe to sync, and an extension is not a filename.
                 const ext = extOf(p);
@@ -410,18 +476,37 @@ export function finalize(stats) {
     total_cache_write_tokens: totCw,
     user_turns: stats.userTurns,
     tool_call_counts: Object.fromEntries(
-      [...stats.toolCounts.entries()].sort((a, b) => b[1] - a[1])
+      [...stats.toolCounts.entries()].sort(byCountThenKey)
     ),
+    // `projects` is the TOP 20 for display. `projects_count` is how many there
+    // actually are, and it is emitted separately because computeLevels falls
+    // back to `(agg.projects ?? []).length` — so the slice, a presentation
+    // decision, was silently capping the ENGINEERING axis at lg(20,4)*0.6 =
+    // 2.46 no matter how many repositories a person worked in. Measured: 400
+    // project directories and 20 produced byte-identical stars.
+    //
+    // It also made the two views disagree with each other. Monthly snapshots
+    // set `projects_count: b.projects.size` with no cap, so one month could
+    // report 355 projects while the all-time report said 20 — and a single
+    // month drew a LONGER engineering arm than the entire history containing
+    // it. A number used for scoring must never be the same number that was
+    // shortened to fit on a screen.
     projects: [...projects.entries()]
-      .sort((a, b) => b[1] - a[1])
+      .sort(byCountThenKey)
       .slice(0, 20)
       .map(([name, count]) => ({ name, sessions: count })),
+    projects_count: projects.size,
     models: Object.fromEntries(
-      [...models.entries()].sort((a, b) => b[1] - a[1])
+      [...models.entries()].sort(byCountThenKey)
     ),
-    file_paths_touched: stats.filePaths.size,
-    languages: inferLanguages(stats.filePaths),
+    // Both derived from the uncapped tallies now. `filePaths.size` stops
+    // counting at 5,000 and `inferLanguages(filePaths)` stopped LEARNING there.
+    file_paths_touched: stats.filePathTotal || stats.filePaths.size,
+    languages: stats.langCounts?.size
+      ? Object.fromEntries(stats.langCounts)
+      : inferLanguages(stats.filePaths),
     hour_buckets: stats.hourCounts.slice(),
+    night_hours: +((stats.nightMinutes?.size ?? 0) / 60).toFixed(1),
     weekend_ratio:
       stats.totalEvents > 0
         ? +(stats.weekendEvents / stats.totalEvents).toFixed(2)
@@ -486,18 +571,23 @@ function langsFromExts(exts) {
     const lang = EXT_TO_LANG[ext];
     if (lang) langs[lang] = (langs[lang] || 0) + n;
   }
-  return Object.fromEntries(Object.entries(langs).sort((a, b) => b[1] - a[1]));
+  return Object.fromEntries(Object.entries(langs).sort(byCountThenKey));
+}
+
+// One masked path -> at most one language tick. Split out of inferLanguages so
+// it can be called as each path arrives, which is what lets the 5,000-path
+// memory cap stop deciding which languages a person knows.
+export function countLanguage(langCounts, maskedPath) {
+  if (GENERATED_RE.test(maskedPath)) return;
+  const ext = maskedPath.toLowerCase().split(".").pop();
+  const lang = EXT_TO_LANG[ext];
+  if (lang) langCounts.set(lang, (langCounts.get(lang) ?? 0) + 1);
 }
 
 function inferLanguages(filePaths) {
-  const langs = {};
-  for (const p of filePaths) {
-    if (GENERATED_RE.test(p)) continue;
-    const ext = p.toLowerCase().split(".").pop();
-    const lang = EXT_TO_LANG[ext];
-    if (lang) langs[lang] = (langs[lang] || 0) + 1;
-  }
-  return langs;
+  const langs = new Map();
+  for (const p of filePaths) countLanguage(langs, p);
+  return Object.fromEntries(langs);
 }
 
 function computeStreaks(activeDays) {

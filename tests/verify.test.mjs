@@ -672,7 +672,14 @@ test("checks that inspected nothing report SKIP, not PASS", () => {
   assert.strictEqual(state["audit-chain"], "SKIP", "zero audit logs is not a pass");
   assert.strictEqual(state["output-scrub"], "SKIP", "zero files scrubbed is not a pass");
   assert.strictEqual(state["static-scan"], "PASS", "it really did read the source");
-  assert.strictEqual(res.ok, true, "SKIP must not fail the run (exit stays 0)");
+  // The invariant under test is "a SKIP is not a FAIL", so assert that — not
+  // `res.ok`, which is the AND over EVERY check. The confinement check inspects
+  // the real host and legitimately FAILs where no OS sandbox is usable (Ubuntu
+  // 23.10+ blocks unprivileged user namespaces by default), so pinning the
+  // global made this SKIP test fail for a reason with no connection to SKIP.
+  const failed = res.checks.filter((c) => c.state === "FAIL").map((c) => c.name);
+  assert.ok(!failed.includes("audit-chain"), "a SKIP became a FAIL");
+  assert.ok(!failed.includes("output-scrub"), "a SKIP became a FAIL");
 });
 
 test("outputScrub and auditCheck report how much they inspected", () => {
@@ -719,7 +726,16 @@ test("printVerify shows a SKIP badge and never claims 'all checks passed'", () =
   assert.ok(text.includes("SKIP"), text.slice(0, 400));
   assert.ok(text.includes("nothing to inspect"), "SKIP must say what it means");
   assert.ok(!text.includes("all checks passed"), "two empty checks are not 'all checks passed'");
-  assert.ok(/verify: 2 of 4 check\(s\) passed/.test(text), text.slice(-400));
+  // A fraction of 4 must be reported rather than a blanket success — in EITHER
+  // summary form, because printVerify uses a different line when something
+  // failed ("CHECKS FAILED (1 of 4)") than when nothing did ("2 of 4 check(s)
+  // passed"). Pinning the count and the wording both assumed a host with a
+  // usable OS sandbox, which this test says nothing about.
+  assert.ok(
+    /verify: \d+ of 4 check\(s\) passed/.test(text) ||
+      /verify: CHECKS FAILED \(\d+ of 4\)/.test(text),
+    text.slice(-400)
+  );
   assert.ok(text.includes("2 had NOTHING TO INSPECT"), text.slice(-400));
 });
 
@@ -744,7 +760,11 @@ test("`starforge verify` prints the tripwire limits too (not just the library)",
   const text = r.stdout.replace(/\x1b\[[0-9;]*m/g, "");
   for (const l of TRIPWIRE_LIMITS)
     assert.ok(text.includes(l), `missing from \`starforge verify\` stdout: ${l}`);
-  assert.strictEqual(r.status, 0, r.stderr);
+  // The subject is that the limits are PRINTED. verify's exit code is the AND
+  // over every check and goes to 1 on any host without a usable OS sandbox, so
+  // pinning 0 made this assert something it was not testing. 2 means verify
+  // itself crashed, and that WOULD invalidate the output above.
+  assert.notStrictEqual(r.status, 2, `verify crashed: ${r.stderr}`);
 });
 
 // ---- exit codes: a crashing warden is not a failing check --------------------
@@ -805,7 +825,11 @@ test("`starforge verify` and `node src/verify.mjs` agree on the exit code", () =
   const a = spawnSync(process.execPath, [join(ROOT, "src", "cli.mjs"), "verify"], { encoding: "utf8", env });
   const b = spawnSync(process.execPath, [join(ROOT, "src", "verify.mjs")], { encoding: "utf8", env });
   assert.strictEqual(a.status, b.status, "the two documented invocations must not disagree");
-  assert.strictEqual(a.status, 0, a.stdout.slice(-2000) + a.stderr);
+  // Agreement is the subject; the VALUE is the host's business. Whether verify
+  // exits 0 or 1 depends on whether this machine has a usable OS sandbox, and
+  // both invocations must reach the same answer either way. 2 would mean it
+  // crashed, which is not agreement about anything.
+  assert.notStrictEqual(a.status, 2, a.stdout.slice(-2000) + a.stderr);
 });
 
 // ---- the pin manifest ships and is regenerable ------------------------------

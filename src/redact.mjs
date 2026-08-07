@@ -32,6 +32,13 @@ const SECRET_PATTERNS = [
   /mongodb(?:\+srv)?:\/\/[^:\s]+:[^@\s]+@/g,
   /redis:\/\/[^:\s]*:[^@\s]+@/g,
   /0x[a-fA-F0-9]{64}\b/g, // 32-byte hex (eth private keys etc.)
+  // RFC1918 addresses. Not a credential, but an internal host is infrastructure
+  // detail about someone's network, and a wrapped is a thing people post. Found
+  // in a sibling tool's corpus as `Login path (PuTTY/MobaXterm -> 10.x.x.x ->
+  // ssh <account>@)`, which survived every rule above because none describe an
+  // IP. Private ranges only: a public address is indistinguishable from a
+  // version string or an ordinary number, and matching those would redact prose.
+  /\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b/g,
 ];
 
 // KEY=value / key: value / "key": "value" style assignments.
@@ -104,10 +111,30 @@ export function maskPath(p) {
 }
 
 // Reduce a cwd to a masked project label: last two path segments under ~.
+//
+// TWO BUGS LIVED HERE, and both wrote their canary into reports/expanded-*.json
+// verbatim while profile.mjs redacted the SAME label three hundred lines away —
+// so one generated file contained "[redacted]/repo" and the live value side by
+// side.
+//
+//   1. maskPath only. maskPath rewrites HOME, and nothing else; a secret sitting
+//      in a working-directory name is not a path component it knows about. A cwd
+//      whose second-to-last segment was an AWS key id produced exactly that key
+//      as the project name. redactSecrets has to run too, and it runs FIRST so
+//      that a key is gone before any truncation decision is made about it.
+//      (No example path here on purpose: this file is scanned for anything
+//      home-shaped, and a comment is as readable as code.)
+//
+//   2. split("/") only. A Windows or UNC cwd has no forward slashes, so it is
+//      one "segment", so the <= 2 early return handed back the WHOLE path:
+//      "C:\Users\<person>\Projects\<client>" and "\\fileserver\share\<matter>"
+//      were written in full, and unescaped into title= attributes in the HTML.
+//      Splitting on both separators makes the two-segment rule mean the same
+//      thing on every platform, which is what it always claimed to mean.
 export function projectLabel(cwd) {
-  const masked = maskPath(cwd);
+  const masked = maskPath(redactSecrets(cwd));
   if (!masked) return null;
-  const parts = masked.split("/").filter(Boolean);
+  const parts = masked.split(/[/\\]/).filter(Boolean);
   if (parts.length <= 2) return masked;
   return parts.slice(-2).join("/");
 }

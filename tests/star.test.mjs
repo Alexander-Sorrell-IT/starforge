@@ -195,7 +195,10 @@ test("the terminal frame is a fixed-size raster and honours colour being off", (
   assert.ok(rows.length > 10, "expected a multi-row frame");
   // eslint-disable-next-line no-control-regex
   assert.doesNotMatch(plain, /\x1b\[/, "no ANSI when colour is disabled");
-  assert.match(plain, /SKILL POINTS 15\.0\/25/);
+  // Denominator DERIVED from the constants, not typed as 25. Hardcoding it
+  // meant raising MAX_LEVEL turned a deliberate change into a red test that
+  // said nothing about the raster this test exists to check.
+  assert.match(plain, new RegExp(`SKILL POINTS 15\\.0/${ARMS * MAX_LEVEL}`));
   for (const ax of AXES) assert.match(plain, new RegExp(ax.replace(/ /g, " ")));
 
   const colored = renderStar([5, 1, 4, 2, 3], { color: true });

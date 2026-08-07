@@ -58,11 +58,34 @@ const PROBE_TIMEOUT_MS = 3000;
 const KERNEL_REFUSAL_CODES = new Set(["EPERM", "EACCES", "ENETUNREACH", "ENETDOWN"]);
 
 // ---- detection -------------------------------------------------------------
+// Does `unshare -rn` actually WORK, not merely exist?
+//
+// Ubuntu 23.10+ ships apparmor_restrict_unprivileged_userns=1 by default, so
+// /usr/bin/unshare is installed and the kernel refuses it:
+//   unshare: write failed /proc/self/uid_map: Operation not permitted
+// Detecting the binary with existsSync therefore reported "netns available" on
+// the most common Linux desktop, handed the user a proof command that cannot
+// run, and — worse — suppressed the `!recommended` note that would have told
+// them honestly there is no confinement here, only policy.
+//
+// This is the same shape as profileParses() below, which has always run
+// /usr/bin/true under sandbox-exec rather than trusting the file to be there.
+// Linux simply never got the equivalent. Presence is not capability.
+function netnsWorks() {
+  const u = which("unshare");
+  if (!u) return false;
+  try {
+    return spawnSync(u, ["-rn", "/bin/true"], { stdio: "ignore" }).status === 0;
+  } catch {
+    return false;
+  }
+}
+
 export function detectConfinement() {
   const platform = process.platform;
   const available = [];
   if (platform === "darwin" && existsSync(SANDBOX_EXEC)) available.push("sandbox-exec");
-  if (platform === "linux" && which("unshare")) available.push("netns");
+  if (platform === "linux" && netnsWorks()) available.push("netns");
   const recommended = available[0] ?? null;
 
   const notes = [];
@@ -83,6 +106,15 @@ export function detectConfinement() {
       "no OS-level confinement found on this system — without it there is no real " +
         "no-egress proof, only policy. An in-process patch would be a tripwire, not a control."
     );
+    if (platform === "linux" && which("unshare")) {
+      notes.push(
+        "unshare IS installed here but the kernel refuses it. On Ubuntu 23.10+ " +
+          "apparmor_restrict_unprivileged_userns=1 is the default; check with " +
+          "`cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns`. Either run " +
+          "the scan inside a container with --network none, or allow user " +
+          "namespaces for this binary — do not treat the presence of unshare as proof."
+      );
+    }
   }
   return { platform, available, recommended, notes };
 }

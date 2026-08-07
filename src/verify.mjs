@@ -1247,14 +1247,24 @@ export function printVerify({ ok, checks }) {
   }
   const states = checks.map((c) => c.state ?? checkState(c));
   const n = (s) => states.filter((x) => x === s).length;
+  // The SKIP count belongs on BOTH branches. It used to appear only when
+  // everything passed, so the moment one check failed the third state vanished
+  // from the summary and "CHECKS FAILED (1 of 4)" quietly implied the other
+  // three had passed — when two of them may have inspected nothing at all.
+  // That is precisely the two-state lie the rest of this file exists to refuse,
+  // and it showed up on the run that mattered: a machine with no usable OS
+  // sandbox fails the confinement check, which is exactly when a reader most
+  // needs to know how much of the remainder was actually looked at.
+  const skipped = n("SKIP")
+    ? ` ${YELLOW}${n("SKIP")} had NOTHING TO INSPECT (SKIP)${RESET}`
+    : "";
   console.log(
     ok
       ? `${GREEN}${BOLD}verify: ${n("PASS")} of ${checks.length} check(s) passed${RESET}` +
-          (n("SKIP")
-            ? ` ${YELLOW}${n("SKIP")} had NOTHING TO INSPECT (SKIP)${RESET}`
-            : "") +
+          skipped +
           ` ${DIM}(within the limits printed above)${RESET}`
-      : `${RED}${BOLD}verify: CHECKS FAILED${RESET} ${DIM}(${n("FAIL")} of ${checks.length})${RESET}`
+      : `${RED}${BOLD}verify: CHECKS FAILED${RESET} ${DIM}(${n("FAIL")} of ${checks.length})${RESET}` +
+          skipped
   );
   console.log(
     `${DIM}exit codes: 0 = nothing FAILED (SKIP does not fail) · 1 = at least one FAIL · 2 = verify itself crashed${RESET}`

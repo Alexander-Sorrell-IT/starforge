@@ -226,9 +226,74 @@ export class LiveStar {
 // Aggregate -> five levels. Works on a whole-history aggregate or on a single
 // month's aggregate, which is what gives every snapshot its own star.
 
+// THIS MONTH against EVERYTHING, side by side.
+//
+// Two stars answer different questions and neither replaces the other. The
+// monthly star is the only one that can fall: it is drawn from one month, so a
+// quiet month shows a small silhouette. The lifetime star only ever grows,
+// because it accumulates snapshots that outlive the logs.
+//
+// Rendered as bars rather than two 78-column stars, because two of those side
+// by side is 156 columns and nobody's terminal is that wide. The delta column
+// is the point of the view: it says whether this month is above or below your
+// own long-run shape, which is the one comparison that needs no other user to
+// mean something.
+//
+// Plain text, no escape codes when color is off, so the same function produces
+// what goes on screen AND what gets saved to a file.
+export function renderCompare(monthly, lifetime, opts = {}) {
+  const color = opts.color !== false;
+  const b = (s) => (color ? BOLD + s + RESET : s);
+  const d = (s) => (color ? DIM + s + RESET : s);
+  const mL = monthly?.levels ?? new Array(ARMS).fill(0);
+  const lL = lifetime?.levels ?? new Array(ARMS).fill(0);
+  const bar = (v) => {
+    const n = Math.round((clampLevel(v) / MAX_LEVEL) * 14);
+    return "█".repeat(n) + "░".repeat(14 - n);
+  };
+  const out = [];
+  out.push(b(`  this month (${monthly?.month ?? "?"})  vs  lifetime (${lifetime?.months ?? 0} month(s)${lifetime?.from ? `, ${lifetime.from}–${lifetime.to}` : ""})`));
+  out.push("");
+  out.push(d(`  ${"axis".padEnd(17)}${"month".padStart(6)}  ${"".padEnd(14)}  ${"life".padStart(5)}  ${"".padEnd(14)}   delta`));
+  for (let i = 0; i < ARMS; i++) {
+    const dv = mL[i] - lL[i];
+    const sign = dv > 0.05 ? "+" : dv < -0.05 ? "" : " ";
+    out.push(
+      `  ${AXES[i].padEnd(17)}${mL[i].toFixed(1).padStart(6)}  ${bar(mL[i])}  ${lL[i].toFixed(1).padStart(5)}  ${bar(lL[i])}  ${sign}${dv.toFixed(1).padStart(5)}`
+    );
+  }
+  const mT = mL.reduce((a, c) => a + c, 0);
+  const lT = lL.reduce((a, c) => a + c, 0);
+  out.push("");
+  out.push(
+    b(`  SKILL POINTS      ${mT.toFixed(1).padStart(6)}${"".padEnd(16)}${lT.toFixed(1).padStart(5)}${"".padEnd(16)}  ${mT - lT >= 0 ? "+" : ""}${(mT - lT).toFixed(1)}`) +
+      d(`   of ${ARMS * MAX_LEVEL}`)
+  );
+  out.push("");
+  if ((lifetime?.months ?? 0) <= 1) {
+    out.push(
+      d("  first run: lifetime IS this month, so every delta is zero. Run again")
+    );
+    out.push(d("  next month and the two shapes start to diverge."));
+  } else {
+    out.push(
+      d("  lifetime only ever grows — it accumulates snapshots that outlive the")
+    );
+    out.push(d("  logs. A negative delta means a quieter month, not lost work."));
+  }
+  return out.join("\n");
+}
+
 export function computeLevels(agg) {
+  // The 5 in lg() is the SCALE, not the ceiling: an axis reads 5.0 at v =
+  // 10*mid and ~2.5 at mid, and that meaning is fixed so a level means the
+  // same thing it did before MAX_LEVEL moved. The clamp is the ceiling, and it
+  // must track MAX_LEVEL — hardcoding 5 here while starsvg said 7 raised the
+  // denominator without raising the cap, so every saturated arm still read 5.0
+  // and the star scored 24.1/35 instead of 27.6/35. Half a fix is a worse
+  // number than no fix, because it looks deliberate.
   const lg = (v, mid) => 5 * (Math.log1p(v) / Math.log1p(mid * 10)); // ~2.5 at mid
-  const clamp = (v) => Math.min(5, Math.max(0, v));
+  const clamp = (v) => Math.min(MAX_LEVEL, Math.max(0, v));
   // Accepts either the whole-history aggregate (total_* / projects[] /
   // tool_call_counts{}) or one month's snapshot bucket, which stores the same
   // quantities pre-reduced (input_tokens / projects_count / tool_calls) so a
@@ -250,7 +315,13 @@ export function computeLevels(agg) {
   // was really a function of daytime tool volume — another axis's input. That
   // also broke the promise the whole shape rests on, that an arm answers to its
   // own axis and nothing else. Doing more work must never shorten an arm.
-  const nightHours = buckets.slice(0, 6).reduce((a, b) => a + b, 0);
+  // Real hours when the scan supplies them; the old per-event sum only as a
+  // fallback for snapshots written before night_hours existed. The mid of 60 is
+  // calibrated in HOURS — 600 night hours is roughly 25 solid nights — and
+  // reading a line count against it made the arm about a hundred times cheaper
+  // than intended, and sensitive to how verbose a tool's logging happens to be.
+  const nightHours =
+    agg.night_hours ?? buckets.slice(0, 6).reduce((a, b) => a + b, 0);
   return [
     clamp(lg(tokens / 1e6, 5)),                                  // FIRST PRINCIPLES
     clamp(lg(projects, 4) * 0.6 + lg(langs, 2) * 0.4 * 2),       // ENGINEERING

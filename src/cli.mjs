@@ -73,11 +73,12 @@ import {
   finalize,
   defaultRoots,
 } from "./scan.mjs";
-import { LiveStar, computeLevels, AXES } from "./star.mjs";
+import { LiveStar, computeLevels, renderCompare, AXES } from "./star.mjs";
 import {
   writeSnapshots,
   writeSnapshotStars,
   loadTimeline,
+  lifetimeFromTimeline,
   velocity,
   SNAP_DIR,
   STAR_DIR,
@@ -856,6 +857,8 @@ async function main() {
       console.log(`\n${BOLD}${CYAN}before you go${RESET}`);
       console.log(`  ${BOLD}[p]${RESET} prove it   ${DIM}ask the kernel whether anything can leave${RESET}`);
       console.log(`  ${BOLD}[r]${RESET} receipt    ${DIM}every field it KEPT, read from the bytes on disk${RESET}`);
+      if (timeline.length)
+        console.log(`  ${BOLD}[c]${RESET} compare    ${DIM}this month against your lifetime shape${RESET}`);
       const dst0 = daemonStatus();
       if (dst0.supported && !dst0.installed)
         console.log(`  ${BOLD}[d]${RESET} daemon     ${DIM}schedule monthly re-scans so history outlives the logs${RESET}`);
@@ -883,6 +886,34 @@ async function main() {
       } else if (key === "r") {
         console.log("");
         console.log(renderReceipt(buildReceipt(), { color: !process.env.NO_COLOR }));
+      } else if (key === "c" && timeline.length) {
+        // Monthly is the LAST snapshot, not `agg`: agg is "every log still on
+        // disk", which spans however many months survived retention, so
+        // comparing it to lifetime would compare a blurred window against a
+        // total and call the difference a trend.
+        const thisMonth = timeline[timeline.length - 1];
+        const life = lifetimeFromTimeline(timeline);
+        console.log("");
+        console.log(renderCompare(thisMonth, life, { color: !process.env.NO_COLOR }));
+        // Offered, never assumed. The whole tool's position is that nothing is
+        // written unless you asked for it, and a comparison is no exception.
+        const save = (await rl.question(`\n  save this to a file? ${DIM}[y/N]${RESET} `))
+          .trim()
+          .toLowerCase();
+        if (save === "y" || save === "yes") {
+          mkdirSync(outDir, { recursive: true });
+          const p = join(outDir, `compare-${stamp}.txt`);
+          // Written WITHOUT colour: escape codes in a file are noise the next
+          // reader has to strip. Through auditWrite like every other write, so
+          // `receipt` and `verify` can still account for it.
+          const body =
+            renderCompare(thisMonth, life, { color: false }) +
+            `\n\ngenerated ${new Date().toISOString()} by starforge-cli\n`;
+          writeFileSync(p, auditWrite(audit, p, body));
+          console.log(`  wrote ${maskPath(p)}`);
+        } else {
+          console.log(`  ${DIM}not saved.${RESET}`);
+        }
       } else if (key === "d") {
         const { files, activate } = writeSchedule();
         console.log("");

@@ -18,6 +18,14 @@
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import { redactSecrets, maskPath, projectLabel } from "./redact.mjs";
+// Imported rather than reimplemented. profile.mjs and scan.mjs read the SAME
+// field out of the SAME file, and every divergence between them has been a bug:
+// the local-clock day key landed in scan.mjs only, and so did the model shape
+// check — so one generated report carried `"models": {"proj-<hash>": 3}` from
+// scan.mjs next to `"model_sessions": {"/home/<person>/private/models": 6}`
+// from here, and the raw path went on to the HTML page. A second copy of a
+// redaction rule is a rule that will be fixed once.
+import { sanitizeModel } from "./scan.mjs";
 
 const MAX_ACTIVE_GAP_MIN = 15;
 const MIN_PROMPT_CHARS = 16; // Standout's low-signal floor
@@ -194,7 +202,14 @@ async function collectClaudeFile(filePath, source, col, opts) {
       s.turns += 1;
       countPromptTurn(src, msg.content);
     } else if (d.type === "assistant" && msg) {
-      const model = typeof msg.model === "string" ? msg.model : null;
+      // Sanitised at CAPTURE, not at emit. The old code stored the raw string
+      // and redacted only on the way into one field, so `models.model_sessions`
+      // and the HTML page both received "/home/<person>/private/models"
+      // verbatim — redactSecrets matches no path and no email, and there was no
+      // shape check. sanitizeModel redacts, then tests the shape, then
+      // pseudonymises anything that fails, so a value that is not a model id
+      // cannot reach ANY consumer downstream of here.
+      const model = sanitizeModel(msg.model);
       if (model && !model.startsWith("<") && !model.includes("synthetic"))
         s.models.set(model, (s.models.get(model) ?? 0) + 1);
       const u = msg.usage;
@@ -236,7 +251,11 @@ async function collectCodexFile(filePath, col, opts) {
     const payload = d.payload;
     if (d.type === "session_meta" && payload) {
       if (typeof payload.id === "string") sessionId = payload.id;
-      if (typeof payload.model === "string") model = payload.model;
+      // Codex's session_meta carries the model too, and this assignment was the
+      // second raw one. Sanitising only the Claude path would have left the
+      // identical hole open for a different tool — which is how this class of
+      // bug survives a fix in the first place.
+      if (typeof payload.model === "string") model = sanitizeModel(payload.model);
     }
     temporal(col, src, ts);
     const s = touchSession(col, sessionId, "codex", ts);

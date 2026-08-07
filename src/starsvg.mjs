@@ -29,7 +29,25 @@ export const AXES = [
 ];
 
 export const ARMS = AXES.length;
-export const MAX_LEVEL = 5;
+
+// Ceiling. Raised 5 -> 7 because 5 was below the top of observed practice, so
+// the scale stopped measuring exactly where it mattered.
+//
+// computeLevels' lg() is monotonic and unbounded; only Math.min(MAX_LEVEL, ..)
+// discards information. Measured on a real 20,217-transcript corpus, the raw
+// axis values were 7.0 / 5.8 / 5.4 / 5.4 / 4.6 — four of five past the old
+// ceiling. A user doing TEN TIMES that work scored identically: 25.0/25 both
+// times. The star could not tell them apart.
+//
+// At 7 the same profiles separate: a heavy user 67%, that corpus 86%, ten
+// times it 95%. Nothing else changes — lg() is untouched, so a level keeps its
+// old meaning and every arm below 5 renders exactly as before; the rings,
+// ghost hull and the /35 footer all derive from this constant.
+//
+// It is deliberately NOT set far above the observed maximum. A ceiling twice
+// anything ever measured makes every real user look like a beginner, which is
+// a different way of not measuring.
+export const MAX_LEVEL = 7;
 
 // Where the valleys sit, as a fraction of full arm length. Also the radius of
 // the level-0 pentagon.

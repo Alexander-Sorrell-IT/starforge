@@ -1,0 +1,208 @@
+// The scoring contract.
+//
+// Every bug pinned here shipped, and NONE of them failed a test: the suite
+// checked that computeLevels returned five numbers in range and that the star
+// rendered, which is true of a function returning [3,3,3,3,3] for everything.
+// A score is a measurement, so these assert what it MEASURES:
+//
+//   - it discriminates (10x the work must not score the same)
+//   - each axis saturates where its `mid` says it should, not sooner
+//   - a display truncation never reaches an axis
+//   - a memory cap never decides which languages someone knows
+//   - "night hours" is hours
+//
+// Value pins, not shape checks. If a constant is deliberately retuned these
+// numbers change and that is fine — but it must be a decision, not a drift.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { computeLevels } from "../src/star.mjs";
+import { ARMS, MAX_LEVEL } from "../src/starsvg.mjs";
+import { emptyStats, finalize, countLanguage } from "../src/scan.mjs";
+
+const AX = { FIRST: 0, ENGINEERING: 1, CODING: 2, OUTSIDE: 3, TENACITY: 4 };
+const total = (lv) => +lv.reduce((a, b) => a + b, 0).toFixed(1);
+
+// An aggregate in the shape computeLevels reads, with everything at zero unless
+// a test says otherwise — so each test moves exactly one input.
+function agg(over = {}) {
+  return {
+    total_input_tokens: 0,
+    total_output_tokens: 0,
+    projects_count: 0,
+    languages: {},
+    tool_call_counts: {},
+    models: {},
+    hour_buckets: new Array(24).fill(0),
+    night_hours: 0,
+    active_days: 0,
+    longest_streak_days: 0,
+    ...over,
+  };
+}
+
+// ---- it discriminates -------------------------------------------------------
+
+test("the star separates profiles an order of magnitude apart", () => {
+  const at = (mult) =>
+    computeLevels(
+      agg({
+        total_input_tokens: 20e6 * mult,
+        projects_count: 8 * mult,
+        languages: Object.fromEntries([...Array(Math.min(20, 4 * mult))].map((_, i) => [`l${i}`, 1])),
+        tool_call_counts: { Bash: 4000 * mult },
+        models: Object.fromEntries([...Array(Math.min(12, 2 * mult))].map((_, i) => [`m${i}`, 1])),
+        night_hours: 40 * mult,
+        active_days: Math.min(365, 30 * mult),
+        longest_streak_days: Math.min(365, 12 * mult),
+      })
+    );
+  const one = total(at(1));
+  const ten = total(at(10));
+  assert.ok(ten > one, `10x the work must score higher: ${one} -> ${ten}`);
+  // The bug this replaces: 10x scored IDENTICALLY, because every axis was
+  // already clamped. A tenfold difference must move the total by more than a
+  // rounding step.
+  assert.ok(
+    ten - one >= 2,
+    `10x must be clearly separated, got ${one} -> ${ten} (+${(ten - one).toFixed(1)})`
+  );
+});
+
+test("a smaller profile never outscores a larger one on any axis", () => {
+  const small = computeLevels(
+    agg({ total_input_tokens: 5e6, tool_call_counts: { Bash: 500 }, active_days: 10 })
+  );
+  const big = computeLevels(
+    agg({ total_input_tokens: 500e6, tool_call_counts: { Bash: 90000 }, active_days: 97 })
+  );
+  for (const i of [AX.FIRST, AX.CODING, AX.TENACITY])
+    assert.ok(big[i] >= small[i], `axis ${i}: ${big[i]} must be >= ${small[i]}`);
+});
+
+test("an empty history scores zero, not a participation floor", () => {
+  const lv = computeLevels(agg());
+  assert.deepEqual(lv, new Array(ARMS).fill(0));
+});
+
+// ---- saturation is where the constants say ---------------------------------
+
+test("FIRST PRINCIPLES reaches the ceiling at its documented input, not before", () => {
+  // lg(v, 5) hits 5.0 at v = 50 (million tokens). With MAX_LEVEL above 5 the
+  // axis must keep CLIMBING past that instead of flattening.
+  const at = (m) => computeLevels(agg({ total_input_tokens: m * 1e6 }))[AX.FIRST];
+  assert.ok(at(50) >= 4.9 && at(50) <= 5.1, `50M should read ~5.0, got ${at(50)}`);
+  if (MAX_LEVEL > 5)
+    assert.ok(at(250) > at(50), `past 50M must keep climbing: ${at(50)} -> ${at(250)}`);
+  assert.equal(at(1e9), MAX_LEVEL, "absurd input clamps at MAX_LEVEL, never above");
+});
+
+test("no axis can exceed MAX_LEVEL, and the total cannot exceed ARMS*MAX_LEVEL", () => {
+  const lv = computeLevels(
+    agg({
+      total_input_tokens: 1e12,
+      projects_count: 1e6,
+      languages: Object.fromEntries([...Array(200)].map((_, i) => [`l${i}`, 1])),
+      tool_call_counts: { Bash: 1e7 },
+      models: Object.fromEntries([...Array(200)].map((_, i) => [`m${i}`, 1])),
+      night_hours: 1e5,
+      active_days: 1e4,
+      longest_streak_days: 1e4,
+    })
+  );
+  for (const v of lv) assert.ok(v <= MAX_LEVEL, `${v} exceeds MAX_LEVEL ${MAX_LEVEL}`);
+  assert.equal(total(lv), ARMS * MAX_LEVEL);
+});
+
+// ---- a display truncation must never reach an axis --------------------------
+
+test("ENGINEERING keeps growing past the 20 the report displays", () => {
+  // finalize() shows the top 20 projects. That slice used to BE the score
+  // input, so 400 projects and 20 drew byte-identical stars.
+  const e = (n) => computeLevels(agg({ projects_count: n, languages: { python: 1 } }))[AX.ENGINEERING];
+  assert.ok(e(400) > e(20), `400 projects must beat 20: ${e(20)} -> ${e(400)}`);
+});
+
+test("finalize reports the true project count alongside the truncated list", () => {
+  const stats = emptyStats();
+  for (let i = 0; i < 37; i++)
+    stats.sessions.set(`s${i}`, {
+      firstTs: 1e12, lastTs: 1e12 + 6e4, minutes: new Set([1]),
+      project: `p${i}`, models: new Map(), tok: { in: 1, out: 1, cr: 0, cw: 0 },
+      tools: 0, turns: 0, source: "claude_code",
+      exts: new Map(), hours: new Array(24).fill(0), days: new Set(["2001-09-09"]),
+    });
+  const out = finalize(stats);
+  assert.equal(out.projects.length, 20, "the DISPLAY list stays capped");
+  assert.equal(out.projects_count, 37, "the SCORE input is the real number");
+});
+
+// ---- a memory cap must never decide which languages you know ----------------
+
+test("languages are found past the 5,000-path memory cap", () => {
+  const stats = emptyStats();
+  for (let i = 0; i < 5200; i++) countLanguage(stats.langCounts, `/w/f${i}.py`);
+  // Beyond the cap, and the only file of its kind.
+  countLanguage(stats.langCounts, "/w/only.swift");
+  const out = finalize(stats);
+  assert.ok(out.languages.swift, "a language seen after 5,000 paths was lost");
+  assert.ok(out.languages.python > 5000);
+});
+
+test("generated files do not count as a language", () => {
+  const m = new Map();
+  countLanguage(m, "/w/node_modules/x/index.js");
+  countLanguage(m, "/w/src/real.js");
+  assert.equal(m.get("javascript"), 1, "only the non-generated file counts");
+});
+
+// ---- night HOURS, not log lines --------------------------------------------
+
+test("OUTSIDE THE BOX is scored in hours, so one night cannot max it", () => {
+  // 605 night EVENTS inside a single night used to saturate this axis, because
+  // lg(nightHours, 60) was reading a per-event tally.
+  const oneNight = computeLevels(
+    agg({ night_hours: 5, models: { a: 1 }, hour_buckets: [605, 0, 0, 0, 0, 0, ...new Array(18).fill(0)] })
+  )[AX.OUTSIDE];
+  const manyNights = computeLevels(agg({ night_hours: 600, models: { a: 1 } }))[AX.OUTSIDE];
+  assert.ok(oneNight < 3, `one night must not be a high score, got ${oneNight}`);
+  assert.ok(manyNights > oneNight, "25 nights must beat one");
+});
+
+test("a chattier tool loop does not buy a longer arm", () => {
+  const quiet = computeLevels(agg({ night_hours: 20, models: { a: 1 } }))[AX.OUTSIDE];
+  const chatty = computeLevels(
+    agg({ night_hours: 20, models: { a: 1 }, hour_buckets: [50000, 0, 0, 0, 0, 0, ...new Array(18).fill(0)] })
+  )[AX.OUTSIDE];
+  assert.equal(quiet, chatty, "hour_buckets must not affect the score when night_hours is present");
+});
+
+test("older snapshots without night_hours still score, via the documented fallback", () => {
+  const legacy = agg({ models: { a: 1 }, hour_buckets: [100, 50, 0, 0, 0, 0, ...new Array(18).fill(0)] });
+  delete legacy.night_hours;
+  const lv = computeLevels(legacy);
+  assert.ok(lv[AX.OUTSIDE] > 0, "a pre-night_hours snapshot must not score zero");
+});
+
+// ---- monthly and lifetime must be the same function -------------------------
+
+test("a single month can never outscore a lifetime that contains it", () => {
+  // The cap made this possible: monthly buckets carried the UNCAPPED
+  // projects_count while the all-time report carried the truncated list, so a
+  // month drew a longer ENGINEERING arm than the whole history around it.
+  const month = agg({
+    total_input_tokens: 40e6, projects_count: 30,
+    languages: { python: 5, rust: 2 },
+    tool_call_counts: { Bash: 9000 }, models: { a: 1, b: 1 },
+    night_hours: 30, active_days: 28, longest_streak_days: 28,
+  });
+  const life = agg({
+    ...month,
+    total_input_tokens: 240e6, projects_count: 120,
+    languages: { python: 40, rust: 9, sql: 3 },
+    tool_call_counts: { Bash: 60000 },
+    night_hours: 300, active_days: 97, longest_streak_days: 44,
+  });
+  const m = computeLevels(month), l = computeLevels(life);
+  for (let i = 0; i < ARMS; i++)
+    assert.ok(l[i] >= m[i], `axis ${i}: lifetime ${l[i]} must be >= month ${m[i]}`);
+});

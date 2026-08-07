@@ -100,6 +100,76 @@ export function loadTimeline() {
   return months;
 }
 
+// The whole timeline folded into one aggregate, for the LIFETIME star.
+//
+// WHY THIS EXISTS AND WHY IT IS NOT THE SCAN
+//
+// The scan can only see logs that are still on disk, and AI-coding logs age off
+// after ~30 days. So a star drawn from the scan is not a lifetime — it is "the
+// last month or so", and it silently SHRINKS as older work is deleted. The
+// snapshots outlive the logs, so they are the only durable record of what came
+// before. Lifetime therefore accumulates from the timeline, not from the scan.
+//
+// On the first ever run the timeline holds exactly one month — the one just
+// written — so lifetime and monthly are the same star. That is correct, not a
+// bug: with no history yet there is nothing for lifetime to add.
+//
+// The merge rules are NOT the same as loadTimeline's cross-machine rules, and
+// the difference is the calendar:
+//
+//   active_days   SUMS here. Two machines can share a Tuesday; two MONTHS
+//                 cannot share a day, so max would throw away every month but
+//                 the busiest.
+//   streak        still MAX, and still a floor: a run that crosses a month
+//                 boundary is recorded in both months and recoverable from
+//                 neither, so the true streak can only be longer than this.
+//   projects      still MAX, for the reason loadTimeline gives — the normal
+//                 reason a project appears in two months is that it is the
+//                 same project, and the names are deliberately not stored.
+export function lifetimeFromTimeline(timeline) {
+  const life = {
+    month: "lifetime",
+    months: timeline.length,
+    from: timeline[0]?.month ?? null,
+    to: timeline[timeline.length - 1]?.month ?? null,
+    sessions: 0,
+    duration_hours: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_tokens: 0,
+    tool_calls: 0,
+    languages: {},
+    models: {},
+    projects_count: 0,
+    hour_buckets: new Array(24).fill(0),
+    active_days: 0,
+    longest_streak_days: 0,
+  };
+  for (const m of timeline) {
+    life.sessions += m.sessions ?? 0;
+    life.duration_hours += m.duration_hours ?? 0;
+    life.input_tokens += m.input_tokens ?? 0;
+    life.output_tokens += m.output_tokens ?? 0;
+    life.cache_tokens += m.cache_tokens ?? 0;
+    life.tool_calls += m.tool_calls ?? 0;
+    life.active_days += m.active_days ?? 0;
+    life.projects_count = Math.max(life.projects_count, m.projects_count ?? 0);
+    life.longest_streak_days = Math.max(
+      life.longest_streak_days,
+      m.longest_streak_days ?? 0
+    );
+    for (const [k, v] of Object.entries(m.languages ?? {}))
+      life.languages[k] = (life.languages[k] ?? 0) + v;
+    for (const [k, v] of Object.entries(m.models ?? {}))
+      life.models[k] = (life.models[k] ?? 0) + v;
+    const hb = m.hour_buckets ?? [];
+    for (let h = 0; h < 24; h++) life.hour_buckets[h] += hb[h] ?? 0;
+  }
+  life.duration_hours = +life.duration_hours.toFixed(1);
+  life.levels = computeLevels(life);
+  return life;
+}
+
 // One SVG star per month, written next to the snapshots. Every month gets its
 // own silhouette computed only from that month's activity, so laying them out
 // in order shows the shape of the work changing — which is the thing a single

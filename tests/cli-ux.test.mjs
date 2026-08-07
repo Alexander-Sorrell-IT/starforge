@@ -466,7 +466,13 @@ test("a leaky legacy log has a documented way out: the FAIL says what to do, and
   assert.match(reset.stdout, /removed 1 run log\(s\)/);
 
   const green = runCli(home, ["verify"]);
-  assert.equal(green.status, 0, green.stdout);
+  // Asserts the AUDIT check, not verify's global exit code. The exit code is
+  // the OR of every check, so on a host with no usable OS confinement — Ubuntu
+  // 23.10+ blocks unprivileged user namespaces by default — the confinement
+  // check legitimately FAILs and this test would go red for a reason that has
+  // nothing to do with the audit chain it exists to test. Pinning the global
+  // status made a machine-shaped fact look like a regression here.
+  assert.match(green.stdout, /audit log chain \+ tripwire hits[^\n]*PASS/);
   assert.match(green.stdout, /the audit history was RESET/);
   assert.ok(!/contains the literal username/.test(green.stdout), green.stdout);
   // the remedy is not an eraser: the reset stays on the record
