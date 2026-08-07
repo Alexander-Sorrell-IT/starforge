@@ -232,3 +232,46 @@ test("a card that throws costs you that card, never the run", async () => {
   assert.match(text, /could not be drawn/, "the failed card must name itself rather than vanish");
   assert.match(text, /rendering fault only/, "and must say the scan itself was fine");
 });
+
+test("no card can be made to throw, whatever it is handed", async () => {
+  // The shipped crash was a card trusting the shape its one caller happened to
+  // pass. A fuzz over hostile arguments then found 598 crashing combinations
+  // out of 2028 — the same defect, everywhere. Cards are the LAST thing a run
+  // does, so a card that raises can throw away a completed two-minute scan.
+  // The rule this pins: a card either returns lines or returns null. Never
+  // raises, whatever it is given.
+  const W = await import("../src/wrapped.mjs");
+  const hostile = [
+    null, undefined, {}, [], 0, "", NaN, Infinity, true,
+    { weird: 1 }, { rhythm: {} }, { conversation: {} }, { delegation: {} },
+    { concurrency: {} }, [1, 2], ["a", "b", "c", "d", "e"],
+    { projects: [null] }, { projects: "nope" }, { levels: null },
+    { hour_buckets: "no" }, { total_sessions: "many" },
+  ];
+  const cards = [
+    "cardStar", "cardManaged", "cardHistory", "cardTokens", "cardShapeOverTime",
+    "cardRhythm", "cardHowYouDrive", "cardAgents", "cardStack", "cardProjects",
+    "cardProof", "cardShare",
+  ];
+  const failures = [];
+  for (const name of cards) {
+    const fn = W[name];
+    assert.equal(typeof fn, "function", `${name} must be exported`);
+    for (const a of hostile) {
+      for (const b of hostile) {
+        try {
+          const out = fn(a, b, W.DEFAULT_RATES);
+          if (out !== null && !Array.isArray(out))
+            failures.push(`${name} returned ${typeof out}, expected array or null`);
+          if (Array.isArray(out))
+            for (const line of out)
+              if (typeof line !== "string")
+                failures.push(`${name} produced a non-string line: ${typeof line}`);
+        } catch (e) {
+          failures.push(`${name}(${JSON.stringify(a)}, ${JSON.stringify(b)}) threw: ${e.message}`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(failures.slice(0, 5), [], `${failures.length} card failures; first few shown`);
+});

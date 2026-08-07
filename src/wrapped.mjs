@@ -99,6 +99,18 @@ export function wrapWords(text, width) {
 // deliberate spacer, and filter(Boolean) silently ate every one of them.
 const keep = (l) => l !== null && l !== undefined && l !== false;
 
+// Every card normalises its OWN inputs rather than trusting whoever called it.
+// A fuzz over hostile arguments crashed 598 of 2028 combinations — because each
+// card assumed the exact shape the CLI happened to pass, and the CLI is not the
+// only caller (tests, the safe builder, and anything future). A card that
+// throws is a card that can cost someone a completed scan, so the rule here is
+// that a card either draws something or returns null. It never raises.
+const lv5 = (levels) =>
+  Array.from({ length: ARMS }, (_, i) => clampLevel(Array.isArray(levels) ? levels[i] : undefined));
+const obj = (o) => (o && typeof o === "object" && !Array.isArray(o) ? o : {});
+const arr = (a) => (Array.isArray(a) ? a : []);
+const num = (n, fallback = 0) => (Number.isFinite(Number(n)) ? Number(n) : fallback);
+
 const big = (s) => `${B}${WH}${s}${R}`;
 const head = (s) => `${D}${s}${R}`;
 const quip = (s) => `${WH}${s}${R}`;
@@ -209,7 +221,8 @@ export function estimateCost(agg, rates = DEFAULT_RATES) {
 // Cards. Each returns an array of lines, or null when it has nothing to say —
 // a card with no data is skipped rather than printed empty.
 
-export function cardStar(levels, agg) {
+export function cardStar(rawLevels, agg) {
+  const levels = lv5(rawLevels);
   const total = levels.reduce((a, b) => a + b, 0);
   const rating = total >= 22 ? "S+" : total >= 20 ? "S" : total >= 17 ? "A" : total >= 13 ? "B" : "C";
   const art = miniStar(levels, 23, 11);
@@ -226,8 +239,9 @@ export function cardStar(levels, agg) {
   return lines;
 }
 
-export function cardManaged(agg, timeline) {
-  if (!agg.total_sessions) return null;
+export function cardManaged(rawAgg, rawTimeline) {
+  const agg = obj(rawAgg), timeline = arr(rawTimeline);
+  if (!num(agg.total_sessions)) return null;
   const hours = Math.round(agg.total_duration_hours);
   const perDay = agg.active_days > 0 ? agg.total_duration_hours / agg.active_days : 0;
   const verdict =
@@ -248,8 +262,9 @@ export function cardManaged(agg, timeline) {
   ].filter(keep);
 }
 
-export function cardHistory(timeline) {
-  if (!timeline || timeline.length < 2) return null;
+export function cardHistory(rawTimeline) {
+  const timeline = arr(rawTimeline).filter((m) => m && typeof m === "object" && typeof m.month === "string");
+  if (timeline.length < 2) return null;
   const months = timeline.slice(-12);
   const max = Math.max(...months.map((m) => m.duration_hours), 1);
   const rows = months.map((m) => {
@@ -276,7 +291,9 @@ export function cardHistory(timeline) {
   ].filter(keep);
 }
 
-export function cardTokens(agg, providers, rates) {
+export function cardTokens(rawAgg, providers, rawRates) {
+  const agg = obj(rawAgg);
+  const rates = { ...DEFAULT_RATES, ...obj(rawRates) };
   const work = (agg.total_input_tokens ?? 0) + (agg.total_output_tokens ?? 0);
   const cache = (agg.total_cache_read_tokens ?? 0) + (agg.total_cache_write_tokens ?? 0);
   if (work + cache === 0) return null;
@@ -306,8 +323,8 @@ export function cardTokens(agg, providers, rates) {
   return lines;
 }
 
-export function cardShapeOverTime(timeline) {
-  const months = (timeline ?? []).filter((m) => m.levels).slice(-5);
+export function cardShapeOverTime(rawTimeline) {
+  const months = arr(rawTimeline).filter((m) => m && Array.isArray(m.levels) && typeof m.month === "string").slice(-5);
   if (months.length < 2) return null;
   const arts = months.map((m) => miniStar(m.levels, 13, 7));
   const lines = [head("THE SHAPE OVER TIME"), ""];
@@ -389,7 +406,8 @@ export function cardAgents(profile) {
   ];
 }
 
-export function cardStack(agg, profile) {
+export function cardStack(rawAgg, profile) {
+  const agg = obj(rawAgg);
   const tools = (profile?.delegation?.tool_mix ?? []).slice(0, 5);
   const models = Object.entries(agg.models ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 3);
   const langs = Object.entries(agg.languages ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 4);
@@ -411,8 +429,8 @@ export function cardStack(agg, profile) {
   return lines;
 }
 
-export function cardProjects(agg) {
-  const projects = (agg.projects ?? []).slice(0, 5);
+export function cardProjects(rawAgg) {
+  const projects = arr(obj(rawAgg).projects).filter((p) => p && typeof p.name === "string").slice(0, 5);
   if (!projects.length) return null;
   const max = Math.max(...projects.map((p) => p.sessions));
   return [
@@ -451,7 +469,8 @@ export function cardProof(confinement) {
   ].filter(keep);
 }
 
-export function cardShare(levels, url) {
+export function cardShare(rawLevels, url) {
+  const levels = lv5(rawLevels);
   const total = levels.reduce((a, b) => a + b, 0);
   const shape = AXES.map((_, i) => "▁▂▃▄▅▆▇█"[Math.min(7, Math.round((levels[i] / MAX_LEVEL) * 7))]).join("");
   const lines = [
