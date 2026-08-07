@@ -98,6 +98,39 @@ test("scan and profile agree on the model vocabulary", () => {
     assert.doesNotMatch(m, /^\//, `a filesystem path is being reported as a model: ${m}`);
 });
 
+// ---- the streak walk, in real timezones ------------------------------------
+//
+// These exist because the only thing catching a broken streak walk was a grep
+// for `toISOString().slice(0, 10)` in the source. A grep is a proxy: writing
+// the same UTC key a different way — getUTCFullYear(), a template literal —
+// slips past it silently. It also let a REAL bug through, one introduced while
+// fixing this very file: the walk parsed "today" with Date.parse (UTC midnight)
+// and read it back with localDayKey (local), so west of Greenwich it started a
+// day early. In every Americas timezone a user active TODAY scored a current
+// streak of 0, and a three-day run scored 2. UTC and every eastern zone were
+// fine, which is why nothing noticed.
+for (const tz of ["UTC", "America/Chicago", "America/Los_Angeles", "Asia/Tokyo", "Pacific/Auckland"]) {
+  test(`current streak counts today and yesterday correctly in ${tz}`, async () => {
+    process.env.TZ = tz;
+    const { computeStreaks } = await import(`../src/profile.mjs?tz=${tz}`);
+    assert.equal(
+      computeStreaks(["2026-07-15"], "2026-07-15").current, 1,
+      `${tz}: active today must be a current streak of 1`
+    );
+    const run = computeStreaks(["2026-07-13", "2026-07-14", "2026-07-15"], "2026-07-15");
+    assert.equal(run.current, 3, `${tz}: three consecutive days ending today`);
+    assert.equal(run.longest, 3, `${tz}: longest run is three`);
+    assert.equal(
+      computeStreaks(["2026-07-13", "2026-07-15"], "2026-07-15").current, 1,
+      `${tz}: a gap yesterday leaves only today`
+    );
+    assert.equal(
+      computeStreaks(["2026-07-14"], "2026-07-15").current, 0,
+      `${tz}: active yesterday but not today is a broken streak`
+    );
+  });
+}
+
 test("the day key helper is imported, not reimplemented", () => {
   // The root cause is duplication, so this asserts the duplication is gone: a
   // second copy of localDayKey is a copy that will be fixed once.
