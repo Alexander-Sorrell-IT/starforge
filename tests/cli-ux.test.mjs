@@ -162,8 +162,17 @@ test("the flags the proof path passes to the CLI are registered — the headline
   const srcFlags = new Set();
   for (const f of readdirSync(join(ROOT, "src")).filter((n) => n.endsWith(".mjs"))) {
     const text = readFileSync(join(ROOT, "src", f), "utf8");
-    for (const m of text.matchAll(/argv:\s*\[([^\]]*)\]/g))
+    for (const m of text.matchAll(/argv:\s*\[([^\]]*)\]/g)) {
+      // runConfined() can target a different entry point than cli.mjs — the
+      // positive control runs confine.mjs --probe under the same sandbox. Its
+      // flags belong to THAT program, not to the CLI, so requiring them in
+      // FLAG_SPEC would be wrong. Only skip when the call says so explicitly:
+      // an argv with no `entry:` beside it is still headed for cli.mjs and is
+      // still held to the rule this test exists for.
+      const around = text.slice(Math.max(0, m.index - 160), m.index + m[0].length + 160);
+      if (/entry:\s*"(?!cli\.mjs)/.test(around)) continue;
       for (const g of m[1].matchAll(/"(--[a-z0-9-]+)"/g)) srcFlags.add(g[1]);
+    }
   }
   // (b) flags on any line of the shipped proof script that invokes cli.mjs
   const sh = readFileSync(join(ROOT, "bin", "starforge-proof.sh"), "utf8");

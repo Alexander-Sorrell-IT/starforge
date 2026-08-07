@@ -229,8 +229,15 @@ and the command `prove` prints for you to run (it is built by
 `buildProofCommand()`, which launches the child through `/usr/bin/env
 STARFORGE_CONFINEMENT=<mode>` — that is why the printed string and the executed
 process cannot drift apart). `src/confine.mjs` also exports `runConfined()`,
-which does the same for programmatic use, but **nothing in the CLI calls it** —
-only the test suite does, so no user reaches that path. And the bare §1 command
+and **the CLI does now call it**: pressing `[p]` at the end-of-run menu runs the
+three-step proof for you — the probe outside the sandbox (must connect), the
+same probe inside it (the kernel must refuse), and the scan itself under the
+sealed network. That path exists because a proof you have to assemble by hand is
+a proof most people never run, and an unrun proof convinces nobody. It is still
+the **weaker** form and says so on screen: starforge is running a check on
+starforge, and a build that wanted to lie could lie there. The strong form is
+unchanged and is one line away — `sh bin/starforge-proof.sh`, run by you, in
+your shell, where this process gets no vote. And the bare §1 command
 above sets nothing: run it by hand and the log records `"none"` for a run that
 really was confined. Any process can set that variable, and none of this is
 evidence. That is why the log stores it with `verified: false`: only §1, run by
@@ -331,17 +338,17 @@ and read the diff. `diff -r` prints `No such file or directory` (not a diff) if
 `package/src` is missing, which is the wrong-package case above.
 
 **Comparing against a tarball you build yourself.** The registry commands above
-work against the published package (`starforge-cli@0.5.2`). This variant needs
+work against the published package (`starforge-cli@0.6.0`). This variant needs
 no network at all — it packs THIS checkout and is how the hash algorithms above
 were verified in the first place. Running both and comparing the two shasums is
 the actual check that what npm serves is what this tree builds:
 
 ```
 npm pack --pack-destination /tmp/sfpack --json     # packs THIS checkout; prints filename, shasum, integrity
-shasum -a 1 /tmp/sfpack/starforge-cli-0.5.2.tgz                     # equals the printed shasum (SHA-1)
-openssl dgst -sha512 -binary /tmp/sfpack/starforge-cli-0.5.2.tgz | base64
+shasum -a 1 /tmp/sfpack/starforge-cli-0.6.0.tgz                     # equals the printed shasum (SHA-1)
+openssl dgst -sha512 -binary /tmp/sfpack/starforge-cli-0.6.0.tgz | base64
                                                    # equals the printed integrity, minus "sha512-"
-tar -xzf /tmp/sfpack/starforge-cli-0.5.2.tgz -C /tmp/sfpack
+tar -xzf /tmp/sfpack/starforge-cli-0.6.0.tgz -C /tmp/sfpack
 diff -r /tmp/sfpack/package/src ./src              # expect: no output
 ```
 

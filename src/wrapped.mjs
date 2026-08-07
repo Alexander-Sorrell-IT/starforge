@@ -469,22 +469,63 @@ export function cardProof(confinement) {
   ].filter(keep);
 }
 
-export function cardShare(rawLevels, url) {
+/**
+ * The share payload the QR actually carries.
+ *
+ * A QR pointing at the repo is useless as a share: it tells a phone where the
+ * SOURCE lives, not what your run said. A hosted wrapped solves this by
+ * uploading your results and encoding a URL to them — which is exactly the
+ * thing this tool refuses to do. So the QR carries the RESULTS THEMSELVES as
+ * text. Scan it and your phone shows the same numbers the terminal showed;
+ * nothing was published to make that work, and nothing needs to stay up.
+ *
+ * Capacity is the constraint: 271 bytes at version 10, EC level M. This stays
+ * well inside it and is truncated defensively rather than throwing.
+ */
+export function sharePayload(rawLevels, agg, url) {
+  const levels = lv5(rawLevels);
+  const a = obj(agg);
+  const total = levels.reduce((x, y) => x + y, 0);
+  const rating = total >= 22 ? "S+" : total >= 20 ? "S" : total >= 17 ? "A" : total >= 13 ? "B" : "C";
+  const work = num(a.total_input_tokens) + num(a.total_output_tokens);
+  const cache = num(a.total_cache_read_tokens) + num(a.total_cache_write_tokens);
+  const cachePct = work + cache > 0 ? Math.round((cache / (work + cache)) * 100) : 0;
+  const axes = AXES.map((ax, i) => `${ax.split(" ")[0].slice(0, 4).toLowerCase()} ${levels[i]}`).join(" ");
+  const lines = [
+    `starforge skill star ${total.toFixed(1)}/25 (${rating})`,
+    axes,
+    `${fmt(num(a.total_sessions))} sessions, ${Math.round(num(a.total_duration_hours))}h active, ${num(a.active_days)} days`,
+    `${human(work + cache)} tokens, ${cachePct}% cached`,
+    num(a.longest_streak_days) ? `longest streak ${num(a.longest_streak_days)}d` : null,
+    "this code carries the numbers themselves, not a link to them.",
+    url,
+  ].filter(keep);
+  let text = lines.join("\n");
+  if (text.length > 260) text = text.slice(0, 257) + "...";
+  return text;
+}
+
+export function cardShare(rawLevels, agg, url) {
   const levels = lv5(rawLevels);
   const total = levels.reduce((a, b) => a + b, 0);
   const shape = AXES.map((_, i) => "▁▂▃▄▅▆▇█"[Math.min(7, Math.round((levels[i] / MAX_LEVEL) * 7))]).join("");
+  const payload = sharePayload(levels, agg, url ?? "https://github.com/Alexander-Sorrell-IT/starforge");
   const lines = [
     head("SHARE IT"),
     "",
     `  ${WH}my skill star · ${total.toFixed(1)}/25 · ${shape}${R}`,
     `  ${D}${AXES.map((a, i) => `${a.split(" ")[0].slice(0, 4).toLowerCase()} ${levels[i]}`).join(" · ")}${R}`,
     "",
-    `  ${CY}${url}${R}`,
-    "",
   ];
-  for (const row of qrToTerminal(url, { color: true }).split("\n")) lines.push("  " + row);
+  try {
+    for (const row of qrToTerminal(payload, { color: true }).split("\n")) lines.push("  " + row);
+  } catch {
+    lines.push(`  ${D}(payload too long to encode as a QR)${R}`);
+  }
   lines.push("");
-  lines.push(D + "  card and page are files on your disk. nothing was posted." + R);
+  lines.push(D + "  scan it: your phone shows THESE NUMBERS. the code carries them" + R);
+  lines.push(D + "  outright — there is no link in it, and no server that has to be" + R);
+  lines.push(D + "  up for it to resolve. decode it yourself and see." + R);
   return lines;
 }
 
@@ -506,7 +547,7 @@ export function buildCards(input) {
     [cardStack(agg, profile), "\x1b[38;5;120m"],
     [cardProjects(agg), "\x1b[38;5;120m"],
     [cardProof(confinement), "\x1b[38;5;220m"],
-    [cardShare(levels, url ?? "https://github.com/Alexander-Sorrell-IT/starforge"), CY],
+    [cardShare(levels, agg, url ?? "https://github.com/Alexander-Sorrell-IT/starforge"), CY],
   ];
   return specs.filter(([lines]) => Array.isArray(lines) && lines.length).map(([lines, color]) => ({ lines, color }));
 }
@@ -540,7 +581,7 @@ export function buildCardsSafe(input) {
       ["YOUR TOOLS & MODELS", () => cardStack(input.agg, input.profile)],
       ["YOUR TOP PROJECTS", () => cardProjects(input.agg)],
       ["WHAT LEFT THIS MACHINE", () => cardProof(input.confinement)],
-      ["SHARE IT", () => cardShare(input.levels, input.url ?? "https://github.com/Alexander-Sorrell-IT/starforge")],
+      ["SHARE IT", () => cardShare(input.levels, input.agg, input.url ?? "https://github.com/Alexander-Sorrell-IT/starforge")],
     ];
     for (const [name, fn] of each) {
       try {

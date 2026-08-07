@@ -3,6 +3,6 @@
   "algorithm": "sha256",
   "files": {
     "tripwire.mjs": "e5d8169e04cc8406363d37bc89d5e49cd4190cce9e4d068c646649f41f95b4bd",
-    "confine.mjs": "af7c8d084b59d332fe2bd1b839c064435bece61c9c30d98a792f03dc77d0e96f"
+    "confine.mjs": "197d1f66b2c9acb1b2b92a7fb861dd7300fde616e1e556d22daa3f023e9f0671"
   }
 }

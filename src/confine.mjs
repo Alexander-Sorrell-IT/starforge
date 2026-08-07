@@ -132,8 +132,13 @@ function profileOneLine() {
 // recorded as "none". Putting it INSIDE argv rather than in spawn's env keeps
 // the printed command byte-identical to what is executed.
 const ENV_BIN = "/usr/bin/env";
-function buildParts({ argv = [], srcDir = SRC_DIR, mode } = {}) {
-  const cli = join(srcDir, "cli.mjs");
+// `entry` so the POSITIVE CONTROL can be run under confinement too, not just
+// the scan. Proving the scan completes with the network sealed is only half the
+// demonstration; the other half is the probe being refused inside the same wall
+// that let it connect outside. Hardcoding cli.mjs made that impossible to do
+// from inside the tool.
+function buildParts({ argv = [], srcDir = SRC_DIR, mode, entry = "cli.mjs" } = {}) {
+  const cli = join(srcDir, entry);
   if (mode === "sandbox-exec") {
     return [
       ENV_BIN,
@@ -172,20 +177,55 @@ export function buildProofCommand({ argv = [], srcDir = SRC_DIR } = {}) {
 // ---- running under confinement ---------------------------------------------
 // The ONE place starforge spawns a child process: the launcher for the
 // confined re-run. Streams the child's output straight through.
-export async function runConfined({ argv = [], srcDir = SRC_DIR } = {}) {
+export async function runConfined({ argv = [], srcDir = SRC_DIR, entry = "cli.mjs", quiet = false } = {}) {
   const det = detectConfinement();
   if (!det.recommended) {
     return { ok: false, code: null, mode: null, command: null, error: det.notes.at(-1) };
   }
-  const parts = buildParts({ argv, srcDir, mode: det.recommended });
+  const parts = buildParts({ argv, srcDir, mode: det.recommended, entry });
   const command = parts.map(shQuote).join(" ");
-  console.log(`confined run (${det.recommended}): ${maskPath(command)}`);
+  if (!quiet) console.log(`confined run (${det.recommended}): ${maskPath(command)}`);
   const child = spawn(parts[0], parts.slice(1), { stdio: "inherit" });
   const code = await new Promise((resolve, reject) => {
     child.on("error", reject);
     child.on("close", resolve);
   });
   return { ok: code === 0, code, mode: det.recommended, command };
+}
+
+/**
+ * Run the positive-control probe in a CHILD process, with or without the
+ * sandbox.
+ *
+ * The control cannot be run in-process from the CLI: the CLI arms the tripwire
+ * at startup, so `net.Socket.connect` is already replaced by a thrower and the
+ * probe fails for a reason that has nothing to do with the kernel. An earlier
+ * version did exactly that and printed "connected" for a probe the tripwire had
+ * blocked — a control that CANNOT succeed is not a control, and reporting it as
+ * one turned the whole proof into theatre.
+ *
+ * Exit codes come from confine.mjs --probe: 0 = kernel refused, 1 = egress open,
+ * 2 = ambiguous (a timeout is never counted as blocked).
+ */
+export async function runProbe({ confined, srcDir = SRC_DIR } = {}) {
+  const probe = join(srcDir, "confine.mjs");
+  let parts;
+  if (confined) {
+    const det = detectConfinement();
+    if (!det.recommended) return { ok: false, code: null, error: det.notes.at(-1) };
+    parts = buildParts({ argv: ["--probe"], srcDir, mode: det.recommended, entry: "confine.mjs" });
+  } else {
+    parts = [process.execPath, probe, "--probe"];
+  }
+  const child = spawn(parts[0], parts.slice(1), { stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  child.stdout.on("data", (d) => (out += d));
+  child.stderr.on("data", (d) => (out += d));
+  const code = await new Promise((resolve) => {
+    child.on("error", () => resolve(null));
+    child.on("close", resolve);
+  });
+  return { ok: code != null, code, output: out.trim() };
 }
 
 // ---- the positive control ---------------------------------------------------

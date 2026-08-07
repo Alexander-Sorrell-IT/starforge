@@ -392,19 +392,35 @@ test("the standout upload figures are attributed and dated, never asserted bare"
 
 // ---- finding: PROVE-IT §4 credited runConfined(), which the CLI never calls -
 
-test("PROVE-IT §4 does not credit runConfined() with a path a user reaches", () => {
-  assert.match(
-    PROVE,
-    /nothing in the CLI calls it/i,
-    "PROVE-IT must say plainly that runConfined() is not on any user-reachable path"
-  );
-  // What makes that sentence true. If someone wires runConfined into the CLI
-  // (a genuinely nice `--confined` demo), this fails loudly instead of leaving
-  // the doc quietly wrong in the other direction.
-  assert.ok(
-    !/\brunConfined\b/.test(CLI),
-    "src/cli.mjs now references runConfined — PROVE-IT §4 must be rewritten to match"
-  );
+// The previous version of this test asserted the opposite — that nothing in the
+// CLI called runConfined() — and its own comment said that wiring it in should
+// fail loudly rather than leave the doc quietly wrong. It did exactly that when
+// the end-of-run [p] action landed. So it is rewritten, not deleted: the doc and
+// the code have to agree in whichever direction they point.
+test("PROVE-IT §4 matches whether the CLI actually calls runConfined()", () => {
+  const cliCalls = /\brunConfined\b/.test(CLI);
+  if (cliCalls) {
+    assert.match(
+      PROVE,
+      /the CLI does now call it/i,
+      "the CLI calls runConfined() — PROVE-IT §4 must say so instead of denying it"
+    );
+    // A tool-run proof is weaker than one the user runs, and the doc must not
+    // let that distinction blur just because the convenient path now exists.
+    assert.match(PROVE, /weaker/i, "PROVE-IT must mark the tool-run proof as the weaker form");
+    assert.match(
+      CLI,
+      /weaker form/i,
+      "the CLI must say on screen that a proof it ran on itself is the weaker form"
+    );
+  } else {
+    assert.match(
+      PROVE,
+      /nothing in the CLI calls it/i,
+      "runConfined() is unreachable from the CLI — PROVE-IT must say so"
+    );
+  }
+  // Either way, the strong form stays the headline.
   assert.match(PROVE, /bin\/starforge-proof\.sh/);
 });
 

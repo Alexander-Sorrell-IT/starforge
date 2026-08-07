@@ -105,7 +105,7 @@ import {
 } from "./audit.mjs";
 import { armTripwire } from "./tripwire.mjs";
 import { verifyCli } from "./verify.mjs";
-import { detectConfinement, buildProofCommand, sandboxProfile } from "./confine.mjs";
+import { detectConfinement, buildProofCommand, sandboxProfile, runConfined, runProbe } from "./confine.mjs";
 
 const BOLD = "\x1b[1m", DIM = "\x1b[2m", CYAN = "\x1b[36m", RESET = "\x1b[0m";
 
@@ -829,8 +829,71 @@ async function main() {
   }
 
   // ---- what to do next -----------------------------------------------------
+  // In a terminal these are ACTIONS you press a key for, not commands to copy
+  // out and retype. A proof you have to go and assemble yourself is a proof
+  // most people never run, and an unrun proof persuades nobody.
+  //
+  // [p] genuinely executes the thing: the probe outside the sandbox (must
+  // connect, or the control is meaningless), the same probe inside it (the
+  // kernel must refuse), and the scan itself under the sealed network. The
+  // caveat stays printed — a check this process ran on itself is weaker than
+  // one you ran — but weaker is not worthless, and the strong form is one
+  // keypress away in the same menu.
+  // --no-pace is about CARD pacing, not about the menu. Gating both on it meant
+  // "print the story at once" also silently removed the proof/receipt/daemon
+  // actions, which are the most important thing on the screen. The menu needs a
+  // terminal, and nothing else.
+  const interactive = process.stdout.isTTY && process.stdin.isTTY;
+  if (interactive) {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    let done = false;
+    while (!done) {
+      console.log(`\n${BOLD}${CYAN}before you go${RESET}`);
+      console.log(`  ${BOLD}[p]${RESET} prove it   ${DIM}ask the kernel whether anything can leave${RESET}`);
+      console.log(`  ${BOLD}[r]${RESET} receipt    ${DIM}every field it KEPT, read from the bytes on disk${RESET}`);
+      const dst0 = daemonStatus();
+      if (dst0.supported && !dst0.installed)
+        console.log(`  ${BOLD}[d]${RESET} daemon     ${DIM}schedule monthly re-scans so history outlives the logs${RESET}`);
+      console.log(`  ${BOLD}[q]${RESET} done`);
+      const key = (await rl.question("  > ")).trim().toLowerCase();
+      if (key === "p") {
+        console.log(`\n${BOLD}1/3 probe OUTSIDE the sandbox${RESET} ${DIM}(must connect, or the control is invalid)${RESET}`);
+        // In a CHILD process: this one has the tripwire armed, so an in-process
+        // probe could never connect and the control would be worthless.
+        const outside = await runProbe({ confined: false });
+        console.log(`  ${maskText(outside.output ?? "")}`);
+        const controlValid = outside.code === 1;
+        console.log(`  ${controlValid ? "control VALID — egress really is open here" : "control INVALID — the probe did not connect (offline?)"}`);
+        console.log(`\n${BOLD}2/3 the same probe INSIDE the sandbox${RESET} ${DIM}(the kernel must refuse)${RESET}`);
+        const inside = await runProbe({ confined: true });
+        console.log(`  ${maskText(inside.output ?? "")}`);
+        console.log(`  exit ${inside.code} ${DIM}(0 = the kernel refused it)${RESET}`);
+        console.log(`\n${BOLD}3/3 the scan itself, network sealed${RESET}`);
+        const scan = await runConfined({ argv: ["--yes", "--no-snapshot", "--no-wrapped", "--no-providers"], quiet: true });
+        console.log(`  exit ${scan.code} ${DIM}(0 = it completed with no network at all)${RESET}`);
+        const pass = controlValid && inside.code === 0 && scan.code === 0;
+        console.log(`\n${pass ? `${BOLD}PASS${RESET} — egress open outside, refused inside, scan fine either way` : `${BOLD}INCONCLUSIVE${RESET} — read the three results above`}`);
+        console.log(`${DIM}this ran from inside starforge, so it is the weaker form. the strong${RESET}`);
+        console.log(`${DIM}one is you running it: sh bin/starforge-proof.sh${RESET}`);
+      } else if (key === "r") {
+        console.log("");
+        console.log(renderReceipt(buildReceipt(), { color: !process.env.NO_COLOR }));
+      } else if (key === "d") {
+        const { files, activate } = writeSchedule();
+        console.log("");
+        for (const f of files) console.log(`wrote ${maskPath(f)}`);
+        console.log(`${BOLD}read it, then load it yourself:${RESET}\n  ${activate}`);
+        console.log(`${DIM}this tool does not load it for you.${RESET}`);
+      } else {
+        done = true;
+      }
+    }
+    rl.close();
+  }
+
   // Two offers, and the order matters: the proof first, because everything
   // above this line is a claim until you check it.
+  if (!interactive) {
   console.log(`\n${BOLD}${CYAN}prove it — nothing left this machine${RESET}`);
   console.log(`${DIM}everything you just saw was computed in this process from files already${RESET}`);
   console.log(`${DIM}on your disk. no process can prove that about itself, so don't take it${RESET}`);
@@ -852,8 +915,10 @@ async function main() {
   console.log(`${DIM}    what the code claims. covers scheduled runs too, which is the${RESET}`);
   console.log(`${DIM}    only accounting a background scan can have.${RESET}`);
 
+  }
+
   const dst = daemonStatus();
-  if (dst.supported && !dst.installed) {
+  if (!interactive && dst.supported && !dst.installed) {
     console.log(`\n${BOLD}build a longer history?${RESET}`);
     console.log(`${DIM}AI-coding logs age off disk after ~30 days, so this run can only see${RESET}`);
     console.log(`${DIM}what survives. the monthly snapshots outlive them — if something takes${RESET}`);
