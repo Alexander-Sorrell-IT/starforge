@@ -171,6 +171,33 @@ function sparkline(buckets) {
 // anywhere that matters.
 export const DEFAULT_RATES = { in: 15, out: 75, cache: 1.5, note: "assumed $/Mtok, not fetched" };
 
+/**
+ * Accept whatever the caller has and return [{name, tokens}], biggest first.
+ *
+ * Deliberately tolerant of shape: an object keyed by provider name (what
+ * scanAllProviders returns), an array of rows, or null. The crash this replaces
+ * was a card assuming one shape and taking down the whole run at the very end —
+ * after the scan, after the snapshots, after everything expensive had already
+ * been done. A presentation layer must not be able to do that.
+ */
+export function normaliseProviders(providers) {
+  if (!providers) return [];
+  const rows = Array.isArray(providers)
+    ? providers.map((p) => [p.name ?? p.provider ?? "?", p])
+    : Object.entries(providers);
+  return rows
+    .map(([name, p]) => ({
+      name: String(name),
+      tokens:
+        (p?.input ?? 0) + (p?.output ?? 0) + (p?.cacheRead ?? 0) + (p?.cacheWrite ?? 0) ||
+        (p?.total_tokens ?? 0),
+      sessions: p?.sessions ?? 0,
+    }))
+    .filter((p) => p.tokens > 0)
+    .sort((a, b) => b.tokens - a.tokens)
+    .slice(0, 5);
+}
+
 export function estimateCost(agg, rates = DEFAULT_RATES) {
   const inTok = agg.total_input_tokens ?? 0;
   const outTok = agg.total_output_tokens ?? 0;
@@ -265,12 +292,16 @@ export function cardTokens(agg, providers, rates) {
     `  ${D}${rates.note ?? "assumed rates"} — this tool makes no network calls,${R}`,
     `  ${D}so it cannot look up today's prices. Check before quoting it.${R}`,
   ];
-  const provs = (providers ?? []).filter((p) => (p.total_tokens ?? 0) > 0).slice(0, 5);
+  // scanAllProviders() returns an OBJECT keyed by provider name, with rows of
+  // {sessions, input, output, cacheRead, cacheWrite} — not an array, and not a
+  // total_tokens field. Assuming an array crashed every run that did NOT pass
+  // --no-providers, which is the default path and the one real users take.
+  const provs = normaliseProviders(providers);
   if (provs.length) {
-    const max = Math.max(...provs.map((p) => p.total_tokens));
+    const max = Math.max(...provs.map((p) => p.tokens));
     lines.push("");
     for (const p of provs)
-      lines.push(`  ${D}${pad(p.name ?? p.provider ?? "?", 12)}${R} ${bar(p.total_tokens, max, 16)} ${D}${human(p.total_tokens)}${R}`);
+      lines.push(`  ${D}${pad(p.name, 12)}${R} ${bar(p.tokens, max, 16)} ${D}${human(p.tokens)}${R}`);
   }
   return lines;
 }
@@ -459,6 +490,54 @@ export function buildCards(input) {
     [cardShare(levels, url ?? "https://github.com/Alexander-Sorrell-IT/starforge"), CY],
   ];
   return specs.filter(([lines]) => Array.isArray(lines) && lines.length).map(([lines, color]) => ({ lines, color }));
+}
+
+/**
+ * Build the cards, but never let one take down the run.
+ *
+ * A single card threw on the default path — `providers` was an object where the
+ * code expected an array — and killed the whole invocation at the very end,
+ * after the scan, the snapshots and the stars had all completed. The user lost
+ * a two-minute run to a formatting bug in the last thing that draws. Drawing is
+ * the least important thing this program does and it must fail like it: a card
+ * that throws is replaced by a short note naming itself, and the rest print.
+ */
+export function buildCardsSafe(input) {
+  try {
+    return buildCards(input);
+  } catch (e) {
+    // A failure inside buildCards() itself: fall back to per-card isolation so
+    // one bad card cannot cost the user the other eleven.
+    const out = [];
+    const each = [
+      ["THE SHAPE OF YOUR WORK", () => cardStar(input.levels, input.agg)],
+      ["YOU MANAGED", () => cardManaged(input.agg, input.timeline)],
+      ["YOUR CODING HISTORY", () => cardHistory(input.timeline)],
+      ["YOU BURNED THIS MANY TOKENS", () => cardTokens(input.agg, input.providers, input.rates ?? DEFAULT_RATES)],
+      ["THE SHAPE OVER TIME", () => cardShapeOverTime(input.timeline)],
+      ["WHEN YOU CODE", () => cardRhythm(input.profile)],
+      ["HOW YOU DRIVE THE MACHINE", () => cardHowYouDrive(input.profile)],
+      ["HOW MANY AGENTS YOU JUGGLE", () => cardAgents(input.profile)],
+      ["YOUR TOOLS & MODELS", () => cardStack(input.agg, input.profile)],
+      ["YOUR TOP PROJECTS", () => cardProjects(input.agg)],
+      ["WHAT LEFT THIS MACHINE", () => cardProof(input.confinement)],
+      ["SHARE IT", () => cardShare(input.levels, input.url ?? "https://github.com/Alexander-Sorrell-IT/starforge")],
+    ];
+    for (const [name, fn] of each) {
+      try {
+        const lines = fn();
+        if (Array.isArray(lines) && lines.length) out.push({ lines, color: CY });
+      } catch (err) {
+        out.push({
+          lines: [head(name), "", `  ${D}this card could not be drawn: ${String(err?.message ?? err).slice(0, 90)}${R}`,
+            `  ${D}the scan itself completed — this is a rendering fault only.${R}`],
+          color: "\x1b[38;5;220m",
+        });
+      }
+    }
+    void e;
+    return out;
+  }
 }
 
 /** Render every card as one string (no pacing) — used when stdout is not a TTY. */

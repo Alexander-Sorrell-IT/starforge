@@ -177,3 +177,58 @@ test("wrapWords never exceeds its width and loses no words", () => {
     assert.equal(lines.join(" "), text, "wrapping must not drop or duplicate words");
   }
 });
+
+test("providers come as an OBJECT keyed by name — the shape the scanner returns", async () => {
+  // This is the bug that shipped: cardTokens did `(providers ?? []).filter(...)`
+  // on the value of scanAllProviders().providers, which is an object keyed by
+  // provider name with rows of {sessions,input,output,cacheRead,cacheWrite}.
+  // It threw on the DEFAULT path — every run that did not pass --no-providers —
+  // and killed the whole invocation after the scan, the snapshots and the stars
+  // had all finished. Every test I had written used --no-providers, so nothing
+  // covered the path real users take.
+  const { normaliseProviders, cardTokens } = await import("../src/wrapped.mjs");
+  const real = {
+    gemini: { sessions: 4, input: 1e8, output: 9e7, cacheRead: 7e8, cacheWrite: 1e7 },
+    copilot: { sessions: 36, input: 2e8, output: 5e7, cacheRead: 2e8, cacheWrite: 4e7 },
+    idle: { sessions: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  };
+  const norm = normaliseProviders(real);
+  assert.equal(norm.length, 2, "providers with no tokens must be dropped");
+  // gemini totals 900M against copilot's 490M — ordering is by TOKENS, not by
+  // session count, which is what a token card should rank on.
+  assert.equal(norm[0].name, "gemini", "biggest by tokens first");
+  assert.ok(norm[0].tokens > norm[1].tokens);
+
+  // The card must render with the real shape and not throw.
+  const lines = cardTokens(AGG, real, DEFAULT_RATES);
+  assert.ok(Array.isArray(lines) && lines.length);
+  const text = strip(lines.join("\n"));
+  assert.match(text, /gemini/);
+  assert.match(text, /copilot/);
+  assert.doesNotMatch(text, /undefined|NaN/);
+
+  // And the shapes it must tolerate rather than crash on.
+  assert.deepEqual(normaliseProviders(null), []);
+  assert.deepEqual(normaliseProviders(undefined), []);
+  assert.deepEqual(normaliseProviders({}), []);
+  assert.equal(normaliseProviders([{ name: "x", total_tokens: 5 }])[0].tokens, 5, "array form must still work");
+});
+
+test("a card that throws costs you that card, never the run", async () => {
+  // Drawing is the least important thing this program does and must fail like
+  // it. Before this, one bad card threw away a two-minute scan at the very end.
+  const { buildCardsSafe } = await import("../src/wrapped.mjs");
+  const poisoned = {
+    levels: LEVELS, agg: AGG, profile: PROFILE, timeline: TIMELINE, url: "https://example.com/x",
+    // A getter that throws when the tokens card reads it.
+    get providers() { throw new Error("boom from a provider row"); },
+  };
+  let cards;
+  assert.doesNotThrow(() => { cards = buildCardsSafe(poisoned); }, "one bad card must not abort the build");
+  assert.ok(cards.length >= 8, `expected the other cards to survive, got ${cards.length}`);
+  const text = strip(renderAll(cards));
+  assert.match(text, /THE SHAPE OF YOUR WORK/, "unrelated cards must still render");
+  assert.match(text, /WHAT LEFT THIS MACHINE/);
+  assert.match(text, /could not be drawn/, "the failed card must name itself rather than vanish");
+  assert.match(text, /rendering fault only/, "and must say the scan itself was fine");
+});

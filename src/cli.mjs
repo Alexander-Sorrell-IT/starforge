@@ -84,7 +84,7 @@ import {
 } from "./snapshots.mjs";
 import { maskPath, maskText, maskIdentities, maskProjects } from "./redact.mjs";
 import { renderCard } from "./card.mjs";
-import { buildCards, renderAll, box, DEFAULT_RATES } from "./wrapped.mjs";
+import { buildCardsSafe, renderAll, box, DEFAULT_RATES } from "./wrapped.mjs";
 import { writeSchedule, removeSchedule, daemonStatus, describeSchedule } from "./daemon.mjs";
 import { buildReceipt, renderReceipt } from "./receipt.mjs";
 import { scanAllProviders } from "./scanners.mjs";
@@ -799,7 +799,7 @@ async function main() {
         flagError(`--rates wants three non-negative numbers: --rates=input,output,cached (got "${raw}")`);
       rates = { in: parts[0], out: parts[1], cache: parts[2], note: "rates you passed with --rates" };
     }
-    const cards = buildCards({
+    const cards = buildCardsSafe({
       levels,
       agg,
       profile,
