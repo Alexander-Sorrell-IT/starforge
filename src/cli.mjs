@@ -13,8 +13,8 @@
 //   starforge-cli --roots=a,b     extra home roots (other accounts/machines)
 //   starforge-cli --json          write baseline + expanded JSON reports
 //   starforge-cli --card          write the Porter-Grade SVG card
-//   starforge-cli --wrapped       the paced story: your wrapped, one card at a
-//                                 time, computed entirely on this machine
+//   starforge-cli --wrapped       (default) the paced story, one card at a time
+//   starforge-cli --no-wrapped    skip the story, print the summary only
 //   starforge-cli --no-pace       print every wrapped card at once (no [enter])
 //   starforge-cli --rates=I,O,C   $/Mtok assumed for the cost estimate
 //                                 (input,output,cached). No rate is ever fetched.
@@ -49,6 +49,11 @@
 //   starforge-cli verify          adversarial self-check, limits printed
 //   starforge-cli prove           print the OS-confinement proof command
 //                                 (full scripted proof: sh bin/starforge-proof.sh)
+//   starforge-cli daemon on|off|status
+//                                 optional scheduled re-scan so snapshots keep
+//                                 building past the ~30-day log retention. Writes
+//                                 a schedule file and prints the command that
+//                                 loads it — it never loads it for you.
 //
 // Every flag above is registered in FLAG_SPEC below, and every entry in
 // FLAG_SPEC appears above (a test asserts both directions). An unregistered
@@ -77,6 +82,7 @@ import {
 import { maskPath, maskText, maskIdentities, maskProjects } from "./redact.mjs";
 import { renderCard } from "./card.mjs";
 import { buildCards, renderAll, box, DEFAULT_RATES } from "./wrapped.mjs";
+import { writeSchedule, removeSchedule, daemonStatus, describeSchedule } from "./daemon.mjs";
 import { scanAllProviders } from "./scanners.mjs";
 import { discoverAccounts, floorTotals } from "./accounts.mjs";
 import { readFleet, writeMachineFolder } from "./fleet.mjs";
@@ -112,7 +118,7 @@ const monthOf = (p) => String(p).split("/").pop().replace(/\.svg$/, "");
 // Subcommands are explicit. An unknown positional argument EXITS NON-ZERO
 // rather than falling through to a scan — a proof command that silently runs
 // something else and prints success would be worse than having none.
-const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove"]);
+const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove", "daemon"]);
 const positional = args.filter((a) => !a.startsWith("-"));
 const subcommand = positional[0] ?? "scan";
 if (!KNOWN_SUBCOMMANDS.has(subcommand)) {
@@ -138,6 +144,7 @@ const FLAG_SPEC = Object.freeze({
   "--json": "bool",
   "--card": "bool",
   "--wrapped": "bool",
+  "--no-wrapped": "bool",
   "--no-pace": "bool",
   "--rates": "value",
   "--page": "bool",
@@ -224,6 +231,60 @@ for (const a of args) {
 // which made a broken warden indistinguishable from a failing check.)
 if (subcommand === "verify") {
   verifyCli();
+}
+
+// `starforge daemon on|off|status` — the optional scheduled re-scan.
+//
+// It writes a schedule file and prints the ONE command that loads it. It does
+// not load it. That is not laziness: a tool whose entire claim is "nothing
+// leaves your machine" must not silently register a background job that reads
+// your disk every month. You get to read the file first, and the step that
+// makes it live is a command you typed.
+if (subcommand === "daemon") {
+  const action = positional[1] ?? "status";
+  if (!["on", "off", "status"].includes(action)) {
+    console.error(`starforge-cli daemon: expected "on", "off" or "status" (got "${action}")`);
+    process.exit(2);
+  }
+  const st = daemonStatus();
+  if (!st.supported) {
+    console.log(`starforge-cli daemon: no scheduler wired for ${st.platform}. Run the scan from your own cron/timer:\n  ${process.execPath} ${new URL("./cli.mjs", import.meta.url).pathname} --yes --no-wrapped --no-pace`);
+    process.exit(0);
+  }
+
+  if (action === "status") {
+    console.log(`${BOLD}${CYAN}starforge daemon${RESET} — scheduled local re-scan\n`);
+    console.log(`platform:  ${st.platform}`);
+    console.log(`schedule:  ${st.installed ? `${maskPath(st.file)} (written)` : "not written"}`);
+    if (st.installed) {
+      console.log(`\n${DIM}whether it is LOADED is the scheduler's business, not this tool's.${RESET}`);
+      console.log(`${DIM}check: ${st.platform === "darwin" ? `launchctl list | grep starforge` : "systemctl --user list-timers starforge-scan.timer"}${RESET}`);
+      const body = describeSchedule();
+      if (body) console.log(`\n${BOLD}what it will run${RESET}\n${DIM}${body.trim()}${RESET}`);
+    }
+    process.exit(0);
+  }
+
+  if (action === "off") {
+    const { removed, deactivate } = removeSchedule();
+    if (!removed.length) console.log("no schedule file was written; nothing to remove.");
+    else for (const f of removed) console.log(`removed ${maskPath(f)}`);
+    console.log(`\n${BOLD}unload it (this tool does not run this for you)${RESET}\n  ${deactivate}`);
+    process.exit(0);
+  }
+
+  const { files, activate } = writeSchedule();
+  console.log(`${BOLD}${CYAN}starforge daemon on${RESET}\n`);
+  console.log("Why you might want this: AI-coding logs age off disk after about");
+  console.log("30 days. A scan you run once can only ever show one month. The");
+  console.log("monthly snapshots outlive the logs — but only if something takes");
+  console.log("them regularly. That is all this schedules.\n");
+  for (const f of files) console.log(`wrote ${maskPath(f)}`);
+  console.log(`\n${BOLD}read it, then load it yourself${RESET}\n  ${activate}`);
+  console.log(`\n${DIM}the scheduled run is the same local scan (--yes --no-wrapped --no-pace).${RESET}`);
+  console.log(`${DIM}it makes no network calls, and writes under ~/.starforge exactly as${RESET}`);
+  console.log(`${DIM}an interactive run does. turn it off with: starforge-cli daemon off${RESET}`);
+  process.exit(0);
 }
 
 // `starforge prove` — prints the OS-confinement command (the only real proof)
@@ -712,7 +773,7 @@ async function main() {
   // came from this process. Where a hosted tool prints "top 17% of users", this
   // prints where you sit in YOUR OWN history — the only comparison a machine
   // that has never seen anyone else's data can honestly make.
-  if (flag("--wrapped")) {
+  if (!flag("--no-wrapped")) {
     let rates = DEFAULT_RATES;
     const raw = opt("rates");
     if (raw) {
@@ -748,6 +809,34 @@ async function main() {
       }
       rl.close();
     }
+  }
+
+  // ---- what to do next -----------------------------------------------------
+  // Two offers, and the order matters: the proof first, because everything
+  // above this line is a claim until you check it.
+  console.log(`\n${BOLD}${CYAN}prove it — nothing left this machine${RESET}`);
+  console.log(`${DIM}everything you just saw was computed in this process from files already${RESET}`);
+  console.log(`${DIM}on your disk. no process can prove that about itself, so don't take it${RESET}`);
+  console.log(`${DIM}from this one. run either of these and let the kernel answer:${RESET}`);
+  console.log(`  ${CYAN}npx starforge-cli prove${RESET}${DIM}      print the sandbox command, run nothing${RESET}`);
+  try {
+    const script = maskPath(new URL("../bin/starforge-proof.sh", import.meta.url).pathname);
+    console.log(`  ${CYAN}sh ${script}${RESET}`);
+    console.log(`${DIM}    runs this scan inside a deny-network sandbox and fires a real TCP${RESET}`);
+    console.log(`${DIM}    probe on both sides of the wall: outside it connects, inside the${RESET}`);
+    console.log(`${DIM}    kernel refuses with EPERM before a packet can leave.${RESET}`);
+  } catch {}
+  console.log(`${DIM}  YOU run it — a check this tool ran on itself could be faked by it.${RESET}`);
+
+  const dst = daemonStatus();
+  if (dst.supported && !dst.installed) {
+    console.log(`\n${BOLD}build a longer history?${RESET}`);
+    console.log(`${DIM}AI-coding logs age off disk after ~30 days, so this run can only see${RESET}`);
+    console.log(`${DIM}what survives. the monthly snapshots outlive them — if something takes${RESET}`);
+    console.log(`${DIM}them regularly. optional, off by default, nothing is installed unless${RESET}`);
+    console.log(`${DIM}you run it and then load it yourself:${RESET}`);
+    console.log(`  ${CYAN}npx starforge-cli daemon on${RESET}${DIM}   writes a schedule file + prints the${RESET}`);
+    console.log(`${DIM}                                 one command that activates it${RESET}`);
   }
 
   const auditPath = finishAudit(audit);

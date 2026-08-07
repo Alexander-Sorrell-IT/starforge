@@ -155,7 +155,32 @@ block still matches the renderer, so the README cannot drift from the binary:
 Redrawing in place needs a TTY. Piped or redirected, the frame is printed once
 at the end instead of animating — same numbers, no cursor tricks.
 
-**`--wrapped` — the paced story.** Twelve boxed cards, one keypress at a time,
+**The wrapped is the default.** `npx starforge-cli` scans and then tells the
+story; `--no-wrapped` gives you the summary only, and `--no-pace` prints every
+card at once instead of waiting for a keypress (which is also what happens
+automatically when output is piped).
+
+**Every run ends with the proof, and an offer.** The proof first, because
+everything above it is a claim until you check it: the run prints the exact
+sandbox command and says plainly that **you** have to be the one to run it — a
+check this tool ran on itself could be faked by this tool. Then, optionally:
+
+```bash
+starforge-cli daemon on      # writes a schedule file, prints the load command
+starforge-cli daemon status  # what is scheduled, and what it will run
+starforge-cli daemon off     # removes it, prints the unload command
+```
+
+Logs age off disk after about 30 days, so a single run can only ever see one
+month. The snapshots outlive the logs — but only if something takes them
+regularly, which is all this schedules. **It does not install itself.** It writes
+a plain-text schedule file, prints the one command that loads it, and stops. You
+read the file before it is live, and the step that makes it live is a command you
+typed. A tool whose pitch is "nothing leaves your machine" has no business
+silently registering a background job that reads your disk every month, and a
+test asserts that a plain scan never writes one.
+
+**The cards.** Twelve boxed cards, one keypress at a time,
 in the format everyone already recognises from a hosted wrapped: the shape of
 your work, hours, history, tokens (with a cost estimate), the month-by-month
 silhouette, when you code, how you drive the machine, how many agents you juggle,
