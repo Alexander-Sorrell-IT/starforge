@@ -331,17 +331,17 @@ and read the diff. `diff -r` prints `No such file or directory` (not a diff) if
 `package/src` is missing, which is the wrong-package case above.
 
 **Comparing against a tarball you build yourself.** The registry commands above
-work against the published package (`starforge-cli@0.4.0`). This variant needs
+work against the published package (`starforge-cli@0.5.0`). This variant needs
 no network at all — it packs THIS checkout and is how the hash algorithms above
 were verified in the first place. Running both and comparing the two shasums is
 the actual check that what npm serves is what this tree builds:
 
 ```
 npm pack --pack-destination /tmp/sfpack --json     # packs THIS checkout; prints filename, shasum, integrity
-shasum -a 1 /tmp/sfpack/starforge-cli-0.4.0.tgz                     # equals the printed shasum (SHA-1)
-openssl dgst -sha512 -binary /tmp/sfpack/starforge-cli-0.4.0.tgz | base64
+shasum -a 1 /tmp/sfpack/starforge-cli-0.5.0.tgz                     # equals the printed shasum (SHA-1)
+openssl dgst -sha512 -binary /tmp/sfpack/starforge-cli-0.5.0.tgz | base64
                                                    # equals the printed integrity, minus "sha512-"
-tar -xzf /tmp/sfpack/starforge-cli-0.4.0.tgz -C /tmp/sfpack
+tar -xzf /tmp/sfpack/starforge-cli-0.5.0.tgz -C /tmp/sfpack
 diff -r /tmp/sfpack/package/src ./src              # expect: no output
 ```
 

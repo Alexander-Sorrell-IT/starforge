@@ -160,10 +160,33 @@ story; `--no-wrapped` gives you the summary only, and `--no-pace` prints every
 card at once instead of waiting for a keypress (which is also what happens
 automatically when output is piped).
 
-**Every run ends with the proof, and an offer.** The proof first, because
-everything above it is a claim until you check it: the run prints the exact
-sandbox command and says plainly that **you** have to be the one to run it — a
-check this tool ran on itself could be faked by this tool. Then, optionally:
+**Every run ends with two proofs, and an offer.** They answer different
+questions, and you need both:
+
+```bash
+starforge-cli prove      # did anything LEAVE?  → the kernel answers
+starforge-cli receipt    # is it KEEPING more than it showed me?
+```
+
+`prove` prints the sandbox command and says plainly that **you** have to run it
+— a check this tool ran on itself could be faked by this tool.
+
+`receipt` is the half a no-egress claim does not cover. A tool that never opens
+a socket can still read your whole transcript and park it in a file on your
+disk, and **a scheduled run prints to a log nobody watches**, so "what you saw
+in the terminal" cannot account for it. So the receipt walks `~/.starforge` —
+everything starforge retains — and reports what is actually in there: every file
+with its size and SHA-256, every field name (map-like objects collapsed to
+`models.<key>` so the list shows *fields*, not your values), and **the longest
+piece of free text in your stored data**, judged separately from rendered
+report pages, which are mostly the tool's own labels. On this machine that
+longest string is 279 characters and it is starforge's own audit note. If it
+were keeping your prompts, they would be there — a test plants a transcript in
+the data dir and fails if the receipt does not surface it. `--json` emits the
+whole pack. It reads only; a command that accounts for writes must not add to
+the pile.
+
+Then, optionally:
 
 ```bash
 starforge-cli daemon on      # writes a schedule file, prints the load command

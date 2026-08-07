@@ -49,6 +49,9 @@
 //   starforge-cli verify          adversarial self-check, limits printed
 //   starforge-cli prove           print the OS-confinement proof command
 //                                 (full scripted proof: sh bin/starforge-proof.sh)
+//   starforge-cli receipt         list every field starforge has retained about
+//                                 you, read from the files themselves (--json
+//                                 for the machine-readable pack)
 //   starforge-cli daemon on|off|status
 //                                 optional scheduled re-scan so snapshots keep
 //                                 building past the ~30-day log retention. Writes
@@ -83,6 +86,7 @@ import { maskPath, maskText, maskIdentities, maskProjects } from "./redact.mjs";
 import { renderCard } from "./card.mjs";
 import { buildCards, renderAll, box, DEFAULT_RATES } from "./wrapped.mjs";
 import { writeSchedule, removeSchedule, daemonStatus, describeSchedule } from "./daemon.mjs";
+import { buildReceipt, renderReceipt } from "./receipt.mjs";
 import { scanAllProviders } from "./scanners.mjs";
 import { discoverAccounts, floorTotals } from "./accounts.mjs";
 import { readFleet, writeMachineFolder } from "./fleet.mjs";
@@ -118,7 +122,7 @@ const monthOf = (p) => String(p).split("/").pop().replace(/\.svg$/, "");
 // Subcommands are explicit. An unknown positional argument EXITS NON-ZERO
 // rather than falling through to a scan — a proof command that silently runs
 // something else and prints success would be worse than having none.
-const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove", "daemon"]);
+const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove", "daemon", "receipt"]);
 const positional = args.filter((a) => !a.startsWith("-"));
 const subcommand = positional[0] ?? "scan";
 if (!KNOWN_SUBCOMMANDS.has(subcommand)) {
@@ -213,10 +217,12 @@ for (const a of args) {
     flagError(`${base} needs a value: ${base}=<value>.`);
   if (kind === "bool" && eq !== -1)
     flagError(`${base} takes no value (you passed "${a}").`);
-  // Every flag above configures the SCAN. `verify` and `prove` read none of
-  // them, so accepting one there would be the same silent-ignore this block
-  // exists to end — just with a flag that happens to be spelled correctly.
-  if (subcommand !== "scan")
+  // Every flag above configures the SCAN, so accepting one on another
+  // subcommand would be the same silent-ignore this block exists to end — just
+  // with a flag that happens to be spelled correctly. The one exception is
+  // declared, not inferred: `receipt --json` emits the machine-readable pack.
+  const SUBCOMMAND_FLAGS = { receipt: new Set(["--json"]) };
+  if (subcommand !== "scan" && !SUBCOMMAND_FLAGS[subcommand]?.has(base))
     flagError(
       `\`${subcommand}\` takes no flags, and ${base} would have been ignored. Run \`starforge-cli ${subcommand}\` on its own (to re-pin the allowlist manifest: node src/verify.mjs --update-pins).`
     );
@@ -231,6 +237,17 @@ for (const a of args) {
 // which made a broken warden indistinguishable from a failing check.)
 if (subcommand === "verify") {
   verifyCli();
+}
+
+// `starforge receipt` — the OTHER half of the proof. The kernel proof shows
+// nothing was SENT; this shows what was KEPT, by walking ~/.starforge and
+// listing every field in it. A background (daemon) run prints to a log nobody
+// watches, so "what you saw in the terminal" cannot account for it — this can.
+if (subcommand === "receipt") {
+  const r = buildReceipt();
+  if (flag("--json")) console.log(JSON.stringify(r, null, 2));
+  else console.log(renderReceipt(r, { color: !process.env.NO_COLOR }));
+  process.exit(0);
 }
 
 // `starforge daemon on|off|status` — the optional scheduled re-scan.
@@ -827,6 +844,13 @@ async function main() {
     console.log(`${DIM}    kernel refuses with EPERM before a packet can leave.${RESET}`);
   } catch {}
   console.log(`${DIM}  YOU run it — a check this tool ran on itself could be faked by it.${RESET}`);
+  // Egress is only half the question. A tool that never opens a socket can
+  // still keep more than it showed you — and a scheduled run shows you nothing
+  // at all, so the terminal cannot be the accounting.
+  console.log(`  ${CYAN}npx starforge-cli receipt${RESET}${DIM}    the other half: every field it has${RESET}`);
+  console.log(`${DIM}    KEPT about you, listed from the bytes in ~/.starforge — not from${RESET}`);
+  console.log(`${DIM}    what the code claims. covers scheduled runs too, which is the${RESET}`);
+  console.log(`${DIM}    only accounting a background scan can have.${RESET}`);
 
   const dst = daemonStatus();
   if (dst.supported && !dst.installed) {
