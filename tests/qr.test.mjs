@@ -66,12 +66,16 @@ test("version scales with payload length, and size follows the version formula",
   for (const q of [small, big]) assert.equal(q.size, q.version * 4 + 17);
 });
 
-test("a payload too large for version 10 is refused, not silently truncated", () => {
+test("a payload past the encoder's ceiling is refused, not silently truncated", () => {
+  // Refusing is the correct failure: a QR that encodes half a URL scans
+  // perfectly and sends you somewhere wrong, which is worse than no QR at all.
   assert.throws(
     () => encodeQR("x".repeat(400)),
-    /does not fit/,
-    "an over-long payload must throw rather than encode a truncated URL"
+    /exceeds this encoder/,
+    "an over-long payload must throw rather than encode a truncated payload"
   );
+  // ...and the boundary is where it says it is.
+  assert.doesNotThrow(() => encodeQR("x".repeat(271)), "271 bytes must still encode");
 });
 
 test("encoding is deterministic", () => {
@@ -112,4 +116,49 @@ test("the terminal rendering has a quiet zone and is not blank", () => {
   // The first row is quiet zone: all light. On a dark terminal light is "█".
   assert.match(lines[0], /^█+$/, "the top quiet zone must be uniform light");
   assert.ok(/[▀▄ ]/.test(out), "expected half-block glyphs in the body");
+});
+
+test("a payload too big for level M falls back to L instead of refusing", () => {
+  // The share card's real payload — star levels, sessions, hours, tokens, cache
+  // share, streak and the repo URL — is about 260 bytes. Level M tops out at
+  // 213, so the card printed "payload too long to encode as a QR" on real data
+  // while looking perfect against the shorter fixture this file was written
+  // with. The encoder now spends error correction to buy capacity, but only
+  // when it has to.
+  const short = encodeQR("https://example.com");
+  assert.equal(short.level, "M", "short payloads must keep the stronger error correction");
+
+  const real = [
+    "starforge skill star 23.7/25 (S+)",
+    "firs 5 engi 5 codi 4.7 outs 5 tena 4",
+    "153 sessions, 344h active, 29 days",
+    "5.7B tokens, 99% cached",
+    "longest streak 16d",
+    "this code carries the numbers themselves, not a link to them.",
+    "https://github.com/Alexander-Sorrell-IT/starforge",
+  ].join("\n");
+  assert.ok(real.length > 213, "the fixture must exceed the level-M ceiling to be a real test");
+  const big = encodeQR(real);
+  assert.equal(big.level, "L");
+  assert.ok(big.size >= 21 && big.size <= 57);
+  assert.equal(big.modules.length, big.size);
+});
+
+test("the share payload always fits the encoder", async () => {
+  // A card that says "too long to encode" is a card with a hole in it. Whatever
+  // the numbers, the payload must be encodable.
+  const { sharePayload } = await import("../src/wrapped.mjs");
+  const { MAX_BYTES } = await import("../src/qr.mjs");
+  const extremes = [
+    {},
+    { total_sessions: 999999, total_duration_hours: 999999, active_days: 3650,
+      total_input_tokens: 9e12, total_output_tokens: 9e12,
+      total_cache_read_tokens: 9e14, total_cache_write_tokens: 9e14,
+      longest_streak_days: 3650 },
+  ];
+  for (const agg of extremes) {
+    const text = sharePayload([5, 5, 5, 5, 5], agg, "https://github.com/Alexander-Sorrell-IT/starforge");
+    assert.ok(text.length <= MAX_BYTES, `payload is ${text.length} bytes, over the ${MAX_BYTES} ceiling`);
+    assert.doesNotThrow(() => encodeQR(text), "the share payload must always encode");
+  }
 });

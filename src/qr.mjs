@@ -11,7 +11,9 @@
 // against an independent reference encoder AND decodes the rendered matrix, so
 // "it looks like a QR code" is never the standard.
 
+// EC level indicators are NOT in numeric order in the spec: L=01, M=00.
 const EC_LEVEL_M = 0b00;
+const EC_LEVEL_L = 0b01;
 
 // [ecCodewordsPerBlock, blocksInGroup1, dataCodewordsPerBlockG1, blocksInGroup2, dataCodewordsPerBlockG2]
 // Level M, versions 1..10. From ISO/IEC 18004 Table 13-22.
@@ -27,6 +29,31 @@ const EC_TABLE_M = {
   9: [22, 3, 36, 2, 37],
   10: [26, 4, 43, 1, 44],
 };
+
+// Level L, versions 1..10. Same shape as EC_TABLE_M.
+//
+// L exists here because M was not enough. At version 10 level M the payload
+// ceiling is 213 bytes, and the share card's real payload — star levels,
+// sessions, hours, tokens, cache share, streak and the repo URL — runs to about
+// 260. So the card printed "payload too long to encode as a QR" on real data
+// while looking fine on the shorter fixture I tested with. L trades error
+// correction for capacity (271 bytes at v10), which is the right trade for a
+// code being read off a screen a foot away rather than a scuffed parcel label.
+const EC_TABLE_L = {
+  1: [7, 1, 19, 0, 0],
+  2: [10, 1, 34, 0, 0],
+  3: [15, 1, 55, 0, 0],
+  4: [20, 1, 80, 0, 0],
+  5: [26, 1, 108, 0, 0],
+  6: [18, 2, 68, 0, 0],
+  7: [20, 2, 78, 0, 0],
+  8: [24, 2, 97, 0, 0],
+  9: [30, 2, 116, 0, 0],
+  10: [18, 2, 68, 2, 69],
+};
+
+const TABLES = { M: EC_TABLE_M, L: EC_TABLE_L };
+const LEVEL_BITS = { M: EC_LEVEL_M, L: EC_LEVEL_L };
 
 // Alignment pattern centre coordinates per version (version 1 has none).
 const ALIGN = {
@@ -91,20 +118,26 @@ class Bits {
 }
 
 // Total data codewords available at a version (level M).
-function dataCodewords(version) {
-  const [ec, b1, d1, b2, d2] = EC_TABLE_M[version];
+function dataCodewords(version, level = "M") {
+  const [ec, b1, d1, b2, d2] = TABLES[level][version];
   return b1 * d1 + b2 * d2;
 }
 
+// Prefer M (stronger error correction); fall back to L only when the payload
+// does not otherwise fit, so short codes keep the better recovery.
 function chooseVersion(byteLen) {
-  for (let v = 1; v <= 10; v++) {
-    // mode indicator (4) + char count (8 for v1-9, 16 for v10+) + data + terminator
-    const countBits = v < 10 ? 8 : 16;
-    const needed = 4 + countBits + byteLen * 8;
-    if (needed <= dataCodewords(v) * 8) return v;
+  for (const level of ["M", "L"]) {
+    for (let v = 1; v <= 10; v++) {
+      // mode (4) + char count (8 for v1-9, 16 for v10+) + data + terminator
+      const countBits = v < 10 ? 8 : 16;
+      if (4 + countBits + byteLen * 8 <= dataCodewords(v, level) * 8) return { version: v, level };
+    }
   }
   return null;
 }
+
+/** Largest payload this encoder can carry, in bytes. */
+export const MAX_BYTES = dataCodewords(10, "L") - 3;
 
 // ---- matrix ----------------------------------------------------------------
 function makeMatrix(size) {
@@ -282,14 +315,13 @@ function penalty(m, size) {
  */
 export function encodeQR(text, { forceMask = null } = {}) {
   const bytes = [...new TextEncoder().encode(String(text))];
-  const version = chooseVersion(bytes.length);
-  if (version == null)
-    throw new Error(
-      `qr: ${bytes.length} bytes does not fit in version 10 at EC level M (max ${dataCodewords(10) - 3})`
-    );
+  const chosen = chooseVersion(bytes.length);
+  if (chosen == null)
+    throw new Error(`qr: ${bytes.length} bytes exceeds this encoder (max ${MAX_BYTES})`);
+  const { version, level } = chosen;
 
-  const [ecLen, b1, d1, b2, d2] = EC_TABLE_M[version];
-  const totalData = dataCodewords(version);
+  const [ecLen, b1, d1, b2, d2] = TABLES[level][version];
+  const totalData = dataCodewords(version, level);
 
   const bb = new Bits();
   bb.put(0b0100, 4);                       // byte mode
@@ -349,14 +381,14 @@ export function encodeQR(text, { forceMask = null } = {}) {
     for (let r = 0; r < size; r++)
       for (let c = 0; c < size; c++)
         if (!reservedAll[r][c] && MASKS[mask](r, c)) mx.m[r][c] ^= 1;
-    writeFormat(mx, EC_LEVEL_M, mask);
+    writeFormat(mx, LEVEL_BITS[level], mask);
     writeVersion(mx, version);
     void reserved;
     const score = penalty(mx.m, size);
     if (!best || score < best.score) best = { score, modules: mx.m };
   }
 
-  return { size, version, modules: best.modules };
+  return { size, version, level, modules: best.modules };
 }
 
 /** Terminal rendering: two module rows per character cell, via half-blocks. */

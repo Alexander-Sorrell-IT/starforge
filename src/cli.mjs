@@ -84,7 +84,7 @@ import {
 } from "./snapshots.mjs";
 import { maskPath, maskText, maskIdentities, maskProjects } from "./redact.mjs";
 import { renderCard } from "./card.mjs";
-import { buildCardsSafe, renderAll, box, DEFAULT_RATES } from "./wrapped.mjs";
+import { buildCardsSafe, renderAll, box, shareQrLines, DEFAULT_RATES } from "./wrapped.mjs";
 import { writeSchedule, removeSchedule, daemonStatus, describeSchedule } from "./daemon.mjs";
 import { buildReceipt, renderReceipt } from "./receipt.mjs";
 import { scanAllProviders } from "./scanners.mjs";
@@ -814,13 +814,18 @@ async function main() {
     // keypress that will never come.
     const paced = process.stdout.isTTY && process.stdin.isTTY && !flag("--no-pace");
     console.log("");
+    const qr = shareQrLines(levels, agg, "https://github.com/Alexander-Sorrell-IT/starforge");
     if (!paced) {
       console.log(renderAll(cards));
+      console.log("");
+      for (const row of qr) console.log(row);
     } else {
       const rl = createInterface({ input: process.stdin, output: process.stdout });
       for (let i = 0; i < cards.length; i++) {
         console.log(box(cards[i].lines, { color: cards[i].color }));
         const last = i === cards.length - 1;
+        // The QR belongs with the last card, not buried after the menu.
+        if (last) { console.log(""); for (const row of qr) console.log(row); }
         console.log(`  ${DIM}[${i + 1}/${cards.length}]${RESET}${last ? "" : `                                        ${DIM}[press ↵]${RESET}`}`);
         if (!last) await rl.question("");
       }

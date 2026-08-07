@@ -509,24 +509,34 @@ export function cardShare(rawLevels, agg, url) {
   const levels = lv5(rawLevels);
   const total = levels.reduce((a, b) => a + b, 0);
   const shape = AXES.map((_, i) => "▁▂▃▄▅▆▇█"[Math.min(7, Math.round((levels[i] / MAX_LEVEL) * 7))]).join("");
-  const payload = sharePayload(levels, agg, url ?? "https://github.com/Alexander-Sorrell-IT/starforge");
-  const lines = [
+  return [
     head("SHARE IT"),
     "",
     `  ${WH}my skill star · ${total.toFixed(1)}/25 · ${shape}${R}`,
     `  ${D}${AXES.map((a, i) => `${a.split(" ")[0].slice(0, 4).toLowerCase()} ${levels[i]}`).join(" · ")}${R}`,
     "",
+    `  ${D}the QR below carries these numbers outright. scan it and${R}`,
+    `  ${D}your phone shows them — no link, no server to be up.${R}`,
+    `  ${D}decode it yourself and see.${R}`,
   ];
+}
+
+/**
+ * The QR block, rendered OUTSIDE the card frame.
+ *
+ * A version-10 symbol with its quiet zone is 61 columns; the cards are 60 wide.
+ * Inside the box the right-hand quiet zone was being clipped — and a QR with a
+ * chewed quiet zone is exactly the kind of thing that looks perfect and then
+ * will not scan. Rather than shrink the payload or the margin, the code gets
+ * the width it needs by living below the frame.
+ */
+export function shareQrLines(rawLevels, agg, url) {
+  const payload = sharePayload(lv5(rawLevels), agg, url ?? "https://github.com/Alexander-Sorrell-IT/starforge");
   try {
-    for (const row of qrToTerminal(payload, { color: true }).split("\n")) lines.push("  " + row);
-  } catch {
-    lines.push(`  ${D}(payload too long to encode as a QR)${R}`);
+    return qrToTerminal(payload, { color: true }).split("\n").map((r) => "  " + r);
+  } catch (e) {
+    return [`  ${D}(could not encode the QR: ${String(e?.message ?? e).slice(0, 60)})${R}`];
   }
-  lines.push("");
-  lines.push(D + "  scan it: your phone shows THESE NUMBERS. the code carries them" + R);
-  lines.push(D + "  outright — there is no link in it, and no server that has to be" + R);
-  lines.push(D + "  up for it to resolve. decode it yourself and see." + R);
-  return lines;
 }
 
 /**
