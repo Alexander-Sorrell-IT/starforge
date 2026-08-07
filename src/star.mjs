@@ -314,7 +314,11 @@ export function computeLevels(agg) {
   // denominator without raising the cap, so every saturated arm still read 5.0
   // and the star scored 24.1/35 instead of 27.6/35. Half a fix is a worse
   // number than no fix, because it looks deliberate.
-  const lg = (v, mid) => 5 * (Math.log1p(v) / Math.log1p(mid * 10)); // ~2.5 at mid
+  // Math.max(0, v) — log1p of anything below -1 is NaN, and a NaN arm poisons
+  // the whole star (total, tier, archetype). explainLevels' copy of this helper
+  // already clamped; this one did not, so a negative token counter in a
+  // malformed transcript produced FIRST PRINCIPLES = NaN.
+  const lg = (v, mid) => 5 * (Math.log1p(Math.max(0, v)) / Math.log1p(mid * 10)); // ~2.5 at mid
   const clamp = (v) => Math.min(MAX_LEVEL, Math.max(0, v));
   // Accepts either the whole-history aggregate (total_* / projects[] /
   // tool_call_counts{}) or one month's snapshot bucket, which stores the same

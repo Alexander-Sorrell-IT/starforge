@@ -10,6 +10,7 @@ import {
   armTips,
   starPoints,
   clampLevel,
+  escapeText,
 } from "./starsvg.mjs";
 import { rating, archetype } from "./archetype.mjs";
 
@@ -26,7 +27,10 @@ function fmt(n) {
 }
 
 export function renderCard(rawLevels, agg, vel, opts = {}) {
-  const name = opts.name ?? "SKILL SCREEN";
+  // escapeText, because this is the --name flag and it lands in an SVG that
+// statspage.mjs inlines into HTML. Unescaped, "R&D" produced invalid XML and
+// a crafted name could inject a <script> into the stats page.
+  const name = escapeText(opts.name ?? "SKILL SCREEN");
   // Same clamping starsvg.mjs does, and for the same reason: computeLevels can
   // hand back NaN from a corrupt snapshot (loadTimeline swallows parse errors),
   // and this renderer used to take that at face value — printing "LV. NaN" and

@@ -266,6 +266,10 @@ ${footer}
 </svg>`;
 }
 
-function escapeText(s) {
+// Exported so card.mjs and statspage.mjs use THIS one. card.mjs interpolated the
+// --name flag into the SVG raw: an ampersand made the file invalid XML, and
+// because statspage.mjs inlines the SVG into the HTML page, a name containing
+// </text><script>...</script> executed when the page was opened.
+export function escapeText(s) {
   return String(s).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]);
 }

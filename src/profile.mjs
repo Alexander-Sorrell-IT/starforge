@@ -102,7 +102,8 @@ function sourceBucket(col, source) {
     b = {
       files: 0, prompt_turns: 0, prompt_chars_total: 0, question_turns: 0,
       correction_turns: 0, tool_calls: 0, toolCounts: new Map(),
-      langPaths: new Set(), firstTs: Infinity, lastTs: -Infinity,
+      langPaths: new Set(), langCounts: new Map(),
+      firstTs: Infinity, lastTs: -Infinity,
     };
     col.perSource.set(source, b);
   }
@@ -160,16 +161,30 @@ function countPromptTurn(src, text) {
   if (CORRECTION_RE.test(t)) src.correction_turns += 1;
 }
 
-function countTool(src, name) {
+function countTool(src, rawName) {
+  // sanitizeModel at CAPTURE, matching scan.mjs. Emitting through redactSecrets
+  // alone was not enough: it matches key shapes, not paths or addresses, so a
+  // tool named after a client directory or an email reached tool_mix intact.
+  // An MCP server names its own tools, so this string is attacker-supplied.
+  const name = sanitizeModel(rawName);
   if (!name) return;
   src.tool_calls += 1;
   src.toolCounts.set(name, (src.toolCounts.get(name) || 0) + 1);
 }
 
 function countLangPath(src, p, excluded) {
-  if (typeof p !== "string" || src.langPaths.size >= MAX_LANG_PATHS) return;
+  if (typeof p !== "string") return;
   if (excluded?.(p)) return;
-  src.langPaths.add(maskPath(p));
+  // The 5,000-path cap bounds MEMORY, which is legitimate — but it must not
+  // decide which languages a person knows. scan.mjs fixed this by tallying the
+  // language as each path arrives, so the cap can never hide one; profile.mjs
+  // kept the old shape, where the list was whatever was touched first and a
+  // language seen at path 5,001 vanished. Tally first, then cap the SET.
+  const masked = maskPath(p);
+  const ext = String(masked).split(".").pop()?.toLowerCase();
+  const lang = ext && !GENERATED_RE.test(masked) ? EXT_TO_LANG[ext] : null;
+  if (lang) src.langCounts.set(lang, (src.langCounts.get(lang) ?? 0) + 1);
+  if (src.langPaths.size < MAX_LANG_PATHS) src.langPaths.add(masked);
 }
 
 async function streamLines(filePath, onLine) {
@@ -187,7 +202,12 @@ async function streamLines(filePath, onLine) {
 async function collectClaudeFile(filePath, source, col, opts) {
   const src = sourceBucket(col, source);
   src.files += 1;
-  let sessionId = filePath.split("/").pop().replace(/\.jsonl$/, "");
+  // Directory + basename, matching scan.mjs. A bare basename is not an identity:
+  // 83 projects in the fleet corpus each held a "journal.jsonl" and all 83
+  // merged into ONE session. scan.mjs fixed this; profile.mjs kept the bug, and
+  // these two files are supposed to agree about sessions.
+  const _p = filePath.split(/[/\\]/).filter(Boolean);
+  let sessionId = _p.slice(-2).join("/").replace(/\.jsonl$/, "");
   await streamLines(filePath, (line) => {
     let d;
     try {
@@ -195,6 +215,15 @@ async function collectClaudeFile(filePath, source, col, opts) {
     } catch {
       return;
     }
+    // JSON.parse("null") SUCCEEDS and returns null, and the very next line reads
+    // d.timestamp — a TypeError thrown from inside the stream callback, which
+    // aborts the rest of the FILE. The caller catches it with a bare `catch {}`,
+    // so the rows already read are kept and every row after the bad line is
+    // dropped without a word: a 9-row transcript with a null on line 2 reported
+    // 100 tokens instead of 900. A half-written final line is exactly what a
+    // killed process leaves behind. Only null does this — true, 42, "x" and []
+    // all give undefined on property access and fall out at the isNaN below.
+    if (d === null || typeof d !== "object" || Array.isArray(d)) return;
     const ts = typeof d.timestamp === "string" ? Date.parse(d.timestamp) : NaN;
     if (isNaN(ts)) return;
     if (typeof d.sessionId === "string") sessionId = d.sessionId;
@@ -254,6 +283,15 @@ async function collectCodexFile(filePath, col, opts) {
     } catch {
       return;
     }
+    // JSON.parse("null") SUCCEEDS and returns null, and the very next line reads
+    // d.timestamp — a TypeError thrown from inside the stream callback, which
+    // aborts the rest of the FILE. The caller catches it with a bare `catch {}`,
+    // so the rows already read are kept and every row after the bad line is
+    // dropped without a word: a 9-row transcript with a null on line 2 reported
+    // 100 tokens instead of 900. A half-written final line is exactly what a
+    // killed process leaves behind. Only null does this — true, 42, "x" and []
+    // all give undefined on property access and fall out at the isNaN below.
+    if (d === null || typeof d !== "object" || Array.isArray(d)) return;
     const ts = typeof d.timestamp === "string" ? Date.parse(d.timestamp) : NaN;
     if (isNaN(ts)) return;
     const payload = d.payload;
@@ -325,12 +363,11 @@ export async function collectProfileSignals(files, opts = {}) {
   }
   const per_source = {};
   for (const [source, b] of col.perSource) {
-    const languages = {};
-    for (const p of b.langPaths) {
-      if (GENERATED_RE.test(p)) continue;
-      const lang = EXT_TO_LANG[p.toLowerCase().split(".").pop()];
-      if (lang) languages[lang] = (languages[lang] || 0) + 1;
-    }
+    // Read the running tally, not the capped Set. Deriving languages from
+    // langPaths meant the 5,000-path memory bound also decided which languages
+    // existed: the 5,001st path could be the only .rs in the corpus and Rust
+    // simply never appeared. The tally is accumulated per path as it arrives.
+    const languages = Object.fromEntries(b.langCounts ?? []);
     per_source[source] = {
       files: b.files,
       prompt_turns: b.prompt_turns,
@@ -453,7 +490,10 @@ export function computeToolRelationship(sessions) {
   const monthMap = new Map();
   for (const s of sessions ?? []) {
     if (!isFinite(s.start_ts)) continue;
-    const month = new Date(s.start_ts).toISOString().slice(0, 7);
+    // LOCAL, like scan.mjs (which uses localDayKey(...).slice(0,7) and says the
+    // month must agree with the day keys it contains). Reading months in UTC
+    // filed a session started 20:00 local on 31 Jul into August.
+    const month = localDayKey(new Date(s.start_ts)).slice(0, 7);
     let row = monthMap.get(month);
     if (!row) {
       row = new Map();
@@ -710,7 +750,10 @@ export function computeProfile(rawSignals, opts = {}) {
   const monthAgg = new Map(); // month -> {tok, models:Map}
   for (const s of sessions) {
     if (!isFinite(s.start_ts)) continue;
-    const month = new Date(s.start_ts).toISOString().slice(0, 7);
+    // LOCAL, like scan.mjs (which uses localDayKey(...).slice(0,7) and says the
+    // month must agree with the day keys it contains). Reading months in UTC
+    // filed a session started 20:00 local on 31 Jul into August.
+    const month = localDayKey(new Date(s.start_ts)).slice(0, 7);
     let m = monthAgg.get(month);
     if (!m) {
       m = { in: 0, out: 0, cr: 0, cw: 0, models: new Map(), sessions: 0 };

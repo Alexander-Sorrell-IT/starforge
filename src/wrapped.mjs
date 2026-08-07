@@ -449,8 +449,18 @@ export function cardStack(rawAgg, profile) {
       lines.push(`  ${D}${pad(t.name, 12)}${R} ${bar(t.count, max, 18)} ${D}${fmt(t.count)}${R}`);
     lines.push("");
   }
-  if (models.length) lines.push(`  ${WH}models${R}  ${models.map(([m]) => m).join(", ")}`);
-  if (langs.length) lines.push(`  ${WH}langs${R}   ${langs.map(([l, n]) => `${l}(${n})`).join(" ")}`);
+  // Wrapped, with the label kept on the first line and continuations indented
+  // under it. Model ids are long and dated — three of them exceed the 60-column
+  // box on their own, and box() clips instead of wrapping, so the third model
+  // simply vanished from the card.
+  const labelled = (label, pad, text) => {
+    const rows = wrapWords(text, W - 4 - pad.length - 2);
+    if (!rows.length) return;
+    lines.push(`  ${WH}${label}${R}${pad}${rows[0]}`);
+    for (const r of rows.slice(1)) lines.push(`  ${" ".repeat(label.length)}${pad}${r}`);
+  };
+  if (models.length) labelled("models", "  ", models.map(([m]) => m).join(", "));
+  if (langs.length) labelled("langs", "   ", langs.map(([l, n]) => `${l}(${n})`).join(" "));
   const rel = profile?.tool_relationship;
   if (rel?.kind === "switch" && rel.from_tool && rel.to_tool) {
     lines.push("");
@@ -693,8 +703,11 @@ export function cardRank(rawLevels, agg, timeline) {
   for (const i of arr(arc.top))
     lines.push(`  ${pad(AXES[i], 17)} ${bar(levels[i], MAX_LEVEL, 10)} ${WH}${levels[i]}${R}`);
   lines.push("");
-  lines.push(`  ${D}${signature(agg)}${R}`);
-  lines.push(`  ${D}tier is your average arm out of ${MAX_LEVEL} — not a percentile${R}`);
+  // wrapWords — cardStar wraps this same sentence and cardRank did not, so
+  // box() clipped its tail. Third card in this file to lose its last words.
+  for (const l of wrapWords(signature(agg), W - 4)) lines.push(`  ${D}${l}${R}`);
+  for (const l of wrapWords(`tier is your average arm out of ${MAX_LEVEL} — not a percentile`, W - 4))
+    lines.push(`  ${D}${l}${R}`);
   return lines;
 }
 

@@ -88,11 +88,16 @@ export function byCountThenKey(a, b) {
  * Returns the deltas to add. `seen` is a Map the caller owns.
  */
 export function creditUsage(seen, id, usage) {
+  // Finite numbers only. `?? 0` accepts a STRING, and "500" + 0 concatenates
+  // rather than adds, so one malformed row could turn a total into "0500…" or
+  // NaN and poison every downstream number silently. accounts.mjs already
+  // guards this way; this did not.
+  const num = (v) => (Number.isFinite(v) ? v : Number.isFinite(Number(v)) ? Number(v) : 0);
   const cur = {
-    in: usage?.input_tokens ?? 0,
-    out: usage?.output_tokens ?? 0,
-    cr: usage?.cache_read_input_tokens ?? 0,
-    cw: usage?.cache_creation_input_tokens ?? 0,
+    in: num(usage?.input_tokens),
+    out: num(usage?.output_tokens),
+    cr: num(usage?.cache_read_input_tokens),
+    cw: num(usage?.cache_creation_input_tokens),
   };
   // No id means nothing to correlate it with, so it is its own message.
   if (!id) return cur;
@@ -133,6 +138,16 @@ export function emptyStats() {
     // directories into 104. A project is a place work happened, not a property
     // of a session id.
     projectsSeen: new Set(),
+    // cwd label -> the SAME project's directory spelling. The two witnesses in
+    // projects_count are produced by different functions: projectLabel(cwd) and
+    // projectFromPath(dir). They disagree whenever a path segment contains a
+    // dash, because the directory encoding replaces every separator with one
+    // and decoding cannot tell them apart — "-srv-code-starforge-cli" decodes
+    // to "starforge/cli" while the cwd reads "code/starforge-cli". Unioning two
+    // spellings of one project COUNTS IT TWICE, and projects_count feeds the
+    // ENGINEERING axis, so the star inflates. On a real machine 27 of 37
+    // readable project directories disagreed this way.
+    projectAliases: new Map(),
   };
 }
 
@@ -343,6 +358,15 @@ export async function parseClaudeFile(filePath, stats, opts = {}) {
     } catch {
       return;
     }
+    // JSON.parse("null") SUCCEEDS and returns null, and the very next line reads
+    // d.timestamp — a TypeError thrown from inside the stream callback, which
+    // aborts the rest of the FILE. The caller catches it with a bare `catch {}`,
+    // so the rows already read are kept and every row after the bad line is
+    // dropped without a word: a 9-row transcript with a null on line 2 reported
+    // 100 tokens instead of 900. A half-written final line is exactly what a
+    // killed process leaves behind. Only null does this — true, 42, "x" and []
+    // all give undefined on property access and fall out at the isNaN below.
+    if (d === null || typeof d !== "object" || Array.isArray(d)) return;
     const ts = typeof d.timestamp === "string" ? Date.parse(d.timestamp) : NaN;
     if (isNaN(ts)) return;
     if (typeof d.sessionId === "string") sessionId = d.sessionId;
@@ -355,10 +379,27 @@ export async function parseClaudeFile(filePath, stats, opts = {}) {
       // "/workspace" that every session in every directory shares. Preferring
       // cwd otherwise keeps normal scans byte-identical, since there the two
       // encode the same path.
-      else if (label) s.project = uninformativeCwd(d.cwd) && dirProject ? dirProject : label;
+      else if (label) {
+        // The directory fallback has to obey the exclusion prompt as well. It
+        // was only ever applied to d.cwd, so a user who excluded a private
+        // client directory still got its NAME into the reports whenever cwd was
+        // uninformative — which is exactly when the directory is used.
+        const useDir = uninformativeCwd(d.cwd) && dirProject && !opts.excluded?.(dirProject);
+        s.project = useDir ? dirProject : label;
+      }
     }
     // No cwd at all (redacted away, or a transcript that never carried one).
-    if (!s.project && dirProject) s.project = dirProject;
+    if (!s.project && dirProject && !opts.excluded?.(dirProject)) s.project = dirProject;
+    // THIS file's cwd and THIS file's directory name the same project, so the
+    // two spellings can be folded together. Keyed off the file's own cwd rather
+    // than off s.project: a session can span directories (a sub-agent transcript
+    // carries its parent's id), and s.project is whichever directory was read
+    // first — aliasing dirProject onto that would collapse three real projects
+    // into one and undo the sub-agent fix.
+    if (dirProject && typeof d.cwd === "string" && !uninformativeCwd(d.cwd) && !opts.excluded?.(d.cwd)) {
+      const alias = projectLabel(d.cwd);
+      if (alias && alias !== dirProject) stats.projectAliases?.set(alias, dirProject);
+    }
     const msg = d.message;
     if (d.type === "user" && msg && typeof msg.content === "string") {
       stats.userTurns += 1;
@@ -445,6 +486,15 @@ export async function parseCodexFile(filePath, stats, opts = {}) {
     } catch {
       return;
     }
+    // JSON.parse("null") SUCCEEDS and returns null, and the very next line reads
+    // d.timestamp — a TypeError thrown from inside the stream callback, which
+    // aborts the rest of the FILE. The caller catches it with a bare `catch {}`,
+    // so the rows already read are kept and every row after the bad line is
+    // dropped without a word: a 9-row transcript with a null on line 2 reported
+    // 100 tokens instead of 900. A half-written final line is exactly what a
+    // killed process leaves behind. Only null does this — true, 42, "x" and []
+    // all give undefined on property access and fall out at the isNaN below.
+    if (d === null || typeof d !== "object" || Array.isArray(d)) return;
     const ts = typeof d.timestamp === "string" ? Date.parse(d.timestamp) : NaN;
     if (isNaN(ts)) return;
     const payload = d.payload;
@@ -466,7 +516,12 @@ export async function parseCodexFile(filePath, stats, opts = {}) {
       if (model) s.models.set(model, (s.models.get(model) ?? 0) + 1);
     } else if (d.type === "response_item" && payload) {
       if (payload.type === "function_call" || payload.type === "local_shell_call") {
-        const name = payload.name || "shell";
+        // sanitizeModel, exactly as the Claude branch 80 lines above does for
+        // item.name. A tool NAME is attacker-supplied text — MCP servers name
+        // their own tools — and this branch wrote it into tool_call_counts raw,
+        // so a Codex rollout naming a tool after a credential put that
+        // credential verbatim into reports/expanded-*.json.
+        const name = sanitizeModel(payload.name) || "shell";
         stats.toolCounts.set(name, (stats.toolCounts.get(name) || 0) + 1);
         s.tools += 1;
       } else if (payload.role === "user") {
@@ -602,7 +657,9 @@ export function finalize(stats) {
     // parent's session id across directories); file-derived alone would miss a
     // caller that builds sessions without files. Either witness counts.
     projects_count: new Set([
-      ...[...projects.keys()].filter((p) => p && p !== "[excluded]"),
+      ...[...projects.keys()]
+        .filter((p) => p && p !== "[excluded]")
+        .map((p) => stats.projectAliases?.get(p) ?? p),
       ...(stats.projectsSeen ?? []),
     ]).size,
     models: Object.fromEntries(
@@ -721,10 +778,13 @@ function computeStreaks(activeDays) {
     if (diff === 1) current += 1;
     else break;
   }
+  // localDayKey for "today", because every entry in `sorted` is a LOCAL day key.
+  // Reading today in UTC compared two different calendars: west of Greenwich the
+  // UTC date rolls over in the evening, so the SAME history scored a live streak
+  // at 10:00 and a broken one at 20:00 on the same day. Both sides are now the
+  // local calendar date, parsed identically.
   const daysSinceLast = Math.round(
-    (Date.parse(new Date().toISOString().slice(0, 10)) -
-      Date.parse(sorted[sorted.length - 1])) /
-      dayMs
+    (Date.parse(localDayKey(new Date())) - Date.parse(sorted[sorted.length - 1])) / dayMs
   );
   if (daysSinceLast > 1) current = 0;
   return { longest, current };

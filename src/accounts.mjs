@@ -24,6 +24,7 @@
 //     max(counterTotal + transcript tokens on days strictly after
 //     lastComputedDate, measured on disk). Concatenation is exact; subtraction
 //     is meaningless. dailyModelTokens is never used (input+output only).
+import { sanitizeModel } from "./scan.mjs";
 import {
   lstatSync,
   readdirSync,
@@ -349,7 +350,10 @@ async function scanProfile(configDir, seen) {
           if (!dayTok) byDay.set(day, (dayTok = zeroTok()));
         }
         const model =
-          typeof msg.model === "string" && msg.model ? msg.model : "unknown";
+          // sanitizeModel, as scan.mjs and profile.mjs both do for this exact
+          // field. Read raw, a model value that is really a filesystem path or
+          // a credential went straight into the per-account rollup files.
+          sanitizeModel(msg.model) || "unknown";
         let modelTok = byModel.get(model);
         if (!modelTok) byModel.set(model, (modelTok = zeroTok()));
         modelCounts.set(model, (modelCounts.get(model) ?? 0) + 1);

@@ -138,3 +138,37 @@ test("finalize still reports the true count when sessions carry projects directl
   assert.equal(out.projects.length, 20, "the DISPLAY list stays capped");
   assert.equal(out.projects_count, 37, "the SCORE input is the real number");
 });
+
+test("a project whose folder name contains a dash is ONE project", async () => {
+  // The union counts two witnesses: projectLabel(cwd) and projectFromPath(dir).
+  // Claude Code encodes the working directory by replacing every separator with
+  // a dash, so decoding cannot tell a separator from a dash that was always in
+  // the name: "-srv-code-starforge-cli" decodes to "starforge/cli" while the cwd
+  // reads "code/starforge-cli". Two spellings, one project, counted twice — and
+  // projects_count feeds the ENGINEERING axis, so the star inflated.
+  //
+  // Every earlier test in this file was blind to it: they either use the
+  // uninformative cwd "/workspace" (where the directory wins for the session
+  // too, so both witnesses match by construction) or "-home-me-alpha", which has
+  // no dash inside a segment and decodes byte-identically.
+  const out = await scan([["-srv-code-my-app", "a", [row({ cwd: "/srv/code/my-app" })]]]);
+  assert.equal(out.projects_count, 1, "one directory and one cwd are one project");
+  const many = await scan(
+    [...Array(6)].map((_, i) => [`-srv-code-app-${i}`, "s", [row({ cwd: `/srv/code/app-${i}` })]])
+  );
+  assert.equal(many.projects_count, 6, "six dashed projects are six, not twelve");
+});
+
+test("aliasing does not re-merge projects a sub-agent spans", async () => {
+  // The obvious fix — alias dirProject onto s.project — collapses these three
+  // back to one, because one shared sessionId maps every directory onto whichever
+  // was read first. The alias must be keyed off the FILE's own cwd.
+  const sid = "3798c011-49df-47f2-b36d-6d2aaa0a1b5f";
+  const out = await scan([
+    ["-srv-code-my-app", sid, [row({ cwd: "/srv/code/my-app", sessionId: sid })]],
+    ["-srv-code-other-app", "agent-a1", [row({ cwd: "/srv/code/other-app", sessionId: sid })]],
+    ["-srv-code-third-app", "agent-a2", [row({ cwd: "/srv/code/third-app", sessionId: sid })]],
+  ]);
+  assert.equal(out.total_sessions, 1, "still one session");
+  assert.equal(out.projects_count, 3, "but three projects, each with a dash");
+});

@@ -100,3 +100,56 @@ test("end to end: a streamed transcript reports the finished output", async () =
   assert.equal(out.total_input_tokens, 1, "input must not be multiplied by the write count");
   assert.equal(out.total_cache_read_tokens, 44628, "cache must not be multiplied either");
 });
+
+test("a bare null line does not silently truncate the rest of the file", async () => {
+  // JSON.parse("null") SUCCEEDS and returns null; the next line reads
+  // d.timestamp and throws from inside the stream callback, aborting the file.
+  // cli.mjs catches it with a bare `catch {}`, so rows before the bad line are
+  // kept and everything after is dropped WITHOUT A WORD. A 9-row transcript with
+  // a null on line 2 reported 100 output tokens instead of 900. The likely
+  // source is a session file that was being written when the process was killed.
+  const home = mkdtempSync(join(tmpdir(), "sf-null-"));
+  const dir = join(home, ".claude", "projects", "-w-a");
+  mkdirSync(dir, { recursive: true });
+  const good = (i) => JSON.stringify({ type: "assistant", cwd: "/w/a",
+    timestamp: `2026-07-0${i}T10:00:00.000Z`, uuid: `u${i}`,
+    message: { role: "assistant", id: `m${i}`, model: "claude-opus-5",
+      content: [{ type: "text", text: "x" }],
+      usage: { input_tokens: 1000, output_tokens: 100 } } });
+  const nine = [1, 2, 3, 4, 5, 6, 7, 8, 9].map(good);
+
+  for (const [label, lines] of [
+    ["no null", nine],
+    ["null early", [nine[0], "null", ...nine.slice(1)]],
+    ["null late", [...nine.slice(0, 7), "null", ...nine.slice(7)]],
+    ["null last", [...nine, "null"]],
+  ]) {
+    const p = join(dir, "s.jsonl");
+    writeFileSync(p, lines.join("\n"));
+    const stats = emptyStats();
+    // exactly what cli.mjs does around the parse
+    let threw = null;
+    try { await parseClaudeFile(p, stats, {}); } catch (e) { threw = e; }
+    const out = finalize(stats);
+    assert.equal(threw, null, `${label}: parsing must not throw`);
+    assert.equal(out.total_output_tokens, 900, `${label}: every good row must still count`);
+  }
+});
+
+test("other bare JSON scalars are ignored, not counted", async () => {
+  const home = mkdtempSync(join(tmpdir(), "sf-scalar-"));
+  const dir = join(home, ".claude", "projects", "-w-a");
+  mkdirSync(dir, { recursive: true });
+  const good = JSON.stringify({ type: "assistant", cwd: "/w/a",
+    timestamp: "2026-07-01T10:00:00.000Z", uuid: "u1",
+    message: { role: "assistant", id: "m1", model: "claude-opus-5",
+      content: [{ type: "text", text: "x" }],
+      usage: { input_tokens: 1000, output_tokens: 100 } } });
+  const p = join(dir, "s.jsonl");
+  writeFileSync(p, [good, "true", "42", '"hello"', "[1,2]", "null"].join("\n"));
+  const stats = emptyStats();
+  await parseClaudeFile(p, stats, {});
+  const out = finalize(stats);
+  assert.equal(out.total_output_tokens, 100, "only the real row counts");
+  assert.equal(out.total_sessions, 1);
+});
