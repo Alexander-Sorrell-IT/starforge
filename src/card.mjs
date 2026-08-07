@@ -181,7 +181,7 @@ ${levels.map((_, i) => labelAt(i)).join("")}
 <g transform="translate(64,300)">
   <rect x="0" y="0" width="300" height="128" fill="#03141f" stroke="#155273" opacity="0.92"/>
   <text x="24" y="28" class="panelt">SKILL OVERVIEW</text>
-  ${row(56, "TOTAL SKILL POINTS", `${total.toFixed(1)}/25`)}
+  ${row(56, "TOTAL SKILL POINTS", `${total.toFixed(1)}/${ARMS * MAX_LEVEL}`)}
   ${row(80, "SESSIONS", fmt(agg.total_sessions))}
   ${row(104, "ACTIVE HOURS", agg.total_duration_hours)}
 </g>

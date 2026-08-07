@@ -234,7 +234,7 @@ export function cardStar(rawLevels, agg) {
     lines.push(left + right);
   }
   lines.push("");
-  lines.push(`  ${big(`${total.toFixed(1)}/25`)} skill points   ${D}rating${R} ${WH}${rating}${R}`);
+  lines.push(`  ${big(`${total.toFixed(1)}/${ARMS * MAX_LEVEL}`)} skill points   ${D}rating${R} ${WH}${rating}${R}`);
   lines.push(D + "  arm length is that axis alone — the outline is the data" + R);
   return lines;
 }
@@ -492,7 +492,7 @@ export function sharePayload(rawLevels, agg, url) {
   const cachePct = work + cache > 0 ? Math.round((cache / (work + cache)) * 100) : 0;
   const axes = AXES.map((ax, i) => `${ax.split(" ")[0].slice(0, 4).toLowerCase()} ${levels[i]}`).join(" ");
   const lines = [
-    `starforge skill star ${total.toFixed(1)}/25 (${rating})`,
+    `starforge skill star ${total.toFixed(1)}/${ARMS * MAX_LEVEL} (${rating})`,
     axes,
     `${fmt(num(a.total_sessions))} sessions, ${Math.round(num(a.total_duration_hours))}h active, ${num(a.active_days)} days`,
     `${human(work + cache)} tokens, ${cachePct}% cached`,
@@ -512,7 +512,7 @@ export function cardShare(rawLevels, agg, url) {
   return [
     head("SHARE IT"),
     "",
-    `  ${WH}my skill star · ${total.toFixed(1)}/25 · ${shape}${R}`,
+    `  ${WH}my skill star · ${total.toFixed(1)}/${ARMS * MAX_LEVEL} · ${shape}${R}`,
     `  ${D}${AXES.map((a, i) => `${a.split(" ")[0].slice(0, 4).toLowerCase()} ${levels[i]}`).join(" · ")}${R}`,
     "",
     `  ${D}the QR below carries these numbers outright. scan it and${R}`,

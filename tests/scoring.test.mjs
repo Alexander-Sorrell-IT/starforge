@@ -18,6 +18,11 @@ import assert from "node:assert/strict";
 import { computeLevels } from "../src/star.mjs";
 import { ARMS, MAX_LEVEL } from "../src/starsvg.mjs";
 import { emptyStats, finalize, countLanguage } from "../src/scan.mjs";
+import { AXES } from "../src/starsvg.mjs";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+const SRC = join(dirname(dirname(fileURLToPath(import.meta.url))), "src");
 
 const AX = { FIRST: 0, ENGINEERING: 1, CODING: 2, OUTSIDE: 3, TENACITY: 4 };
 const total = (lv) => +lv.reduce((a, b) => a + b, 0).toFixed(1);
@@ -205,4 +210,44 @@ test("a single month can never outscore a lifetime that contains it", () => {
   const m = computeLevels(month), l = computeLevels(life);
   for (let i = 0; i < ARMS; i++)
     assert.ok(l[i] >= m[i], `axis ${i}: lifetime ${l[i]} must be >= month ${m[i]}`);
+});
+
+// ---- every denominator tracks the constant ---------------------------------
+
+test("no shipped file hardcodes the skill-point denominator", () => {
+  // Raising MAX_LEVEL moved the star's footer to /35 and left FIVE literal
+  // "/25"s behind — in the SVG card, the SVG <title>, the wrapped display, the
+  // QR payload and the share line. The QR is the artifact people actually
+  // send, so the one number designed to travel was the wrong one, and the two
+  // halves of the same screen disagreed: "SKILL POINTS 27.7/35" above
+  // "my skill star · 27.7/25" below.
+  //
+  // Caught by reading the terminal output, not by any test — the JSON reports
+  // were right the whole time. A constant used in a template literal is a
+  // constant nothing type-checks.
+  const files = ["card.mjs", "starsvg.mjs", "wrapped.mjs", "star.mjs", "statspage.mjs"];
+  for (const f of files) {
+    const src = readFileSync(join(SRC, f), "utf8");
+    assert.doesNotMatch(
+      src, /toFixed\(1\)\}\/\d+/,
+      `${f} hardcodes a skill-point denominator — derive it from ARMS * MAX_LEVEL`
+    );
+  }
+});
+
+test("the share line, the QR payload and the card all carry the real denominator", async () => {
+  const { cardShare, cardStar } = await import("../src/wrapped.mjs");
+  const levels = new Array(ARMS).fill(MAX_LEVEL);
+  const want = `${(ARMS * MAX_LEVEL).toFixed(1)}/${ARMS * MAX_LEVEL}`;
+  const agg = { total_sessions: 10, active_days: 5, languages: {}, models: {} };
+  for (const [name, text] of [
+    ["share line + QR payload", cardShare(levels, agg, "https://example.invalid").join("\n")],
+    ["star card", cardStar(levels, agg).join("\n")],
+  ]) {
+    assert.ok(
+      text.includes(want),
+      `${name} must read ${want} — a shared number with the wrong denominator is the worst one to get wrong`
+    );
+    assert.ok(!/\/25\b/.test(text), `${name} still shows /25`);
+  }
 });

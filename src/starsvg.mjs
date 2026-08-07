@@ -232,7 +232,7 @@ export function renderStarSvg(levels, opts = {}) {
 
   const title = opts.title
     ? `<title>${escapeText(opts.title)}</title>`
-    : `<title>skill star — ${AXES.map((ax, i) => `${ax} ${fmtLevel(lv[i])}`).join(", ")} (${total.toFixed(1)}/25)</title>`;
+    : `<title>skill star — ${AXES.map((ax, i) => `${ax} ${fmtLevel(lv[i])}`).join(", ")} (${total.toFixed(1)}/${ARMS * MAX_LEVEL})</title>`;
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" role="img">${title}
 <defs>
