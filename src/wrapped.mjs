@@ -15,6 +15,7 @@
 // the card that accounts for what left the machine.
 
 import { AXES, ARMS, MAX_LEVEL, starPoints, clampLevel } from "./starsvg.mjs";
+import { rating, archetype, signature } from "./archetype.mjs";
 import { qrToTerminal } from "./qr.mjs";
 
 const R = "\x1b[0m";
@@ -224,7 +225,7 @@ export function estimateCost(agg, rates = DEFAULT_RATES) {
 export function cardStar(rawLevels, agg) {
   const levels = lv5(rawLevels);
   const total = levels.reduce((a, b) => a + b, 0);
-  const rating = total >= 22 ? "S+" : total >= 20 ? "S" : total >= 17 ? "A" : total >= 13 ? "B" : "C";
+  const grade = rating(total);
   const art = miniStar(levels, 23, 11);
   const lines = [head("THE SHAPE OF YOUR WORK"), ""];
   const labels = AXES.map((ax, i) => `${pad(ax, 17)} ${bar(levels[i], MAX_LEVEL, 10)} ${WH}${levels[i]}${R}`);
@@ -234,8 +235,20 @@ export function cardStar(rawLevels, agg) {
     lines.push(left + right);
   }
   lines.push("");
-  lines.push(`  ${big(`${total.toFixed(1)}/${ARMS * MAX_LEVEL}`)} skill points   ${D}rating${R} ${WH}${rating}${R}`);
+  lines.push(`  ${big(`${total.toFixed(1)}/${ARMS * MAX_LEVEL}`)} skill points   ${D}rating${R} ${WH}${grade}${R}`);
+  // The archetype names the SHAPE, and it is the one thing on this card that is
+  // about you rather than about a count. Deliberately not a ranking: the tool
+  // has never seen anyone else's data, so it has nothing to rank you against.
+  const arc = archetype(levels);
+  lines.push("");
+  lines.push(`  ${WH}── ${arc.name.toUpperCase()} ──${R}`);
+  // wrapWords, not a raw push: box() CLIPS at its own width rather than
+  // wrapping, and the first version lost the last three words of the blurb.
+  for (const l of wrapWords(arc.blurb, W - 4)) lines.push(`  ${D}${l}${R}`);
+  for (const l of wrapWords(signature(agg), W - 4)) lines.push(`  ${D}${l}${R}`);
+  lines.push("");
   lines.push(D + "  arm length is that axis alone — the outline is the data" + R);
+  lines.push(D + "  no percentile: nothing here has seen another user's data" + R);
   return lines;
 }
 
@@ -486,13 +499,13 @@ export function sharePayload(rawLevels, agg, url) {
   const levels = lv5(rawLevels);
   const a = obj(agg);
   const total = levels.reduce((x, y) => x + y, 0);
-  const rating = total >= 22 ? "S+" : total >= 20 ? "S" : total >= 17 ? "A" : total >= 13 ? "B" : "C";
+  const grade = rating(total);
   const work = num(a.total_input_tokens) + num(a.total_output_tokens);
   const cache = num(a.total_cache_read_tokens) + num(a.total_cache_write_tokens);
   const cachePct = work + cache > 0 ? Math.round((cache / (work + cache)) * 100) : 0;
   const axes = AXES.map((ax, i) => `${ax.split(" ")[0].slice(0, 4).toLowerCase()} ${levels[i]}`).join(" ");
   const lines = [
-    `starforge skill star ${total.toFixed(1)}/${ARMS * MAX_LEVEL} (${rating})`,
+    `starforge skill star ${total.toFixed(1)}/${ARMS * MAX_LEVEL} (${grade}) — ${archetype(levels).name}`,
     axes,
     `${fmt(num(a.total_sessions))} sessions, ${Math.round(num(a.total_duration_hours))}h active, ${num(a.active_days)} days`,
     `${human(work + cache)} tokens, ${cachePct}% cached`,
@@ -512,7 +525,8 @@ export function cardShare(rawLevels, agg, url) {
   return [
     head("SHARE IT"),
     "",
-    `  ${WH}my skill star · ${total.toFixed(1)}/${ARMS * MAX_LEVEL} · ${shape}${R}`,
+    `  ${WH}my skill star · ${total.toFixed(1)}/${ARMS * MAX_LEVEL} (${rating(total)}) · ${shape}${R}`,
+    `  ${WH}${archetype(levels).name}${R}`,
     `  ${D}${AXES.map((a, i) => `${a.split(" ")[0].slice(0, 4).toLowerCase()} ${levels[i]}`).join(" · ")}${R}`,
     "",
     `  ${D}the QR below carries these numbers outright. scan it and${R}`,

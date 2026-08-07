@@ -11,6 +11,7 @@ import {
   starPoints,
   clampLevel,
 } from "./starsvg.mjs";
+import { rating, archetype } from "./archetype.mjs";
 
 const W = 1280, H = 720;
 const CX = 640, CY = 380, R = 230;
@@ -109,7 +110,7 @@ export function renderCard(rawLevels, agg, vel, opts = {}) {
   const tokens = agg.total_input_tokens + agg.total_output_tokens;
   const cache = agg.total_cache_read_tokens + agg.total_cache_write_tokens;
   const cachePct = tokens + cache > 0 ? ((cache / (tokens + cache)) * 100).toFixed(1) : "0";
-  const rating = total >= 22 ? "S+" : total >= 20 ? "S" : total >= 17 ? "A" : total >= 13 ? "B" : "C";
+  const grade = rating(total);
 
   const row = (y, k, v) =>
     `<text x="24" y="${y}" class="k">${k}</text><text x="286" y="${y}" text-anchor="end" class="v">${v}</text>`;
@@ -175,7 +176,7 @@ ${levels.map((_, i) => labelAt(i)).join("")}
 <!-- header -->
 <text x="64" y="78" class="title">${name}</text>
 <line x1="64" y1="94" x2="560" y2="94" stroke="#1c5c82"/>
-<text x="64" y="118" class="sub">CUSTOM SKILL MATRIX &#8226; RATING: ${rating}</text>
+<text x="64" y="118" class="sub">${archetype(levels).name.toUpperCase()} &#8226; RATING: ${grade}</text>
 
 <!-- skill overview panel -->
 <g transform="translate(64,300)">
