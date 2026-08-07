@@ -19,15 +19,26 @@ const PKG = JSON.parse(read("package.json"));
 
 // Fenced code blocks are what people copy/paste — held to a stricter standard
 // than prose, which is allowed to *warn about* the wrong commands.
+// Blocks explicitly tagged as non-shell are OUTPUT, not instructions. The docs
+// show sample terminal output and a QR payload that legitimately begin with the
+// word "starforge" at column 0, and treating those as commands made the
+// bare-name guard cry wolf — which is how a real guard ends up deleted. A block
+// with NO language tag is still treated as a command block, because that is the
+// ambiguous case and the one worth being strict about.
+const NON_COMMAND_FENCES = new Set(["text", "json", "output", "console-output", "svg", "html"]);
+
 function codeBlockLines(md) {
   const out = [];
   let inBlock = false;
+  let skipping = false;
   for (const line of md.split("\n")) {
-    if (line.trimStart().startsWith("```")) {
+    const t = line.trimStart();
+    if (t.startsWith("```")) {
+      if (!inBlock) skipping = NON_COMMAND_FENCES.has(t.slice(3).trim().toLowerCase());
       inBlock = !inBlock;
       continue;
     }
-    if (inBlock) out.push(line);
+    if (inBlock && !skipping) out.push(line);
   }
   return out;
 }

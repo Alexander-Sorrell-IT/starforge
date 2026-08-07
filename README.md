@@ -160,16 +160,43 @@ story; `--no-wrapped` gives you the summary only, and `--no-pace` prints every
 card at once instead of waiting for a keypress (which is also what happens
 automatically when output is piped).
 
-**Every run ends with two proofs, and an offer.** They answer different
-questions, and you need both:
+**Every run ends with a menu, not homework.** In a terminal you get:
 
-```bash
-starforge-cli prove      # did anything LEAVE?  → the kernel answers
-starforge-cli receipt    # is it KEEPING more than it showed me?
+```text
+before you go
+  [p] prove it   ask the kernel whether anything can leave
+  [r] receipt    every field it KEPT, read from the bytes on disk
+  [d] daemon     schedule monthly re-scans so history outlives the logs
+  [q] done
 ```
 
-`prove` prints the sandbox command and says plainly that **you** have to run it
-— a check this tool ran on itself could be faked by this tool.
+`[p]` **runs** the proof, right there, in three steps:
+
+```text
+1/3 probe OUTSIDE the sandbox  → NOT BLOCKED — connected to 1.1.1.1:443
+                                 control VALID — egress really is open here
+2/3 the same probe INSIDE      → BLOCKED — EPERM on connect() — the kernel
+                                 refused before any packet could leave
+3/3 the scan itself, sealed    → completed
+```
+
+Step 1 is not decoration. A proof whose probe never connects proves nothing
+about the wall, so the run has to show egress genuinely open on the outside
+before "blocked" on the inside means anything. Both probes run in **child
+processes**: the CLI arms a tripwire at startup, so an in-process probe could
+never connect, and an earlier version of this reported that tripwire failure as
+"connected" — a control that cannot succeed is not a control.
+
+The menu says so on screen: this is starforge running a check on starforge, and
+it is the **weaker** form. The strong one is unchanged and is yours to run:
+
+```bash
+sh bin/starforge-proof.sh    # you run it, in your shell, where this tool gets no vote
+starforge-cli prove          # prints the command without running anything
+```
+
+These are the same two questions as before, and you still need both — `prove`
+for what LEFT, `receipt` for what was KEPT.
 
 `receipt` is the half a no-egress claim does not cover. A tool that never opens
 a socket can still read your whole transcript and park it in a file on your
@@ -207,8 +234,35 @@ test asserts that a plain scan never writes one.
 in the format everyone already recognises from a hosted wrapped: the shape of
 your work, hours, history, tokens (with a cost estimate), the month-by-month
 silhouette, when you code, how you drive the machine, how many agents you juggle,
-tools and models, top projects, and a share card with a QR you can scan off the
-screen. Piped or `--no-pace`, the whole story prints at once.
+tools and models, top projects, and a share card. Piped or `--no-pace`, the
+whole story prints at once.
+
+**The QR carries your results, not a link to them.** A hosted wrapped makes a
+share code by uploading your numbers and encoding a URL that points at them —
+the one thing this tool will not do. So the code below the last card *is* the
+data:
+
+```text
+starforge skill star 23.7/25 (S+)
+firs 5 engi 5 codi 4.7 outs 5 tena 4
+153 sessions, 344h active, 29 days
+5.7B tokens, 99% cached
+longest streak 16d
+this code carries the numbers themselves, not a link to them.
+https://github.com/Alexander-Sorrell-IT/starforge
+```
+
+Scan it and your phone shows exactly that — the same numbers the terminal
+showed, plus the repo. Nothing was published to make it scannable and no server
+has to stay up for it to keep working. Decode it yourself and check.
+
+The encoder is in this tree (`src/qr.mjs`, no dependency — a dependency is code
+`verify` never scans and you never read). It prefers EC level M and drops to L
+only when the payload will not otherwise fit, and it **refuses** rather than
+truncating: a QR encoding half a URL scans perfectly and sends you somewhere
+wrong. The block prints below the card rather than inside it, because a
+version-10 symbol with its quiet zone is 61 columns against a 60-column card,
+and a QR with a clipped quiet zone looks fine and does not scan.
 
 Two differences from a hosted wrapped, and they are the point. **There is no
 "top 17% of users" anywhere in it** — this tool has never seen anyone else's
