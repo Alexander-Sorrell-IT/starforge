@@ -137,17 +137,7 @@ export function emptyStats() {
     // directory was read first: on the fleet corpus that turned 350 project
     // directories into 104. A project is a place work happened, not a property
     // of a session id.
-    projectsSeen: new Set(),
-    // cwd label -> the SAME project's directory spelling. The two witnesses in
-    // projects_count are produced by different functions: projectLabel(cwd) and
-    // projectFromPath(dir). They disagree whenever a path segment contains a
-    // dash, because the directory encoding replaces every separator with one
-    // and decoding cannot tell them apart — "-srv-code-starforge-cli" decodes
-    // to "starforge/cli" while the cwd reads "code/starforge-cli". Unioning two
-    // spellings of one project COUNTS IT TWICE, and projects_count feeds the
-    // ENGINEERING axis, so the star inflates. On a real machine 27 of 37
-    // readable project directories disagreed this way.
-    projectAliases: new Map(),
+    projectsSeen: new Map(), // encoded dir name -> that directory's project label
   };
 }
 
@@ -343,7 +333,15 @@ export function projectFromPath(filePath) {
 export async function parseClaudeFile(filePath, stats, opts = {}) {
   // Resolved once per file, used only when cwd cannot identify the project.
   const dirProject = projectFromPath(filePath);
-  if (dirProject && !opts.excluded?.(dirProject)) stats.projectsSeen?.add(dirProject);
+  // Keyed by the ENCODED directory name, which is unique per real directory. The
+  // DECODED label is NOT: ~/work/acme/api-server and ~/work/globex/api-server
+  // both decode to "api/server", because the decode window keeps only the last
+  // two segments and the dash-decode has already shifted the real parent out of
+  // it. Keying by the decoded label loses exactly what decoding lost — ten
+  // client repos counted as one project while all ten were still displayed.
+  const dirKey = filePath.split(/[/\\]/).filter(Boolean).slice(-2, -1)[0] ?? null;
+  if (dirKey && dirProject && !opts.excluded?.(dirProject))
+    stats.projectsSeen?.set(dirKey, dirProject);
   // The fallback session id must be unique across the WHOLE scan, so it carries
   // the project directory too. A bare basename is not an identity: 83 different
   // projects in the fleet corpus each had a "journal.jsonl", and all 83 merged
@@ -396,9 +394,15 @@ export async function parseClaudeFile(filePath, stats, opts = {}) {
     // carries its parent's id), and s.project is whichever directory was read
     // first — aliasing dirProject onto that would collapse three real projects
     // into one and undo the sub-agent fix.
-    if (dirProject && typeof d.cwd === "string" && !uninformativeCwd(d.cwd) && !opts.excluded?.(d.cwd)) {
-      const alias = projectLabel(d.cwd);
-      if (alias && alias !== dirProject) stats.projectAliases?.set(alias, dirProject);
+    if (dirKey && dirProject && typeof d.cwd === "string" && !uninformativeCwd(d.cwd)) {
+      // Rewrite THIS directory's own entry to the un-encoded spelling the
+      // session also uses, so the two witnesses agree. Per-directory, so two
+      // directories that happen to decode alike remain two projects.
+      if (opts.excluded?.(d.cwd)) stats.projectsSeen?.delete(dirKey);
+      else {
+        const alias = projectLabel(d.cwd);
+        if (alias) stats.projectsSeen?.set(dirKey, alias);
+      }
     }
     const msg = d.message;
     if (d.type === "user" && msg && typeof msg.content === "string") {
@@ -657,10 +661,10 @@ export function finalize(stats) {
     // parent's session id across directories); file-derived alone would miss a
     // caller that builds sessions without files. Either witness counts.
     projects_count: new Set([
-      ...[...projects.keys()]
-        .filter((p) => p && p !== "[excluded]")
-        .map((p) => stats.projectAliases?.get(p) ?? p),
-      ...(stats.projectsSeen ?? []),
+      ...[...projects.keys()].filter((p) => p && p !== "[excluded]"),
+      ...(stats.projectsSeen instanceof Map
+        ? stats.projectsSeen.values()
+        : (stats.projectsSeen ?? [])),
     ]).size,
     models: Object.fromEntries(
       [...models.entries()].sort(byCountThenKey)

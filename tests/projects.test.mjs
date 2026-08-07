@@ -172,3 +172,34 @@ test("aliasing does not re-merge projects a sub-agent spans", async () => {
   assert.equal(out.total_sessions, 1, "still one session");
   assert.equal(out.projects_count, 3, "but three projects, each with a dash");
 });
+
+test("two directories that DECODE alike are still two projects", async () => {
+  // The first attempt at the dash fix aliased each cwd label onto
+  // projectFromPath(dir) — a value that is lossy in exactly the way the fix was
+  // compensating for. projectFromPath keeps the last two DECODED segments, and
+  // the dash-decode has already shifted the real parent out of that window, so
+  //   ~/work/acme/api-server   -> "api/server"
+  //   ~/work/globex/api-server -> "api/server"
+  // Ten client repos aliased onto one string: counted as ONE project while all
+  // ten were still DISPLAYED — the display/score divergence finalize's own
+  // comment calls fatal. It turned a +1 overcount into a -9 undercount on the
+  // very axis the fix existed to protect.
+  //
+  // Invisible to the earlier tests by construction: every directory they use
+  // (-srv-code-my-app, -srv-code-app-0..5, -srv-code-other-app) decodes to a
+  // distinct target, so no two ever land on one alias.
+  const two = await scan([
+    ["-home-me-work-api-server", "a", [row({ cwd: "/home/me/work/api-server" })]],
+    ["-home-me-personal-api-server", "b", [row({ cwd: "/home/me/personal/api-server" })]],
+  ]);
+  assert.equal(two.projects_count, 2, "same dashed basename, different parents");
+
+  const clients = ["acme", "globex", "initech", "umbrella", "soylent"];
+  const many = await scan(
+    clients.map((c) => [`-home-me-work-${c}-api-server`, "s", [row({ cwd: `/home/me/work/${c}/api-server` })]])
+  );
+  assert.equal(many.projects_count, clients.length, "five clients, five projects");
+  // The count and the display must never disagree — that divergence is how this
+  // shipped without anyone noticing.
+  assert.equal(many.projects.length, clients.length, "count must match what is displayed");
+});
