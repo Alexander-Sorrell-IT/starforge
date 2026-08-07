@@ -125,6 +125,18 @@ const fmt = (n) => (n ?? 0).toLocaleString("en-US");
 // gates three separate things (the scan animation, the scan's own star, and
 // everything after the summary) and they must never disagree.
 const starOnly = flag("--star") || flag("--dual");
+// The title printed above a star. Two stars in one run need to be told apart by
+// WHAT THEY WERE COMPUTED FROM — that is the only thing that differs, and the
+// numbers alone (27.7 vs 28.9) look like a discrepancy until you know why.
+// NO_COLOR is honoured by every other renderer here, and these headings go
+// straight into redirected captures — `--dual > stars.txt` must not come out
+// full of escape codes.
+const starHeading = (what, detail) => {
+  const plain = Boolean(process.env.NO_COLOR);
+  const head = plain ? `★ ${what}` : `${BOLD}${CYAN}★ ${what}${RESET}`;
+  const tail = !detail ? "" : plain ? ` — ${detail}` : ` ${DIM}— ${detail}${RESET}`;
+  console.log(`\n${head}${tail}`);
+};
 // "…/stars/2026-08.svg" -> "2026-08"
 const monthOf = (p) => String(p).split("/").pop().replace(/\.svg$/, "");
 
@@ -457,6 +469,11 @@ async function main() {
   if (starOnly) star.enabled = false;
   let done = 0;
   let lastDraw = 0;
+  // A DEFAULT run draws two stars, and two unlabelled near-identical stars are
+  // worse than one — you cannot tell which is which, and the footers alone did
+  // not say: the first read "scan complete", a progress message, not an
+  // identity. Each star gets a heading stating what it was computed FROM.
+  if (!starOnly) starHeading("from the logs on disk right now", `${sources.length} files`);
   star.draw(computeLevels(finalize(stats)), `scanning 0/${sources.length}`);
   for (const src of sources) {
     try {
@@ -489,7 +506,7 @@ async function main() {
   // The star-only modes print their own star, deliberately labelled and drawn
   // from the LIFETIME numbers. Letting finish() land here too would leave the
   // scan's star sitting above it — two stars for --star, three for --dual.
-  if (!starOnly) star.finish(levels, "scan complete");
+  if (!starOnly) star.finish(levels, "logs on disk now");
 
   // ---- multi-CLI providers (fast, on by default) ---------------------------
   let providers = null;
@@ -576,8 +593,10 @@ async function main() {
       if (timeline.length <= 1) {
         star(month?.levels ?? levels, "this month · lifetime starts next month");
       } else {
+        starHeading("this month", month.month ?? "");
         star(month.levels ?? computeLevels(month), `this month · ${month.month ?? ""}`.trimEnd());
         const life = lifetimeFromTimeline(timeline);
+        starHeading("lifetime", `${life.months} months of snapshots`);
         star(life.levels, `lifetime · ${life.months} month(s)`);
       }
     } else {
@@ -607,7 +626,10 @@ async function main() {
   // would be a byte-identical copy of the first.
   if (timeline.length > 1) {
     const life = lifetimeFromTimeline(timeline);
-    console.log("");
+    starHeading(
+      "lifetime",
+      `from ${life.months} saved monthly snapshots — these outlive the logs`
+    );
     console.log(
       renderStar(life.levels, {
         color: !process.env.NO_COLOR,

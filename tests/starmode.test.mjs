@@ -147,6 +147,30 @@ test("re-scanning the same corpus does not inflate the lifetime", () => {
     );
 });
 
+test("every star in a run says what it was computed FROM", () => {
+  // Two near-identical stars appeared with no titles — the only distinguishing
+  // text was a footer, and the first one's read "scan complete", which is a
+  // progress message, not an identity. The numbers differ (27.7 vs 28.9) and
+  // with nothing naming the sources that reads as a bug rather than as two
+  // different measurements.
+  const out = run(corpus(6, ["06", "07"]), ["--no-pace", "--no-wrapped"]);
+  const heads = out.split("\n").filter((l) => l.startsWith("★"));
+  const stars = starCount(out);
+  assert.equal(
+    heads.length, stars,
+    `${stars} star(s) drawn but ${heads.length} heading(s): every star needs one`
+  );
+  assert.match(out, /★ from the logs on disk right now/, "the scan star names its source");
+  assert.match(out, /★ lifetime — from \d+ saved monthly snapshots/, "the lifetime star names its source");
+  assert.doesNotMatch(out, /scan complete/, "a progress message is not a label");
+});
+
+test("headings honour NO_COLOR, so a redirect is not full of escape codes", () => {
+  const out = run(corpus(6, ["06", "07"]), ["--dual"]);
+  for (const l of out.split("\n").filter((x) => x.includes("★")))
+    assert.doesNotMatch(l, /\x1b\[/, `heading still carries ANSI under NO_COLOR: ${JSON.stringify(l)}`);
+});
+
 test("the star-only modes stay silent on stdout when asked for JSON too", () => {
   // --json writes files; combining it with --star must not reintroduce the
   // summary through the other branch.
