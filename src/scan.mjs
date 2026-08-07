@@ -12,7 +12,49 @@ import {
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { redactSecrets, maskPath, projectLabel } from "./redact.mjs";
+import { redactSecrets, maskPath, projectLabel, projectPseudonym } from "./redact.mjs";
+
+// "Which day was that?" and "what hour was that?" have to be answered on the
+// SAME clock. They were not: hours came from getHours() (local) while day keys
+// came from toISOString() (UTC), so a 4pm-to-7pm session in a US timezone was
+// filed under two different UTC dates while its hour buckets said 16:00 and
+// 20:00 — no midnight in sight, two active days, and an inflated streak on the
+// axis the design leans on being hard to inflate. It also made the whole star a
+// function of $TZ: the same log scored OUTSIDE THE BOX 2.3 under UTC and 1.0
+// under America/Chicago. A day is a local calendar concept, which is also what
+// the hour histogram already assumed, so both now use local time.
+export function localDayKey(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+// Model ids are the ONE string copied out of a log that survives into a monthly
+// snapshot, and snapshots are the file this tool tells you is safe to sync. In
+// a real Claude Code / Codex transcript `model` is an api id like
+// "claude-opus-5". Nothing guarantees that: the field is whatever the log says,
+// and --roots deliberately points the scanner at other people's home
+// directories. So it is shape-checked before it is ever stored — a value that
+// does not look like a model id is replaced by a stable pseudonym, which keeps
+// the DISTINCT-model count honest without carrying the string itself.
+// No "@" and no "/": those are what an email address and a relative path look
+// like, and both sailed through an earlier version of this shape. maskPath only
+// rewrites paths under a home directory, so "Projects/SecretClient" would have
+// survived. Real model ids from Claude Code and Codex are letters, digits, dots,
+// colons and dashes; an "org/model"-style id becomes a pseudonym instead, which
+// costs a display name and keeps the distinct-model COUNT exactly right.
+const MODEL_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+export function sanitizeModel(model) {
+  if (typeof model !== "string") return null;
+  const trimmed = model.trim();
+  if (!trimmed) return null;
+  // redactSecrets first: a key-shaped substring must never reach the shape test
+  // and get waved through because it happens to be short and token-like.
+  const cleaned = maskPath(redactSecrets(trimmed));
+  if (cleaned !== trimmed || !MODEL_SHAPE.test(cleaned)) return projectPseudonym(trimmed);
+  return cleaned;
+}
 
 const MAX_ACTIVE_GAP_MIN = 15;
 
@@ -143,7 +185,7 @@ function session(stats, id, ts) {
   const d = new Date(ts);
   if (!isNaN(d.getTime())) {
     s.hours[d.getHours()] += 1;
-    s.days.add(d.toISOString().slice(0, 10));
+    s.days.add(localDayKey(d));
   }
   return s;
 }
@@ -155,7 +197,7 @@ function temporal(stats, ts) {
   stats.hourCounts[d.getHours()] += 1;
   const day = d.getDay();
   if (day === 0 || day === 6) stats.weekendEvents += 1;
-  stats.activeDays.add(d.toISOString().slice(0, 10));
+  stats.activeDays.add(localDayKey(d));
 }
 
 // Claude Code + Cowork share the transcript format.
@@ -182,9 +224,12 @@ export async function parseClaudeFile(filePath, stats, opts = {}) {
     if (d.type === "user" && msg && typeof msg.content === "string") {
       stats.userTurns += 1;
     } else if (d.type === "assistant" && msg) {
-      const model = typeof msg.model === "string" ? msg.model : null;
-      if (model && !model.startsWith("<") && !model.includes("synthetic"))
-        s.models.set(model, (s.models.get(model) ?? 0) + 1);
+      const raw = typeof msg.model === "string" ? msg.model : null;
+      const model =
+        raw && !raw.startsWith("<") && !raw.includes("synthetic")
+          ? sanitizeModel(raw)
+          : null;
+      if (model) s.models.set(model, (s.models.get(model) ?? 0) + 1);
       const u = msg.usage;
       const id = typeof msg.id === "string" ? msg.id : null;
       if (u && !(id && stats.seenMessageIds.has(id))) {
@@ -237,7 +282,7 @@ export async function parseCodexFile(filePath, stats, opts = {}) {
     const payload = d.payload;
     if (d.type === "session_meta" && payload) {
       if (typeof payload.id === "string") sessionId = payload.id;
-      if (typeof payload.model === "string") model = payload.model;
+      if (typeof payload.model === "string") model = sanitizeModel(payload.model);
     }
     temporal(stats, ts);
     const s = session(stats, sessionId, ts);
@@ -278,6 +323,28 @@ export function activeDurationMs(minutes) {
   return total;
 }
 
+// A month bucket, created on demand. Two things create one: a session that
+// STARTED in that month, and a calendar day belonging to it that a neighbouring
+// month's session ran through. The second case can produce a month with active
+// days but no sessions — that is honest (activity did occur then) and every
+// consumer treats the numeric fields as counts that may be zero.
+function ensureMonth(monthly, key) {
+  let b = monthly.get(key);
+  if (!b) {
+    b = {
+      sessions: 0, durationMs: 0, in: 0, out: 0, cache: 0,
+      tools: 0,
+      exts: new Map(),
+      models: new Map(),
+      projects: new Set(),
+      hours: new Array(24).fill(0),
+      days: new Set(),
+    };
+    monthly.set(key, b);
+  }
+  return b;
+}
+
 export function finalize(stats) {
   const sessions = [...stats.sessions.entries()];
   let durationMs = 0;
@@ -295,16 +362,11 @@ export function finalize(stats) {
     if (s.project) projects.set(s.project, (projects.get(s.project) || 0) + 1);
     for (const [m, n] of s.models) models.set(m, (models.get(m) ?? 0) + n);
     if (isFinite(s.firstTs)) {
-      const key = new Date(s.firstTs).toISOString().slice(0, 7);
-      const b = monthly.get(key) ?? {
-        sessions: 0, durationMs: 0, in: 0, out: 0, cache: 0,
-        tools: 0,
-        exts: new Map(),
-        models: new Map(),
-        projects: new Set(),
-        hours: new Array(24).fill(0),
-        days: new Set(),
-      };
+      // Local clock here too: the month a session belongs to must agree with the
+      // day keys it contributes, or a session started late on the last day of a
+      // month lands in the wrong bucket from its own days.
+      const key = localDayKey(new Date(s.firstTs)).slice(0, 7);
+      const b = ensureMonth(monthly, key);
       b.sessions += 1;
       b.durationMs += dur;
       b.in += s.tok.in;
@@ -319,7 +381,21 @@ export function finalize(stats) {
       for (const [m, n] of s.models) b.models.set(m, (b.models.get(m) ?? 0) + n);
       if (s.project && s.project !== "[excluded]") b.projects.add(s.project);
       for (let h = 0; h < 24; h++) b.hours[h] += s.hours[h];
-      for (const d of s.days) b.days.add(d);
+      // Calendar facts are NOT attributed to the start month the way volume is.
+      // A session that runs 31 Jan into 1 Feb really did happen on a February
+      // day, and filing that day under January produced counts that are false on
+      // their face — a 31-day month reporting 32 active days, and 1 Feb counted
+      // in both months once February had a session of its own. Volume (tokens,
+      // tool calls, sessions) still goes whole to the start month, which is the
+      // documented rule; a DAY goes to the month that day is actually in.
+      for (const day of s.days) {
+        const dayMonth = day.slice(0, 7);
+        if (dayMonth === key) b.days.add(day);
+        else {
+          const other = ensureMonth(monthly, dayMonth);
+          other.days.add(day);
+        }
+      }
       monthly.set(key, b);
     }
   }
@@ -374,7 +450,14 @@ export function finalize(stats) {
   };
 }
 
+// __proto__: null because these lookups are keyed by an attacker-influenced
+// filename extension. On a plain object literal, a file called `a.constructor`
+// made `EXT_TO_LANG[ext]` truthy via the prototype chain and put the literal
+// string "function Object() { [native code] }" into the language list — junk in
+// a synced snapshot, and a free +1 to the distinct-language count that feeds the
+// ENGINEERING arm.
 const EXT_TO_LANG = {
+  __proto__: null,
   ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
   mjs: "javascript", cjs: "javascript", py: "python", go: "go", rs: "rust",
   java: "java", kt: "kotlin", swift: "swift", rb: "ruby", php: "php",

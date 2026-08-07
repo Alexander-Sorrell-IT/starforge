@@ -9,6 +9,7 @@ import {
   armRadius,
   armTips,
   starPoints,
+  clampLevel,
 } from "./starsvg.mjs";
 
 const W = 1280, H = 720;
@@ -23,8 +24,16 @@ function fmt(n) {
   return n.toLocaleString("en-US");
 }
 
-export function renderCard(levels, agg, vel, opts = {}) {
+export function renderCard(rawLevels, agg, vel, opts = {}) {
   const name = opts.name ?? "SKILL SCREEN";
+  // Same clamping starsvg.mjs does, and for the same reason: computeLevels can
+  // hand back NaN from a corrupt snapshot (loadTimeline swallows parse errors),
+  // and this renderer used to take that at face value — printing "LV. NaN" and
+  // "NaN/25" on the card while the SVG renderer drew the identical arm as 0.
+  // Two renderers disagreeing about one input is worse than either being wrong.
+  // Infinity was worse still: `k <= Math.floor(Infinity)` looped emitting node
+  // dots until V8 hit its maximum string length and threw.
+  const levels = Array.from({ length: ARMS }, (_, i) => clampLevel(rawLevels?.[i]));
   // Geometry comes from starsvg.mjs so this card, the terminal frame and the
   // per-month chips are all literally the same shape. Arm length is that axis
   // and nothing else; the valleys are fixed, so a lopsided profile stays

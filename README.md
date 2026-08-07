@@ -21,8 +21,8 @@ node src/cli.mjs                        # scan, with the live star
 node src/cli.mjs --yes --card --page    # no prompts; also write the SVG card + HTML page
 ```
 
-One real frame of the live star, ANSI colour stripped and the middle rows
-elided — the whole 78×26 frame, printed verbatim, is under
+One real frame of the live star, rendered with colour disabled and the middle
+rows elided — the whole 78×26 frame, printed verbatim, is under
 [What you get](#what-you-get):
 
 ```
@@ -161,29 +161,37 @@ at the end instead of animating — same numbers, no cursor tricks.
 nothing else, and the valleys between arms sit at a fixed radius — so a maxed
 axis is a long spike, a weak one is a stub, and the outline is a fingerprint you
 read before you read a number. A lopsided star says "here is the actual shape of
-this person"; a symmetric one says "balanced generalist". That only works if the
-arms are genuinely independent: an earlier version placed each valley at the
-average of its two neighbours, which quietly pulled long arms back toward their
-short neighbours and made a 5/1 pair draw almost the same outline as a 3/3 pair.
-`tests/star.test.mjs` now pins the property — raising one axis must move that
-arm and provably leave the other four where they were — plus the consequence
-that two profiles with the *same total* and different distributions cannot draw
-the same shape. Level 0 lands on the valley ring rather than at the centre, so
+this person"; a symmetric one says "balanced generalist". The defect that broke
+this was in the **notch, not the arms**: an earlier version placed each valley at
+the average of its two neighbouring levels, so the notch between a 5 and a 1 sat
+at exactly the same radius as the notch between two 3s, and the outline stopped
+telling those two profiles apart at the place it should have separated them
+most. (Arm tips always tracked their own level — an adversarial review corrected
+an earlier draft of this paragraph that claimed otherwise, and the test named
+below was rewritten because it pinned a property the *buggy* version also had.)
+`tests/star.test.mjs` now pins both halves: every valley sits at the fixed radius
+whatever the five levels are, and raising one axis must lengthen that arm while
+provably leaving the other four where they were. Level 0 lands on the valley ring rather than at the centre, so
 the star floors at a regular pentagon and the hull can never self-intersect,
 whatever the five levels are. The geometry lives in one module
 (`src/starsvg.mjs`) and is shared by the terminal frame, the card and the month
 chips, so what you watch during the scan is the shape that lands on disk — also
 a test.
 
-**A star per snapshot.** Every monthly snapshot gets its own star, computed
+**A star per snapshot.** Each monthly snapshot gets its own star, computed
 *only* from that month's activity, written to `~/.starforge/stars/YYYY-MM.svg`
+(the most recent 36 months; the page strip shows the most recent 18 and says so)
 and laid out as a strip on the stats page under "the shape over time". This is
 the part a single lifetime-average star cannot show: the average is exactly what
 hides a month where the shape changed. A thin month renders as a small tight
 silhouette, not as a gap. To make that possible each snapshot carries its own
 axis inputs (tool calls, language counts, project *count*, models, hour buckets,
-active days, streak) — counts only, never a path and never a project name, so a
-snapshot stays as safe to sync as it was before. Where one month exists on more
+active days, streak) — no path and no project name. All of them are counts
+except the model ids, which are shape-checked and otherwise pseudonymised. What a
+synced snapshot now discloses that it did not before is spelled out under
+[what a report actually contains](#privacy-model);
+"safe to sync" is your call to make with that list in front of you, not a
+blanket claim this README gets to make for you. Where one month exists on more
 than one machine the additive axes are summed, but **active days and streak take
 the largest single machine's value, never the sum**: a calendar day you worked
 on two laptops is one day, and two 4-day streaks are not an 8-day streak. The
@@ -288,8 +296,20 @@ your control — [PROVE-IT.md](PROVE-IT.md) §6.
 | FIRST PRINCIPLES | total tokens exchanged (depth of work) |
 | ENGINEERING | distinct projects + languages (breadth) |
 | CODING | tool calls executed (volume) |
-| OUTSIDE THE BOX | model diversity + late-night activity |
+| OUTSIDE THE BOX | model diversity + late-night activity (events at 00:00–05:59, **counted**, not as a share of the day) |
 | TENACITY | streaks + active days (consistency) |
+
+Every axis is **monotonic**: more of its input can only lengthen its arm, never
+shorten it. That is not decoration — late-night activity used to be scored as a
+*share* of the day, so every daytime event shrank the OUTSIDE THE BOX arm and you
+could watch it collapse mid-scan while starforge was still finding your work. An
+axis whose arm answers to another axis's input is not an axis. `tests/star.test.mjs`
+now fails if raising any input shortens any arm.
+
+Day and hour are both read on your **local** clock. They disagreed once — hours
+local, day boundaries UTC — which made an evening session in a US timezone count
+as two active days with no midnight anywhere in its own hour histogram, and made
+the whole star a function of `$TZ`.
 
 ## Privacy model
 
@@ -341,7 +361,20 @@ Also true, and worth knowing:
   `Clients/acme-audit`), this **machine's hostname** (in every snapshot and in the
   timeline), and — with `--accounts`/`--join-fleet` — one `acct-<hash>` label
   per Claude account. That is a de-identified list of *what you work on and
-  where*. Two switches, and one thing you cannot switch off:
+  where*.
+
+  Since monthly snapshots started drawing their own stars they also carry, per
+  month and per machine: a **24-bucket local-hour histogram**, the **model ids**
+  you used, and a **project count**. None of those is a path or a name, but be
+  clear-eyed about what a synced snapshot dir now shows a reader — the hour
+  histogram is a work/sleep schedule keyed to a named machine, tracked month over
+  month, and the project count is exactly the scope number `--no-projects` users
+  are trying not to publish. Model ids are shape-checked before they are stored
+  (letters, digits, `.` `:` `-`, 64 chars max); anything else becomes a
+  `proj-<hash>` pseudonym, because that field is copied out of a log file and
+  `--roots` can point the scanner at somebody else's logs.
+
+  Two switches, and one thing you cannot switch off:
   - `--no-projects` writes `proj-<hash>` instead of every project label, in the
     reports, the stats page and a `--join-fleet` folder. The terminal keeps
     showing the real names.

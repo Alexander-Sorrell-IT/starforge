@@ -207,7 +207,8 @@ plus tcpdump showing nothing is as closed as this question gets.
 
 Every run writes `~/.starforge/audit/run-<timestamp>.json` (schema v2):
 what was read (source → count), the files written **through the audited path**
-— the report files (`--json` / `--card` / `--page`) and the monthly snapshots —
+— the report files (`--json` / `--card` / `--page`), the monthly snapshots, and
+the per-month star SVGs under `~/.starforge/stars` —
 each as masked path + sha256 + bytes, the sha256 of every source file that ran
 and a combined `source_hash` (compare it to the tree you audited), any tripwire
 hits, argv (redacted), the confinement mode *claimed* for the run, a monotonic
@@ -370,7 +371,8 @@ legitimate as far as the kernel is concerned.
 
 What starforge writes, exhaustively:
 
-- `~/.starforge/` — reports, snapshots, audit logs. Nothing else, ever,
+- `~/.starforge/` — reports, snapshots, per-month star SVGs (`stars/`), audit
+  logs. Nothing else, ever,
   unless you ask.
 - `--join-fleet=DIR` — a directory **you** name. If you name a synced or
   network-mounted directory, its contents leave the machine **by design** —

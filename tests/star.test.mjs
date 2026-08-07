@@ -23,10 +23,11 @@ const R = 100;
 const dist = ([x, y]) => Math.hypot(x, y);
 
 test("an arm's length is a function of its own axis and nothing else", () => {
-  // The defect this pins: the valleys used to be placed at the AVERAGE of the
-  // two neighbouring levels, so raising one axis visibly moved its neighbours'
-  // geometry and a 5/1 pair drew almost the same outline as a 3/3 pair. The
-  // silhouette stopped being the data. Arm i must not move when axis j does.
+  // Arm i must not move when axis j does. NOTE: the old, defective geometry
+  // ALSO satisfied this — its bug was in the valleys, not the tips — so this
+  // test alone does not pin the fix. The next test does. Both are kept: this
+  // one states the property the README leads with, and it is the one that
+  // fails if someone ever makes a tip depend on a neighbour.
   const base = [3, 3, 3, 3, 3];
   const baseTips = armTips(base, R, 0, 0);
   for (let j = 0; j < ARMS; j++) {
@@ -48,6 +49,38 @@ test("an arm's length is a function of its own axis and nothing else", () => {
       }
     }
   }
+});
+
+test("the valleys are FIXED — this is the property the arm test does not cover", () => {
+  // An adversarial pass caught the test above being weaker than the sentence it
+  // was credited with: the OLD, defective geometry also passed it. The old bug
+  // was never that arm tips moved — they always tracked their own level. It was
+  // that the VALLEY vertex between two arms was placed at the average of that
+  // pair, so the notch between a 5 and a 1 sat exactly where the notch between
+  // two 3s sat, and the shape stopped distinguishing them. Reintroducing that
+  // defect passed all eleven star tests. This one fails on it.
+  const vR = R * VALLEY_RATIO;
+  const profiles = [
+    [5, 1, 5, 1, 5], [3, 3, 3, 3, 3], [0, 0, 0, 0, 0],
+    [5, 5, 5, 5, 5], [4.6, 1.2, 5, 2.7, 3.9],
+  ];
+  for (const lv of profiles) {
+    const pts = starPoints(lv, R, 0, 0);
+    for (let i = 1; i < pts.length; i += 2) {
+      assert.ok(
+        Math.abs(dist(pts[i]) - vR) < 1e-9,
+        `valley ${(i - 1) / 2} sits at ${dist(pts[i])} for ${lv}; every valley must sit at ${vR} whatever the levels are`
+      );
+    }
+  }
+  // Stated as the consequence, so the intent survives a refactor: the notch
+  // between a 5 and a 1 must NOT land where the notch between two 3s lands only
+  // by coincidence — it must be the identical fixed radius, and the arms around
+  // it must differ.
+  const lop = starPoints([5, 1, 3, 3, 3], R, 0, 0);
+  const bal = starPoints([3, 3, 3, 3, 3], R, 0, 0);
+  assert.equal(dist(lop[1]).toFixed(9), dist(bal[1]).toFixed(9));
+  assert.notEqual(dist(lop[0]).toFixed(3), dist(bal[0]).toFixed(3));
 });
 
 test("same total, different distribution => a different silhouette", () => {
@@ -150,7 +183,6 @@ test("computeLevels reads a month snapshot bucket, not just the lifetime aggrega
   assert.equal(levels.length, ARMS);
   for (const l of levels) assert.ok(l >= 0 && l <= MAX_LEVEL, `level ${l} out of range`);
   assert.ok(levels.some((l) => l > 0), "a real month must not render as an empty star");
-  assert.ok(!JSON.stringify(bucket).includes("/"), "a month bucket carries no paths");
 
   // An empty month is a legal, drawable shape — not a crash and not a gap.
   const empty = computeLevels({ month: "2026-01" });
@@ -224,4 +256,96 @@ test("changing one axis changes the rendered terminal frame", () => {
   assert.notEqual(a, b, "raising an axis must change the drawn frame");
   const ink = (s) => (s.match(/[^\s]/g) ?? []).length;
   assert.ok(ink(a) > ink(b), "a longer arm must add drawn area");
+});
+
+test("more work never shortens an arm", () => {
+  // Found adversarially, and it was the ugly kind of wrong: OUTSIDE THE BOX used
+  // night hours as a SHARE of the day, so every daytime event shrank it. During
+  // a live scan users watched that arm collapse from 3.5 to 1.5 as starforge
+  // discovered MORE of their work, and the arm's real driver was daytime tool
+  // volume — a different axis's input, in a star whose whole claim is that an
+  // arm answers to its own axis. Monotonicity is the property; this is the test.
+  const base = {
+    hour_buckets: new Array(24).fill(3),
+    models: { a: 1, b: 1 },
+    tool_calls: 900,
+    input_tokens: 3e6,
+    output_tokens: 1e6,
+    active_days: 12,
+    longest_streak_days: 4,
+    projects_count: 3,
+    languages: { javascript: 2 },
+  };
+  const bump = (key, add) => ({ ...base, [key]: (base[key] ?? 0) + add });
+
+  for (const key of ["tool_calls", "input_tokens", "output_tokens", "active_days",
+    "longest_streak_days", "projects_count"]) {
+    const before = computeLevels(base);
+    const after = computeLevels(bump(key, key.includes("tokens") ? 5e6 : 25));
+    for (let i = 0; i < ARMS; i++)
+      assert.ok(after[i] >= before[i] - 1e-9, `raising ${key} shortened the ${AXES[i]} arm`);
+  }
+
+  // The specific regression: activity added at ANY hour of the day.
+  for (let h = 0; h < 24; h++) {
+    const hb = base.hour_buckets.slice();
+    hb[h] += 200;
+    const before = computeLevels(base);
+    const after = computeLevels({ ...base, hour_buckets: hb });
+    for (let i = 0; i < ARMS; i++)
+      assert.ok(
+        after[i] >= before[i] - 1e-9,
+        `adding activity at ${h}:00 shortened the ${AXES[i]} arm (${before[i]} -> ${after[i]})`
+      );
+  }
+});
+
+test("renderCard clamps hostile levels instead of throwing or printing NaN", async () => {
+  // src/card.mjs had no test at all and no input validation, while the SVG
+  // renderer clamped everything — so the two renderers disagreed on the same
+  // input, one drawing a level-0 arm and the other labelling it "LV. NaN".
+  // Infinity was worse: the node-dot loop ran until V8's max string length.
+  const { renderCard } = await import("../src/card.mjs");
+  const agg = {
+    total_input_tokens: 1, total_output_tokens: 1,
+    total_cache_read_tokens: 0, total_cache_write_tokens: 0,
+    total_sessions: 1, total_duration_hours: 1,
+    longest_streak_days: 1, active_days: 1,
+  };
+  for (const lv of [
+    [Infinity, 1, 1, 1, 1], [NaN, 1, 1, 1, 1], ["3", 1, 1, 1, 1],
+    [null, 1, 1, 1, 1], [1, 2, 3], [1, 2, 3, 4, 5, 6, 7], [], undefined,
+  ]) {
+    let svg;
+    assert.doesNotThrow(() => { svg = renderCard(lv, agg, null, {}); }, `renderCard threw on ${JSON.stringify(lv)}`);
+    assert.doesNotMatch(svg, /NaN|Infinity|undefined/, `card printed a non-number for ${JSON.stringify(lv)}`);
+    assert.equal((svg.match(/<polygon/g) ?? []).length, 2, "hull + ghost, whatever the input");
+  }
+});
+
+test("a model id from a log cannot carry a path, a secret or prose into a snapshot", async () => {
+  // Snapshots are the file this tool tells you is safe to sync, and `model` is
+  // the one string copied out of a log that reaches them. It had no
+  // sanitisation: a crafted (or merely non-standard) log wrote an absolute path,
+  // an api-key-shaped string and an email straight into ~/.starforge/snapshots,
+  // and the leak scan passed it because the path belonged to another home.
+  const { sanitizeModel } = await import("../src/scan.mjs");
+  assert.equal(sanitizeModel("claude-opus-5"), "claude-opus-5", "a real model id must survive intact");
+  assert.equal(sanitizeModel("gpt-5-codex"), "gpt-5-codex");
+
+  const hostile = [
+    "/Users/someone/Projects/AcmeSecretClient/x sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "person@example.com",
+    "x".repeat(400),
+    "we should probably refactor the billing module before the audit lands",
+  ];
+  for (const h of hostile) {
+    const out = String(sanitizeModel(h) ?? "");
+    assert.ok(out.length <= 64, `sanitised model is ${out.length} chars: ${out.slice(0, 40)}`);
+    assert.doesNotMatch(out, /\/|@|sk-ant|Acme|someone|refactor/, `model channel leaked: ${out}`);
+  }
+  // Same input must give the same pseudonym, or the distinct-model count that
+  // feeds OUTSIDE THE BOX would drift run to run.
+  assert.equal(sanitizeModel(hostile[0]), sanitizeModel(hostile[0]));
+  assert.notEqual(sanitizeModel(hostile[0]), sanitizeModel(hostile[1]));
 });

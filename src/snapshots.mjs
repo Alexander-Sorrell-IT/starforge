@@ -67,7 +67,14 @@ export function loadTimeline() {
         // Additive across machines: work done on one laptop does not overlap
         // work done on another.
         merged.tool_calls += m.tool_calls ?? 0;
-        merged.projects_count += m.projects_count ?? 0;
+        // Projects are the exception to that, and summing them was wrong: the
+        // normal reason a repo appears on two machines is that it is the SAME
+        // repo, synced. Adding gave a laptop+desktop pair with three shared
+        // projects a projects_count of 6 and a longer ENGINEERING arm for no
+        // additional work. Only the names could tell overlap from breadth, and
+        // snapshots deliberately do not carry names — so this takes the largest
+        // single machine's count, a floor rather than an invented total.
+        merged.projects_count = Math.max(merged.projects_count, m.projects_count ?? 0);
         for (const [k, v] of Object.entries(m.languages ?? {}))
           merged.languages[k] = (merged.languages[k] ?? 0) + v;
         for (const [k, v] of Object.entries(m.models ?? {}))

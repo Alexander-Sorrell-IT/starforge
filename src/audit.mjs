@@ -47,7 +47,7 @@ export const counterFileFor = (dir = AUDIT_DIR) =>
 // Exactly which writes this log can see. Stored inside every log so the
 // artifact states its own coverage instead of relying on the docs being read.
 const WRITES_SCOPE =
-  "Lists only writes routed through auditWrite: the report files (--json / --card / --page) and the monthly snapshots under ~/.starforge/snapshots. Writes into a --join-fleet directory are made by fleet.mjs and are NOT listed here.";
+  "Lists only writes routed through auditWrite: the report files (--json / --card / --page), the monthly snapshots under ~/.starforge/snapshots, and the per-month star SVGs under ~/.starforge/stars. Writes into a --join-fleet directory are made by fleet.mjs and are NOT listed here.";
 
 // Plain-English limits of this log. The verify command prints these.
 export const AUDIT_LIMITS = Object.freeze([
@@ -55,7 +55,7 @@ export const AUDIT_LIMITS = Object.freeze([
   "Two gap checks raise the cost of that, and neither is a boundary: the first log on disk must be a genesis log (prev_log_sha256: null), and every log carries a monotonic run_index whose highest value is mirrored in audit-counter.json, OUTSIDE the audit dir — so deleting the oldest, the newest, or all logs leaves a numeric gap. An attacker with write access can edit the counter file too.",
   "Logs are written by the same process they describe: a compromised or malicious process can log whatever it likes. Trust in the log is trust in the source you ran (compare source_hash against the tree you audited).",
   "A run that dies can still lose its log. The log is flushed the moment a tripwire fires and again from the CLI's exit hook, which covers a thrown tripwire, an early exit and an uncaught error — but SIGKILL, a power cut or a full disk leave nothing. Absence of a log is not evidence of absence of a hit.",
-  "The log lists only writes routed through auditWrite: report files and monthly snapshots. Writes into a --join-fleet directory you named are not listed (see writes_scope in each log).",
+  "The log lists only writes routed through auditWrite: report files, monthly snapshots and the per-month star SVGs. Writes into a --join-fleet directory you named are not listed (see writes_scope in each log).",
   "Concurrent starforge runs share one audit dir. Interleaved writes — and a log rewritten in place after an early tripwire flush — can produce a chain break or a duplicate run_index that is a race, not tampering.",
   "The genesis, run_index-gap and completeness checks apply to SCHEMA-2 logs only. Pre-v2 (schema-1) logs carry no run_index and no complete flag, so a schema-1 stretch of history is covered by the hash chain alone — the counts printed above say how many logs of each schema are on disk, so you can see how much of the history the gap checks actually cover.",
   "`--reset-audit` deletes the logs and records the deletion (count, index range, sha256 of each removed log) in the genesis of the new chain, and never rolls the run counter back. That record is a CLAIM made by the process that wrote it: it proves the logs were removed and lets a copy you kept be matched by hash — it is not proof of what was in them.",

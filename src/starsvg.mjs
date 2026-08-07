@@ -6,9 +6,10 @@
 // The shape is the point. Each arm's length is set by that axis alone, and the
 // valleys between arms sit at a FIXED radius, so a maxed axis reads as a long
 // spike and a weak one as a stub you can see from across the room. An earlier
-// version placed each valley at the average of its two neighbouring levels,
-// which quietly cancelled the very lopsidedness the star exists to show: a
-// 5/1 pair and a 3/3 pair drew nearly the same outline. They must not.
+// version placed each valley at the average of its two neighbouring levels: the
+// arm TIPS were fine, but the notch between a 5 and a 1 landed at exactly the
+// radius of the notch between two 3s, so the outline stopped separating those
+// two profiles at the point it should have separated them hardest.
 //
 // Consequence of the fixed valley: level 0 does not collapse to the centre, it
 // lands ON the valley ring — the star floors at a regular pentagon and every
@@ -16,12 +17,15 @@
 // self-intersecting at any level combination, and it makes "no arm" a shape
 // you can recognise rather than a degenerate spike.
 
+// The comments are the ACTUAL inputs computeLevels() uses (src/star.mjs) —
+// they drifted once already, describing "long sessions" and "files touched"
+// that no formula ever read.
 export const AXES = [
-  "FIRST PRINCIPLES", // depth: tokens + long sessions
-  "ENGINEERING",      // breadth: projects + languages
-  "CODING",           // volume: tool calls + files touched
-  "OUTSIDE THE BOX",  // range: models + sources + odd hours
-  "TENACITY",         // consistency: streaks + active days
+  "FIRST PRINCIPLES", // tokens in+out
+  "ENGINEERING",      // distinct projects + distinct languages
+  "CODING",           // tool calls
+  "OUTSIDE THE BOX",  // distinct models + night-hour events (00:00-05:59)
+  "TENACITY",         // longest streak + active days
 ];
 
 export const ARMS = AXES.length;
