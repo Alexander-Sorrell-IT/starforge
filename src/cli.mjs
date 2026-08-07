@@ -77,7 +77,7 @@ import {
   finalize,
   defaultRoots,
 } from "./scan.mjs";
-import { LiveStar, computeLevels, renderCompare, renderStar, AXES } from "./star.mjs";
+import { LiveStar, computeLevels, explainLevels, renderCompare, renderStar, AXES } from "./star.mjs";
 import {
   writeSnapshots,
   writeSnapshotStars,
@@ -95,6 +95,9 @@ import { buildReceipt, renderReceipt } from "./receipt.mjs";
 import { scanAllProviders } from "./scanners.mjs";
 import { discoverAccounts, floorTotals } from "./accounts.mjs";
 import { readFleet, writeMachineFolder } from "./fleet.mjs";
+import { fleetAggregates, FLEET_MEASURES, FLEET_MEASURES_MONTH } from "./fleetstar.mjs";
+import { ARMS, MAX_LEVEL } from "./starsvg.mjs";
+const ARMS_TOTAL = ARMS * MAX_LEVEL;
 import { collectProfileSignals, computeProfile } from "./profile.mjs";
 import { renderStatsPage } from "./statspage.mjs";
 import {
@@ -361,6 +364,21 @@ if (subcommand === "prove") {
 const audit = startAudit(args);
 armTripwire(audit.recorder);
 armAuditExitHook(audit);
+
+// One star, as data: levels per axis, the total, and — when the source cannot
+// measure everything — which axes are a floor and which were not measured at
+// all. Used for the `sources` block in the expanded report.
+function starOf(agg, available = null) {
+  if (!agg) return null;
+  const rows = explainLevels(agg, available ? { available } : {});
+  return {
+    levels: Object.fromEntries(rows.map((r) => [r.axis, r.level])),
+    total: +rows.reduce((a, r) => a + r.level, 0).toFixed(1),
+    of: ARMS_TOTAL,
+    unmeasured: rows.filter((r) => !r.measured).map((r) => r.axis),
+    partial: rows.filter((r) => r.partial).map((r) => r.axis),
+  };
+}
 
 async function main() {
   // Banner honesty: this process cannot prove its own no-egress claim (see
@@ -727,6 +745,7 @@ async function main() {
   // ---- fleet read ----------------------------------------------------------
   const fleetDir = opt("fleet");
   let fleetView = null;
+  let fleetStars = null;
   if (fleetDir) {
     try {
       fleetView = readFleet(fleetDir);
@@ -738,6 +757,17 @@ async function main() {
         console.log(`${(m.label ?? m.folder).padEnd(28)} ${status}`);
       }
       console.log(`${"FLEET".padEnd(28)} on disk ${fmt(g(fleetView.fleetTotals.onDisk))}  floor ${fmt(g(fleetView.fleetTotals.floor))}`);
+      // Fold it into star-readable aggregates. Kept SEPARATE from agg on
+      // purpose: the fleet knows projects, models and days but not languages,
+      // tool calls or night hours, and a star with some arms from each source
+      // is a number nobody can check.
+      fleetStars = fleetAggregates(fleetDir);
+      if (fleetStars.lifetime)
+        console.log(
+          `${DIM}fleet star: ${fleetStars.lifetime.active_days} active days, ` +
+            `${fleetStars.lifetime.projects_count} projects, ${fleetStars.months.length} months — ` +
+            `a FLOOR (no languages, tool calls or night hours in token-usage)${RESET}`
+        );
     } catch (e) {
       console.log(`fleet read failed: ${maskText(e.message)}`);
     }
@@ -859,6 +889,31 @@ async function main() {
       profile,
       velocity: vel,
       timeline,
+      // The 2x2 the CORPUS vs FLEET card shows, machine-readable. Two sources,
+      // two spans, four stars, kept apart on purpose: `sources.fleet` is a FLOOR
+      // — token-usage records no languages, tool calls or night hours, so those
+      // axes are unmeasured there and `measured_inputs` says which. Nothing here
+      // is an average of the two.
+      sources: {
+        corpus: {
+          basis: "transcripts still on disk on this machine",
+          floor: false,
+          month: timeline.length ? starOf(timeline[timeline.length - 1]) : null,
+          lifetime: starOf(agg),
+        },
+        fleet: fleetStars?.lifetime
+          ? {
+              basis: "token-usage per-machine counters, which outlive deleted transcripts",
+              floor: true,
+              measured_inputs: FLEET_MEASURES,
+              months_tracked: fleetStars.months.length,
+              month: fleetStars.months.length
+                ? starOf(fleetStars.months[fleetStars.months.length - 1], FLEET_MEASURES_MONTH)
+                : null,
+              lifetime: starOf(fleetStars.lifetime, FLEET_MEASURES),
+            }
+          : null,
+      },
     };
     const p1 = join(outDir, `baseline-${stamp}.json`);
     const p2 = join(outDir, `expanded-${stamp}.json`);
@@ -934,6 +989,10 @@ async function main() {
     const cards = buildCardsSafe({
       levels,
       agg,
+      // The fleet's OWN aggregate, never merged into agg — the card shows the
+      // two side by side and says which is a floor.
+      fleetAgg: fleetStars,
+      corpusMonth: timeline.length ? timeline[timeline.length - 1] : null,
       profile,
       timeline,
       providers: providers?.providers ?? null,

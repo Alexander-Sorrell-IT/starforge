@@ -74,7 +74,7 @@ export function providerOf(model) {
 // A generated file, wherever it currently is: machine-readable/ first, then
 // human-readable/, then the old flat layout. Absent and "moved" must not look
 // the same — that exact bug recurred four times in the Python repo.
-function findGenerated(base, name) {
+export function findGenerated(base, name) {
   for (const c of [join(base, MACHINE, name), join(base, HUMAN, name), join(base, name)]) {
     try {
       if (statSync(c).isFile()) return c;
@@ -87,7 +87,7 @@ function findGenerated(base, name) {
 
 // Every machine folder under root, old layout or new: any subdir (outside the
 // reserved set) holding a findable totals.json.
-function machineFolders(root) {
+export function machineFolders(root) {
   let entries;
   try {
     entries = readdirSync(root).sort();
@@ -110,7 +110,7 @@ function machineFolders(root) {
   return out;
 }
 
-function readJson(file) {
+export function readJson(file) {
   if (!file) return null;
   try {
     return JSON.parse(readFileSync(file, "utf-8"));

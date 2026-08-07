@@ -376,8 +376,15 @@ export function computeLevels(agg) {
  * actually read and what that term contributed. This is the card's data source,
  * so "why is ENGINEERING short" has an answer that cannot drift from the score.
  */
-export function explainLevels(agg) {
+export function explainLevels(agg, opts = {}) {
   const a = agg && typeof agg === "object" ? agg : {};
+  // Which inputs the SOURCE could measure at all. Absent from this map means
+  // "measured"; the fleet passes a map marking langs/toolCalls/nightHours false.
+  // An unmeasured input scores 0 either way — the difference is that a card can
+  // say "not measured" instead of drawing a short arm, which is a different
+  // claim about the person.
+  const avail = opts.available ?? null;
+  const has = (k) => !avail || avail[k] !== false;
   const levels = computeLevels(a);
   const lg = (v, mid) => 5 * (Math.log1p(Math.max(0, v)) / Math.log1p(mid * 10));
   const tokens =
@@ -396,11 +403,17 @@ export function explainLevels(agg) {
   return AXIS_SPEC.map((axis, i) => ({
     axis: AXES[i],
     level: levels[i],
+    // An axis with NO measurable term is unmeasured; one with some is a FLOOR,
+    // because every term is a non-negative addition and the missing ones can
+    // only push the arm up.
+    measured: axis.terms.some((t) => has(t.input)),
+    partial: axis.terms.some((t) => has(t.input)) && axis.terms.some((t) => !has(t.input)),
     // A saturated arm is worth flagging: it means the axis stopped measuring,
     // and more work will not lengthen it.
     capped: levels[i] >= MAX_LEVEL,
     terms: axis.terms.map((t) => ({
       label: t.label,
+      measured: has(t.input),
       value: +(Number(inputs[t.input]) || 0).toFixed(1),
       unit: t.unit ?? "",
       contribution: +(lg(inputs[t.input], t.mid) * t.weight).toFixed(2),

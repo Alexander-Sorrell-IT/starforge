@@ -17,7 +17,8 @@
 import { AXES, ARMS, MAX_LEVEL, starPoints, clampLevel } from "./starsvg.mjs";
 import { rating, archetype, signature } from "./archetype.mjs";
 import { emblem } from "./emblem.mjs";
-import { explainLevels } from "./star.mjs";
+import { explainLevels, computeLevels } from "./star.mjs";
+import { FLEET_MEASURES, FLEET_MEASURES_MONTH } from "./fleetstar.mjs";
 import { qrToTerminal } from "./qr.mjs";
 
 const R = "\x1b[0m";
@@ -580,6 +581,7 @@ export function buildCards(input) {
   const specs = [
     [cardStar(levels, agg), CY],
     [cardScoring(agg), "\x1b[38;5;120m"],
+    [cardSources(input.corpusMonth ?? null, agg, input.fleetAgg ?? null), "\x1b[38;5;220m"],
     [cardManaged(agg, timeline), "\x1b[38;5;220m"],
     [cardHistory(timeline), CY],
     [cardTokens(agg, providers, rates ?? DEFAULT_RATES), "\x1b[38;5;213m"],
@@ -616,6 +618,7 @@ export function buildCardsSafe(input) {
     const each = [
       ["THE SHAPE OF YOUR WORK", () => cardStar(input.levels, input.agg)],
       ["HOW THE STAR WAS SCORED", () => cardScoring(input.agg)],
+      ["CORPUS vs FLEET", () => cardSources(input.corpusMonth ?? null, input.agg, input.fleetAgg ?? null)],
       ["YOU MANAGED", () => cardManaged(input.agg, input.timeline)],
       ["YOUR CODING HISTORY", () => cardHistory(input.timeline)],
       ["YOU BURNED THIS MANY TOKENS", () => cardTokens(input.agg, input.providers, input.rates ?? DEFAULT_RATES)],
@@ -729,6 +732,55 @@ export function cardScoring(agg) {
     "each arm answers to its own inputs and nothing else — doing more of one " +
       `thing can never shorten a different arm. "maxed" means the axis stopped ` +
       `measuring at ${MAX_LEVEL}.`,
+    W - 4
+  ))
+    lines.push(`  ${D}${l}${R}`);
+  return lines;
+}
+
+/**
+ * Corpus against fleet, month against lifetime — the four numbers, never blended.
+ *
+ * The corpus is what survived on this machine; the fleet is the frozen
+ * per-machine counters that outlive deleted transcripts. They measure different
+ * things and they are shown as different things.
+ *
+ * The fleet column is a FLOOR, and marked as one. token-usage has no languages,
+ * tool calls or night hours, so two axes are unmeasured there and a third is
+ * missing one of its terms. Every term is a non-negative addition, so those arms
+ * can only be longer than drawn — never shorter. An unmeasured axis prints "—",
+ * not 0: a zero would read as weakness rather than as silence.
+ */
+export function cardSources(corpusMonth, corpusLife, fleet) {
+  if (!fleet?.lifetime) return null;
+  const T = (agg) => (agg ? computeLevels(agg).reduce((a, b) => a + b, 0) : null);
+  const fleetMonth = arr(fleet.months).length ? arr(fleet.months)[arr(fleet.months).length - 1] : null;
+  const cell = (v) => (v == null ? `${D}—${R}` : v.toFixed(1).padStart(5));
+
+  const lines = [head("CORPUS vs FLEET"), ""];
+  lines.push(`  ${D}${pad("", 12)}${"this month".padStart(11)}${"lifetime".padStart(11)}${R}`);
+  lines.push(`  ${pad("corpus", 12)}${cell(T(corpusMonth))}      ${cell(T(corpusLife))}`);
+  lines.push(`  ${pad("fleet", 12)}${cell(T(fleetMonth))}      ${cell(T(fleet.lifetime))}  ${D}floor${R}`);
+  if (fleetMonth)
+    lines.push(`  ${D}${pad("", 12)}${"tokens + days only".padStart(22)}${R}`);
+  lines.push("");
+
+  // Per axis, so "why is the fleet number lower" is answerable on the card.
+  const rows = explainLevels(fleet.lifetime, { available: FLEET_MEASURES });
+  const corpusRows = explainLevels(corpusLife ?? {});
+  lines.push(`  ${D}${pad("axis", 18)}${"corpus".padStart(7)}${"fleet".padStart(8)}${R}`);
+  for (let i = 0; i < rows.length; i++) {
+    const f = rows[i].measured
+      ? `${rows[i].level.toFixed(1).padStart(7)}${rows[i].partial ? `${D}+${R}` : " "}`
+      : `${D}${"—".padStart(7)} ${R}`;
+    lines.push(`  ${pad(rows[i].axis, 18)}${corpusRows[i].level.toFixed(1).padStart(7)}${f}`);
+  }
+  lines.push("");
+  for (const l of wrapWords(
+    "the fleet column is a floor: token-usage records no languages, tool calls " +
+      "or night hours, so those arms are unmeasured (—) and one is missing a " +
+      "term (+). every term only adds, so a fleet arm can be longer than shown, " +
+      "never shorter. nothing is averaged between the two columns.",
     W - 4
   ))
     lines.push(`  ${D}${l}${R}`);
