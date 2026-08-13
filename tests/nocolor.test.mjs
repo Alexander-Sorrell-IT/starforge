@@ -59,7 +59,7 @@ test("NO_COLOR: the cards still draw, they are not merely blanked", () => {
   // Stripping colour must not strip content. A frame with nothing in it would
   // pass the escape-code check perfectly.
   const out = run(corpus(), ["--no-pace"], { NO_COLOR: "1" }).stdout;
-  for (const marker of [/THE SHAPE OF YOUR WORK/, /HOW THE STAR WAS SCORED/, /YOUR RANK/, /SHARE IT/, /╭─+╮/])
+  for (const marker of [/FORGED/, /HOW IT WAS SCORED/, /YOUR FORGE RANK/, /SEND IT/, /╭─+╮/])
     assert.match(out, marker, `${marker} is missing from the plain-text run`);
 });
 

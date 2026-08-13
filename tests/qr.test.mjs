@@ -129,7 +129,7 @@ test("a payload too big for level M falls back to L instead of refusing", () => 
   assert.equal(short.level, "M", "short payloads must keep the stronger error correction");
 
   const real = [
-    "starforge skill star 23.7/25 (S+)",
+    "starforge skill star 23.7/25 (MASTERWORK)",
     "firs 5 engi 5 codi 4.7 outs 5 tena 4",
     "153 sessions, 344h active, 29 days",
     "5.7B tokens, 99% cached",

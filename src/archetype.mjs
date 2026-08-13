@@ -20,15 +20,23 @@ import { ARMS, MAX_LEVEL, AXES } from "./starsvg.mjs";
 
 const MAX_TOTAL = ARMS * MAX_LEVEL;
 
-// Tiers are stated as "the average arm, out of MAX_LEVEL", so they track the
-// constant instead of being re-typed whenever the star is rescaled.
+// Forge-themed tiers. Named after stages of metalwork: raw material, cast,
+// forged, tempered, masterwork. They describe a stage of craft, not a rank
+// against other people — you are not compared to a population, only to the
+// maximum the star can express.
+//
+// Thresholds are stated as "the average arm, out of MAX_LEVEL", so they track
+// the constant instead of being re-typed whenever the star is rescaled.
 const TIERS = [
-  { min: 6.0, name: "S+" },
-  { min: 5.0, name: "S" },
-  { min: 4.0, name: "A" },
-  { min: 2.5, name: "B" },
-  { min: 0, name: "C" },
+  { min: 6.0, name: "MASTERWORK" },
+  { min: 5.0, name: "TEMPERED"   },
+  { min: 4.0, name: "FORGED"     },
+  { min: 2.5, name: "CAST"       },
+  { min: 0,   name: "RAW"        },
 ];
+
+// Canonical order, lowest → highest, for any code that needs to sort by tier.
+export const TIER_ORDER = ["RAW", "CAST", "FORGED", "TEMPERED", "MASTERWORK"];
 
 export function rating(total) {
   const avgArm = (Number(total) || 0) / ARMS;
@@ -45,14 +53,14 @@ const AX = { FIRST: 0, ENGINEERING: 1, CODING: 2, OUTSIDE: 3, TENACITY: 4 };
 
 const PAIRS = [
   { pair: [AX.FIRST, AX.ENGINEERING], name: "The Systems Architect", blurb: "you reason from the ground up, then build the structure to hold it" },
-  { pair: [AX.FIRST, AX.CODING], name: "The Deep Builder", blurb: "long problems, taken apart properly, then written down in code" },
-  { pair: [AX.FIRST, AX.OUTSIDE], name: "The Theorist", blurb: "you go to first principles and come back with the unusual answer" },
-  { pair: [AX.FIRST, AX.TENACITY], name: "The Excavator", blurb: "you dig at hard problems and you do not put them down" },
-  { pair: [AX.ENGINEERING, AX.CODING], name: "The Shipper", blurb: "breadth of systems, volume of code — things get finished" },
-  { pair: [AX.ENGINEERING, AX.OUTSIDE], name: "The Integrator", blurb: "many systems, odd hours, and the seams between them are yours" },
-  { pair: [AX.ENGINEERING, AX.TENACITY], name: "The Foundry", blurb: "wide surface area held together by showing up every day" },
-  { pair: [AX.CODING, AX.OUTSIDE], name: "The Prototyper", blurb: "you build fast, at strange hours, and find out by making it" },
-  { pair: [AX.CODING, AX.TENACITY], name: "The Machinist", blurb: "steady output, day after day — the compounding kind" },
+  { pair: [AX.FIRST, AX.CODING],      name: "The Deep Builder",      blurb: "long problems, taken apart properly, then written down in code" },
+  { pair: [AX.FIRST, AX.OUTSIDE],     name: "The Theorist",          blurb: "you go to first principles and come back with the unusual answer" },
+  { pair: [AX.FIRST, AX.TENACITY],    name: "The Excavator",         blurb: "you dig at hard problems and you do not put them down" },
+  { pair: [AX.ENGINEERING, AX.CODING],   name: "The Shipper",    blurb: "breadth of systems, volume of code — things get finished" },
+  { pair: [AX.ENGINEERING, AX.OUTSIDE],  name: "The Integrator", blurb: "many systems, odd hours, and the seams between them are yours" },
+  { pair: [AX.ENGINEERING, AX.TENACITY], name: "The Foundry",    blurb: "wide surface area held together by showing up every day" },
+  { pair: [AX.CODING, AX.OUTSIDE],   name: "The Prototyper",  blurb: "you build fast, at strange hours, and find out by making it" },
+  { pair: [AX.CODING, AX.TENACITY],  name: "The Machinist",   blurb: "steady output, day after day — the compounding kind" },
   { pair: [AX.OUTSIDE, AX.TENACITY], name: "The Night Shift", blurb: "the hours nobody schedules, kept up longer than anyone expects" },
 ];
 

@@ -75,6 +75,8 @@ export const STATIC_ALLOWLIST = Object.freeze({
     "imports the network modules solely to patch them into throwers (a tripwire for accidental egress — not a boundary)",
   "confine.mjs":
     "the OS-sandbox launcher (spawns the CONFINED child) plus the positive-control egress attempt the kernel must refuse",
+  "serve.mjs":
+    "creates an INBOUND-only HTTP server on the LAN (node:http listen, no outbound connects) so other devices on the same WiFi can view the stats page",
 });
 
 // SHA-256 manifest for the allowlisted files, committed next to them.
@@ -232,6 +234,15 @@ export const ALLOWLIST_REQUIREMENTS = Object.freeze({
       { label: "a deny-network sandbox profile", re: /deny network\*/ },
       { label: "the single hardcoded probe target", re: /1\.1\.1\.1/ },
       { label: "kernel-refusal classification (EPERM & friends)", re: /\bEPERM\b/ },
+    ],
+    allowedApis: [API_NODE_BUILTIN],
+  },
+  "serve.mjs": {
+    minPatchCalls: 0,
+    markers: [
+      { label: "binds to LAN (0.0.0.0), not an outbound connect", re: /0\.0\.0\.0/ },
+      { label: "auto-shutdown after visit cap or timeout", re: /server\.close/ },
+      { label: "LAN IP discovery (no outbound)", re: /networkInterfaces/ },
     ],
     allowedApis: [API_NODE_BUILTIN],
   },

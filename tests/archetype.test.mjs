@@ -3,7 +3,7 @@
 // The tier existed before this module, written out three times with copied
 // literal thresholds, calibrated for a 25-point star that became a 35-point
 // star. Nothing failed when the denominator moved, because no test ever asked
-// what fraction of the maximum "S+" was supposed to mean.
+// what fraction of the maximum the top tier was supposed to mean.
 //
 // The archetype is new, and the thing to guard is that it stays a DESCRIPTION.
 // The model it is modelled on ranks you against other users; this tool has never
@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { rating, archetype, signature } from "../src/archetype.mjs";
+import { rating, archetype, signature, TIER_ORDER } from "../src/archetype.mjs";
 import { ARMS, MAX_LEVEL } from "../src/starsvg.mjs";
 
 const SRC = join(dirname(dirname(fileURLToPath(import.meta.url))), "src");
@@ -24,22 +24,22 @@ const flat = (v) => new Array(ARMS).fill(v);
 // ---- the tier tracks the constant -------------------------------------------
 
 test("the top tier is near the top of the scale, not two thirds up it", () => {
-  // The shipped bug: "S+" was `total >= 22`. On the 35-point star that is 63%,
-  // so a middling run came back S+ and the grade stopped carrying information.
-  const sPlusAt = [...Array(MAX * 10 + 1)].map((_, i) => i / 10).find((t) => rating(t) === "S+");
+  // The shipped bug: old top tier was awarded at 63% of the scale,
+  // so a middling run came back top-tier and the grade stopped carrying information.
+  const sPlusAt = [...Array(MAX * 10 + 1)].map((_, i) => i / 10).find((t) => rating(t) === "MASTERWORK");
   assert.ok(
     sPlusAt / MAX >= 0.8,
-    `S+ starts at ${sPlusAt}/${MAX} (${Math.round((sPlusAt / MAX) * 100)}%) — the top grade must mean the top of the scale`
+    `MASTERWORK starts at ${sPlusAt}/${MAX} (${Math.round((sPlusAt / MAX) * 100)}%) — the top grade must mean the top of the scale`
   );
 });
 
 test("a perfect star is the top tier and an empty one is the bottom", () => {
-  assert.equal(rating(MAX), "S+");
-  assert.equal(rating(0), "C");
+  assert.equal(rating(MAX), "MASTERWORK");
+  assert.equal(rating(0), "RAW");
 });
 
 test("the tier never decreases as the score increases", () => {
-  const order = ["C", "B", "A", "S", "S+"];
+  const order = TIER_ORDER;
   let seen = 0;
   for (let t = 0; t <= MAX; t += 0.5) {
     const idx = order.indexOf(rating(t));

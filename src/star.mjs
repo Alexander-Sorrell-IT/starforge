@@ -216,9 +216,39 @@ export class LiveStar {
     this.stream.write(rows.map((l) => `\x1b[2K${l}`).join("\n") + "\n");
     this.lines = rows.length;
   }
-  finish(levels, status) {
-    if (this.enabled) this.draw(levels, status);
-    else this.stream.write(renderStar(levels, { status, color: this.color }) + "\n");
+  // Forge-pulse reveal: arms appear one at a time, longest first, each
+  // brightening from 0 to full over a short pause — like watching a star
+  // being struck into shape. Cross-platform: only cursor-up + line-clear
+  // ANSI, no platform-specific syscalls.
+  //
+  // When the terminal is not a TTY (piped, redirected, CI) the reveal is
+  // skipped and the final frame is printed once — same as before.
+  async finish(levels, status) {
+    if (!this.enabled) {
+      this.stream.write(renderStar(levels, { status, color: this.color }) + "\n");
+      return;
+    }
+    const lv = Array.from({ length: ARMS }, (_, i) => clampLevel(levels?.[i] ?? 0));
+
+    // Order arms by size, largest first — the dominant axis lands last and
+    // holds the screen longest. On a tie, axis index breaks it deterministically.
+    const order = lv
+      .map((v, i) => ({ v, i }))
+      .sort((a, b) => b.v - a.v || a.i - b.i)
+      .map((x) => x.i);
+
+    // Build each intermediate frame: show only the arms revealed so far,
+    // all others zeroed. The final frame shows all arms at full.
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const frames = order.length;
+    for (let f = 0; f < frames; f++) {
+      const partial = new Array(ARMS).fill(0);
+      for (let k = 0; k <= f; k++) partial[order[k]] = lv[order[k]];
+      this.draw(partial, f < frames - 1 ? "forging…" : status);
+      if (f < frames - 1) await wait(120);
+    }
+    // Final draw at true levels (handles rounding from the partial build)
+    this.draw(lv, status);
   }
 }
 

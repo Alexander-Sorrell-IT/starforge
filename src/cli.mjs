@@ -41,6 +41,14 @@
 //                                 also skips the per-month stars in
 //                                 ~/.starforge/stars, since they are drawn from
 //                                 the snapshots)
+//   starforge-cli --contact[=FILE]   set or view contact info shown in the QR
+//                                 (github, email, phone, website, linkedin, twitter)
+//                                 omit FILE to use ~/.starforge/contact.json
+//   starforge-cli serve             start a LAN HTTP server to share your stats page
+//                                 on the same WiFi; prints a QR pointing to it
+//   starforge-cli serve --serve-port=N  TCP port (default 3141)
+//   starforge-cli serve --serve-timeout=N  auto-shutdown after N minutes (default 10)
+//   starforge-cli serve --serve-visits=N   auto-shutdown after N visits (default 3)
 //   starforge-cli --reset-audit[=WHY]
 //                                 delete every run log in ~/.starforge/audit and
 //                                 start a fresh chain whose first entry RECORDS
@@ -92,7 +100,9 @@ import { writeSchedule, removeSchedule, daemonStatus, describeSchedule } from ".
 import { buildReceipt, renderReceipt } from "./receipt.mjs";
 import { scanAllProviders } from "./scanners.mjs";
 import { discoverAccounts, floorTotals } from "./accounts.mjs";
+import { readContact, writeContact, FIELDS as CONTACT_FIELDS, KEYS as CONTACT_KEYS, LABELS as CONTACT_LABELS } from "./contact.mjs";
 import { readFleet, writeMachineFolder } from "./fleet.mjs";
+import { startServe } from "./serve.mjs";
 import { fleetAggregates, FLEET_MEASURES, FLEET_MEASURES_MONTH } from "./fleetstar.mjs";
 import { ARMS, MAX_LEVEL } from "./starsvg.mjs";
 const ARMS_TOTAL = ARMS * MAX_LEVEL;
@@ -149,7 +159,7 @@ const monthOf = (p) => String(p).split("/").pop().replace(/\.svg$/, "");
 // Subcommands are explicit. An unknown positional argument EXITS NON-ZERO
 // rather than falling through to a scan — a proof command that silently runs
 // something else and prints success would be worse than having none.
-const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove", "daemon", "receipt"]);
+const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove", "daemon", "receipt", "serve"]);
 const positional = args.filter((a) => !a.startsWith("-"));
 const subcommand = positional[0] ?? "scan";
 if (!KNOWN_SUBCOMMANDS.has(subcommand)) {
@@ -186,6 +196,7 @@ const FLAG_SPEC = Object.freeze({
   "--no-projects": "bool",
   "--no-providers": "bool",
   "--no-snapshot": "bool",
+  "--contact": "opt",
   "--roots": "value",
   "--name": "value",
   "--fleet": "value",
@@ -193,6 +204,9 @@ const FLAG_SPEC = Object.freeze({
   "--machine": "value",
   "--label": "value",
   "--reset-audit": "opt",
+  "--serve-port": "value",
+  "--serve-timeout": "value",
+  "--serve-visits": "value",
 });
 const KNOWN_FLAGS = Object.freeze(Object.keys(FLAG_SPEC));
 
@@ -353,6 +367,23 @@ if (subcommand === "prove") {
   process.exit(0);
 }
 
+
+// `starforge serve` — LAN HTTP server. Generates the stats page and serves it
+// on the local network so another device on the same WiFi can view it.
+// Zero external calls — binds to LAN only. Auto-shuts after a timeout.
+if (subcommand === "serve") {
+  const port = Number(opt("serve-port") ?? "3141") || 3141;
+  const timeout = Number(opt("serve-timeout") ?? "10") || 10;
+  const visits = Number(opt("serve-visits") ?? "3") || 3;
+  try {
+    await startServe({ port, timeoutMin: timeout, maxVisits: visits });
+  } catch (e) {
+    console.error(`starforge serve: ${maskText(e.message)}`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
 // Armed before anything is read, and at MODULE scope on purpose: a tripwire
 // hit throws, so the log must be reachable from the abort paths below (the
 // catch handler and the exit hook) as well as from the end of main(). An alarm
@@ -415,6 +446,9 @@ async function main() {
       console.log(`${DIM}run log:   ${maskPath(resetLog)} — this run, chained onto the genesis above${RESET}`);
     process.exit(0);
   }
+
+  // Contact info — read once, used by the QR and the [C] menu.
+  const contact = readContact();
 
   const roots = [...defaultRoots(), ...(opt("roots")?.split(",").filter(Boolean) ?? [])];
   const sources = discoverSources(roots);
@@ -975,6 +1009,13 @@ async function main() {
   // prints where you sit in YOUR OWN history — the only comparison a machine
   // that has never seen anyone else's data can honestly make.
   if (!flag("--no-wrapped")) {
+    // floorData: passed to cardFloor — the gap between on-disk tokens and
+    // what the stats-cache floor knows. Only populated when --accounts ran.
+    const floorData = accounts ? (() => {
+      const ft = floorTotals(accounts);
+      const g = (t) => t.input + t.output + t.cacheRead + t.cacheWrite;
+      return { onDisk: g(ft.onDisk), floor: g(ft.floor) };
+    })() : null;
     const cards = buildCardsSafe({
       levels,
       agg,
@@ -987,13 +1028,15 @@ async function main() {
       providers: providers?.providers ?? null,
       confinement: detectConfinement()?.mode ?? null,
       url: "https://github.com/Alexander-Sorrell-IT/starforge",
+      contact,
+      floorData,
     });
     // Pacing needs a TTY and stdin. Piped or --no-pace, print the whole story at
     // once so `| less` and CI both get the full thing instead of hanging on a
     // keypress that will never come.
     const paced = process.stdout.isTTY && process.stdin.isTTY && !flag("--no-pace");
     console.log("");
-    const qr = shareQrLines(levels, agg, "https://github.com/Alexander-Sorrell-IT/starforge");
+    const qr = shareQrLines(levels, agg, "https://github.com/Alexander-Sorrell-IT/starforge", contact);
     if (!paced) {
       console.log(renderAll(cards));
       console.log("");
@@ -1040,6 +1083,7 @@ async function main() {
       const dst0 = daemonStatus();
       if (dst0.supported && !dst0.installed)
         console.log(`  ${BOLD}[d]${RESET} daemon     ${DIM}schedule monthly re-scans so history outlives the logs${RESET}`);
+      console.log(`  ${BOLD}[r]${RESET} reach out ${DIM}set contact info shown in the QR (github, email, phone…)${RESET}`);
       console.log(`  ${BOLD}[q]${RESET} done`);
       const key = (await rl.question("  > ")).trim().toLowerCase();
       if (key === "p") {
@@ -1092,6 +1136,58 @@ async function main() {
         } else {
           console.log(`  ${DIM}not saved.${RESET}`);
         }
+      } else if (key === "r") {
+        // [r] reach out — edit contact info written into the QR
+        let ct = readContact();
+        let rDone = false;
+        while (!rDone) {
+          console.log(`
+${BOLD}${CYAN}── reach out (shown in QR) ──────────────────${RESET}`);
+          const fieldKeys = ["G","E","P","W","L","T"];
+          const fieldMap  = { G:"github", E:"email", P:"phone", W:"website", L:"linkedin", T:"twitter" };
+          const labelMap  = { G:"GitHub", E:"Email", P:"Phone", W:"Website", L:"LinkedIn", T:"Twitter/X" };
+          for (const k of fieldKeys) {
+            const f = fieldMap[k];
+            const val = ct[f] ? `${BOLD}${ct[f]}${RESET}` : `${DIM}(not set)${RESET}`;
+            console.log(`  ${BOLD}[${k}]${RESET}  ${labelMap[k].padEnd(10)} ${val}`);
+          }
+          console.log(`  ${BOLD}[X]${RESET}  Clear ALL`);
+          console.log(`  ${BOLD}[←]${RESET}  Back (done)`);
+          const rk = (await rl.question("  > ")).trim().toUpperCase();
+          if (rk === "" || rk === "B" || rk === "BACK") {
+            rDone = true;
+          } else if (rk === "X") {
+            writeContact(undefined, {});
+            ct = {};
+            console.log(`  ${DIM}all contact info cleared.${RESET}`);
+          } else if (fieldMap[rk]) {
+            const field = fieldMap[rk];
+            const label = labelMap[rk];
+            const cur = ct[field];
+            console.log(`
+  ${BOLD}── ${label} ──────────────────────────────${RESET}`);
+            if (cur) console.log(`  current: ${BOLD}${cur}${RESET}`);
+            else console.log(`  ${DIM}(not set)${RESET}`);
+            console.log(`  ${BOLD}[E]${RESET} edit   ${BOLD}[X]${RESET} clear   ${BOLD}[←]${RESET} back`);
+            const fk = (await rl.question("  > ")).trim().toUpperCase();
+            if (fk === "E") {
+              const val = (await rl.question(`  new value for ${label}: `)).trim();
+              if (val) {
+                ct[field] = val;
+                writeContact(undefined, ct);
+                console.log(`  saved.`);
+              } else {
+                console.log(`  ${DIM}empty — not saved.${RESET}`);
+              }
+            } else if (fk === "X") {
+              delete ct[field];
+              writeContact(undefined, ct);
+              console.log(`  ${label} cleared.`);
+            }
+          }
+        }
+        // Refresh contact so the QR on any subsequent re-render is current
+        Object.assign(contact, readContact());
       } else if (key === "d") {
         const { files, activate } = writeSchedule();
         console.log("");

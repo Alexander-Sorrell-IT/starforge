@@ -138,8 +138,8 @@ test("the wrapped never claims to know about other users", () => {
   // The proof card QUOTES the hosted framing in order to disclaim it, so it is
   // checked separately rather than exempted by keyword — otherwise this test
   // could be silenced by moving a claim onto that card.
-  const proof = cards.find((c) => strip(c.lines[0]).includes("WHAT LEFT THIS MACHINE"));
-  assert.ok(proof, "the proof card must be in the story");
+  const proof = cards.find((c) => strip(c.lines[0]).includes("ZERO"));
+  assert.ok(proof, "the proof card (ZERO) must be in the story");
   const others = cards.filter((c) => c !== proof);
   for (const c of others) {
     const t = strip(c.lines.join("\n"));
@@ -219,8 +219,8 @@ test("a card that throws costs you that card, never the run", async () => {
   assert.doesNotThrow(() => { cards = buildCardsSafe(poisoned); }, "one bad card must not abort the build");
   assert.ok(cards.length >= 8, `expected the other cards to survive, got ${cards.length}`);
   const text = strip(renderAll(cards));
-  assert.match(text, /THE SHAPE OF YOUR WORK/, "unrelated cards must still render");
-  assert.match(text, /WHAT LEFT THIS MACHINE/);
+  assert.match(text, /FORGED/, "unrelated cards must still render");
+  assert.match(text, /ZERO/);
   assert.match(text, /could not be drawn/, "the failed card must name itself rather than vanish");
   assert.match(text, /rendering fault only/, "and must say the scan itself was fine");
 });

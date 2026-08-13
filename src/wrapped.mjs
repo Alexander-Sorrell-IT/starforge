@@ -20,6 +20,7 @@ import { emblem } from "./emblem.mjs";
 import { explainLevels, computeLevels } from "./star.mjs";
 import { FLEET_MEASURES, FLEET_MEASURES_MONTH } from "./fleetstar.mjs";
 import { qrToTerminal } from "./qr.mjs";
+import { readContact, contactLines } from "./contact.mjs";
 
 const R = "\x1b[0m";
 const B = "\x1b[1m";
@@ -241,7 +242,7 @@ export function cardStar(rawLevels, agg) {
   const total = levels.reduce((a, b) => a + b, 0);
   const grade = rating(total);
   const art = miniStar(levels, 23, 11);
-  const lines = [head("THE SHAPE OF YOUR WORK"), ""];
+  const lines = [head("FORGED"), ""];
   const labels = AXES.map((ax, i) => `${pad(ax, 17)} ${bar(levels[i], MAX_LEVEL, 10)} ${WH}${levels[i]}${R}`);
   for (let i = 0; i < Math.max(art.length, labels.length); i++) {
     const left = art[i] ? `  ${CY}${art[i]}${R}` : "  " + " ".repeat(21);
@@ -278,7 +279,7 @@ export function cardManaged(rawAgg, rawTimeline) {
     "steady, in short bursts.";
   const rank = ownRank(agg.total_duration_hours / Math.max(1, (timeline ?? []).length), (timeline ?? []).map((m) => m.duration_hours));
   return [
-    head("YOU MANAGED"),
+    head("YOU SHOWED UP"),
     "",
     `  ${big(fmt(hours))} ${WH}active hours${R}`,
     `  ${WH}${fmt(agg.total_sessions)}${R} sessions across ${WH}${agg.active_days}${R} active days`,
@@ -306,7 +307,7 @@ export function cardHistory(rawTimeline) {
       ? `${last.month.slice(5)}: ${last.duration_hours >= prev.duration_hours ? "+" : ""}${Math.round(((last.duration_hours - prev.duration_hours) / prev.duration_hours) * 100)}% vs previous month`
       : null;
   return [
-    head("YOUR CODING HISTORY"),
+    head("THE RECORD"),
     "",
     `  ${big(`${Math.round(timeline.reduce((a, m) => a + m.duration_hours, 0))} hours`)} ${WH}from local logs${R}`,
     trend ? `  ${D}${trend}${R}` : "",
@@ -325,7 +326,7 @@ export function cardTokens(rawAgg, providers) {
   if (work + cache === 0) return null;
   const cachePct = ((cache / (work + cache)) * 100).toFixed(1);
   const lines = [
-    head("YOU BURNED THIS MANY TOKENS"),
+    head("THE WEIGHT OF IT"),
     "",
     `  ${big(human(work + cache))} ${WH}tokens${R}`,
     `  ${WH}${human(work)}${R} actually generated · ${WH}${cachePct}%${R} served from cache`,
@@ -400,7 +401,7 @@ export function cardHowYouDrive(profile) {
   const c = profile?.conversation, d = profile?.delegation;
   if (!c?.prompt_turns) return null;
   const lines = [
-    head("HOW YOU DRIVE THE MACHINE"),
+    head("YOUR HAND ON IT"),
     "",
     `  ${big(fmt(c.prompt_turns))} ${WH}prompts${R}${D} · ~${c.avg_prompt_chars} chars each${R}`,
     "",
@@ -488,7 +489,7 @@ export function cardProjects(rawAgg) {
 
 export function cardProof(confinement) {
   return [
-    head("WHAT LEFT THIS MACHINE"),
+    head("ZERO"),
     "",
     `  ${big("nothing")} ${WH}— and you do not have to take that on faith${R}`,
     "",
@@ -522,7 +523,7 @@ export function cardProof(confinement) {
  * Capacity is the constraint: 271 bytes at version 10, EC level M. This stays
  * well inside it and is truncated defensively rather than throwing.
  */
-export function sharePayload(rawLevels, agg, url) {
+export function sharePayload(rawLevels, agg, url, contact) {
   const levels = lv5(rawLevels);
   const a = obj(agg);
   const total = levels.reduce((x, y) => x + y, 0);
@@ -531,7 +532,7 @@ export function sharePayload(rawLevels, agg, url) {
   const cache = num(a.total_cache_read_tokens) + num(a.total_cache_write_tokens);
   const cachePct = work + cache > 0 ? Math.round((cache / (work + cache)) * 100) : 0;
   const axes = AXES.map((ax, i) => `${ax.split(" ")[0].slice(0, 4).toLowerCase()} ${levels[i]}`).join(" ");
-  const lines = [
+  const baseLines = [
     `starforge skill star ${total.toFixed(1)}/${ARMS * MAX_LEVEL} (${grade}) — ${archetype(levels).name}`,
     axes,
     `${fmt(num(a.total_sessions))} sessions, ${Math.round(num(a.total_duration_hours))}h active, ${num(a.active_days)} days`,
@@ -540,26 +541,40 @@ export function sharePayload(rawLevels, agg, url) {
     "this code carries the numbers themselves, not a link to them.",
     url,
   ].filter(keep);
-  let text = lines.join("\n");
+  const base = baseLines.join("\n");
+  // Append contact fields in priority order, fitting as many as the cap allows.
+  // A field is never truncated mid-value — it either fits whole or is skipped.
+  const budget = 260 - new TextEncoder().encode(base + "\n").length;
+  const cLines = contactLines(contact ?? {}, budget);
+  let text = cLines.length ? base + "\n" + cLines.join("\n") : base;
   if (text.length > 260) text = text.slice(0, 257) + "...";
   return text;
 }
 
-export function cardShare(rawLevels, agg, url) {
+export function cardShare(rawLevels, agg, url, contact) {
   const levels = lv5(rawLevels);
   const total = levels.reduce((a, b) => a + b, 0);
   const shape = AXES.map((_, i) => "▁▂▃▄▅▆▇█"[Math.min(7, Math.round((levels[i] / MAX_LEVEL) * 7))]).join("");
-  return [
-    head("SHARE IT"),
+  const ct = contact ?? {};
+  const hasContact = Object.keys(ct).length > 0;
+  const contactSummary = hasContact
+    ? Object.entries(ct).map(([k, v]) => `${k}: ${v}`).join("  ·  ")
+    : null;
+  const lines = [
+    head("SEND IT"),
     "",
     `  ${WH}my skill star · ${total.toFixed(1)}/${ARMS * MAX_LEVEL} (${rating(total)}) · ${shape}${R}`,
     `  ${WH}${archetype(levels).name}${R}`,
     `  ${D}${AXES.map((a, i) => `${a.split(" ")[0].slice(0, 4).toLowerCase()} ${levels[i]}`).join(" · ")}${R}`,
     "",
+    `  ${CY}npx starforge-cli${R}`,
+    url ? `  ${D}${url}${R}` : "",
+    "",
     `  ${D}the QR below carries these numbers outright. scan it and${R}`,
     `  ${D}your phone shows them — no link, no server to be up.${R}`,
-    `  ${D}decode it yourself and see.${R}`,
-  ];
+    hasContact ? `  ${D}contact fields in QR: ${contactSummary}${R}` : `  ${D}add contact info: press [C] in the menu${R}`,
+  ].filter(keep);
+  return lines;
 }
 
 /**
@@ -571,13 +586,138 @@ export function cardShare(rawLevels, agg, url) {
  * will not scan. Rather than shrink the payload or the margin, the code gets
  * the width it needs by living below the frame.
  */
-export function shareQrLines(rawLevels, agg, url) {
-  const payload = sharePayload(lv5(rawLevels), agg, url ?? "https://github.com/Alexander-Sorrell-IT/starforge");
+export function shareQrLines(rawLevels, agg, url, contact) {
+  const payload = sharePayload(lv5(rawLevels), agg, url ?? "https://github.com/Alexander-Sorrell-IT/starforge", contact);
   try {
     return qrToTerminal(payload, { color: !plain() }).split("\n").map((r) => "  " + r);
   } catch (e) {
     return [`  ${D}(could not encode the QR: ${String(e?.message ?? e).slice(0, 60)})${R}`];
   }
+}
+
+
+/**
+ * cardFloor — THE FLOOR
+ * Only shown when accounts floor data is available. Shows the gap between
+ * what's on disk and what the stats-cache counters know about — the tokens
+ * that survived deletion.
+ */
+export function cardFloor(floorData) {
+  const d = floorData && typeof floorData === "object" ? floorData : null;
+  if (!d) return null;
+  const onDisk = num(d.onDisk);
+  const floor  = num(d.floor);
+  if (floor <= 0 || onDisk <= 0) return null;
+  const delta = floor - onDisk;
+  if (delta <= 0) return null;
+  const deltaPct = Math.round((delta / floor) * 100);
+  return [
+    head("THE FLOOR"),
+    "",
+    `  ${big(human(floor))} ${WH}tokens — the floor${R}`,
+    `  ${D}${human(onDisk)} on disk right now${R}`,
+    "",
+    `  ${WH}${human(delta)}${R}${D} exist only as frozen counters.${R}`,
+    `  ${D}The transcripts are already gone. That is ${deltaPct}% of the total.${R}`,
+    "",
+    ...wrapWords(
+      "Every tool that reads transcripts shows you the on-disk number. " +
+      "This one reads the stats-cache counters that Claude Code keeps even " +
+      "after it deletes the logs — and finds the rest.",
+      W - 4
+    ).map((l) => `  ${D}${l}${R}`),
+    "",
+    `  ${D}floor = counter total + transcript days after the counter's last date${R}`,
+    `  ${D}it is a floor, not a ceiling — the other machines have not been scanned${R}`,
+  ].filter(keep);
+}
+
+/**
+ * cardMomentum — THE STREAK
+ * Streak and daily activity. The most emotionally resonant number.
+ */
+export function cardMomentum(rawAgg, rawTimeline) {
+  const agg = obj(rawAgg);
+  const timeline = arr(rawTimeline);
+  const longest = num(agg.longest_streak_days);
+  const current = num(agg.current_streak_days);
+  if (!longest) return null;
+
+  // Build a sparkline from the last 30 days of daily session counts if we have
+  // a timeline; fall back to monthly buckets.
+  const buckets = timeline.length >= 2
+    ? timeline.slice(-12).map((m) => num(m.duration_hours))
+    : (agg.monthly_buckets ?? []).slice(-12).map((b) => num(b?.duration_hours ?? b));
+  const spark = buckets.length
+    ? "▁▂▃▄▅▆▇█"
+        .split("")
+        .map((g, i, a) => g)  // reference so closure works
+    && (() => {
+      const max = Math.max(...buckets, 1);
+      return buckets.map((v) => "▁▂▃▄▅▆▇█"[Math.min(7, Math.floor((v / max) * 7.999))]).join("");
+    })()
+    : null;
+
+  const quipText =
+    current >= longest     ? "you are in your longest streak right now. keep going." :
+    current >= longest * 0.8 ? "close to your record. one more day beats it." :
+    current === 0           ? "the streak is broken. start a new one today." :
+    longest >= 30           ? `${longest} days straight at your peak. the record stands.` :
+    "consistency is the whole game. the streak shows it.";
+
+  return [
+    head("THE STREAK"),
+    "",
+    `  ${big(String(longest))}${WH} days — longest streak${R}`,
+    current > 0 ? `  ${WH}${current}${R}${D} days active and counting${R}` : `  ${D}current streak: none yet — scan tomorrow${R}`,
+    "",
+    spark ? `  ${CY}${spark}${R}` : "",
+    spark ? `  ${D}${timeline.length >= 2 ? "monthly hours" : "recent activity"}${R}` : "",
+    "",
+    quip("  " + quipText),
+    `  ${D}a streak is consecutive active days — any session counts${R}`,
+  ].filter(keep);
+}
+
+/**
+ * cardWhatYouBuilt — THE WORK
+ * A synthesis card. One paragraph about the actual work, not a table.
+ * Only shown when there is enough data to say something real.
+ */
+export function cardWhatYouBuilt(rawAgg, rawLevels, rawTimeline) {
+  const agg = obj(rawAgg);
+  const levels = lv5(rawLevels);
+  const timeline = arr(rawTimeline);
+  const days = num(agg.active_days);
+  const sessions = num(agg.total_sessions);
+  if (!days || !sessions) return null;
+
+  const topLang = Object.entries(agg.languages ?? {}).sort((a, b) => b[1] - a[1])[0]?.[0];
+  const topProj = arr(agg.projects)[0]?.name;
+  const hours = Math.round(num(agg.total_duration_hours));
+  const arc = archetype(levels);
+  const months = timeline.length;
+
+  // Build a single paragraph about the work itself.
+  const langPart = topLang ? `mostly in ${topLang}` : "across multiple languages";
+  const projPart = topProj ? `, mostly on ${topProj}` : "";
+  const timePart = months > 1 ? `over ${months} months` : `over ${days} active days`;
+  const arcPart  = arc.name !== "Unforged" && arc.name !== "The Generalist"
+    ? `The dominant signal: ${arc.name.replace("The ", "").toUpperCase()} — ${arc.blurb}.`
+    : "";
+
+  const para = `You spent most of your time ${langPart}${projPart}, ${timePart}. ${arcPart}`.trim();
+
+  return [
+    head("THE WORK"),
+    "",
+    ...wrapWords(para, W - 4).map((l) => `  ${WH}${l}${R}`),
+    "",
+    `  ${D}${fmt(sessions)} sessions · ${hours}h active · ${days} days${R}`,
+    months > 1
+      ? `  ${D}${months} months of history — the shape keeps being added to${R}`
+      : `  ${D}first month on record — come back next month to see it move${R}`,
+  ].filter(keep);
 }
 
 /**
@@ -586,22 +726,27 @@ export function shareQrLines(rawLevels, agg, url) {
  */
 export function buildCards(input) {
   const { levels, agg, profile, timeline, providers, confinement, url } = input;
+  const contact = input.contact ?? null;
+  const GOLD = "\x1b[38;5;220m";
   const specs = [
+    [cardWhatYouBuilt(agg, levels, timeline), "\x1b[38;5;213m"],
     [cardStar(levels, agg), CY],
     [cardScoring(agg), "\x1b[38;5;120m"],
-    [cardSources(input.corpusMonth ?? null, agg, input.fleetAgg ?? null), "\x1b[38;5;220m"],
-    [cardManaged(agg, timeline), "\x1b[38;5;220m"],
+    [cardSources(input.corpusMonth ?? null, agg, input.fleetAgg ?? null), GOLD],
+    [cardFloor(input.floorData ?? null), "\x1b[38;5;87m"],
+    [cardManaged(agg, timeline), GOLD],
+    [cardMomentum(agg, timeline), CY],
     [cardHistory(timeline), CY],
     [cardTokens(agg, providers), "\x1b[38;5;213m"],
     [cardShapeOverTime(timeline), CY],
     [cardRhythm(profile), "\x1b[38;5;213m"],
-    [cardHowYouDrive(profile), "\x1b[38;5;220m"],
+    [cardHowYouDrive(profile), GOLD],
     [cardAgents(profile), CY],
     [cardStack(agg, profile), "\x1b[38;5;120m"],
     [cardProjects(agg), "\x1b[38;5;120m"],
-    [cardProof(confinement), "\x1b[38;5;220m"],
+    [cardProof(confinement), GOLD],
     [cardRank(levels, agg, timeline), "\x1b[38;5;213m"],
-    [cardShare(levels, agg, url ?? "https://github.com/Alexander-Sorrell-IT/starforge"), CY],
+    [cardShare(levels, agg, url ?? "https://github.com/Alexander-Sorrell-IT/starforge", contact), CY],
   ];
   return specs.filter(([lines]) => Array.isArray(lines) && lines.length).map(([lines, color]) => ({ lines, color }));
 }
@@ -624,21 +769,24 @@ export function buildCardsSafe(input) {
     // one bad card cannot cost the user the other eleven.
     const out = [];
     const each = [
-      ["THE SHAPE OF YOUR WORK", () => cardStar(input.levels, input.agg)],
-      ["HOW THE STAR WAS SCORED", () => cardScoring(input.agg)],
+      ["THE WORK", () => cardWhatYouBuilt(input.agg, input.levels, input.timeline)],
+      ["FORGED", () => cardStar(input.levels, input.agg)],
+      ["HOW IT WAS SCORED", () => cardScoring(input.agg)],
       ["CORPUS vs FLEET", () => cardSources(input.corpusMonth ?? null, input.agg, input.fleetAgg ?? null)],
-      ["YOU MANAGED", () => cardManaged(input.agg, input.timeline)],
-      ["YOUR CODING HISTORY", () => cardHistory(input.timeline)],
-      ["YOU BURNED THIS MANY TOKENS", () => cardTokens(input.agg, input.providers)],
+      ["THE FLOOR", () => cardFloor(input.floorData ?? null)],
+      ["YOU SHOWED UP", () => cardManaged(input.agg, input.timeline)],
+      ["THE STREAK", () => cardMomentum(input.agg, input.timeline)],
+      ["THE RECORD", () => cardHistory(input.timeline)],
+      ["THE WEIGHT OF IT", () => cardTokens(input.agg, input.providers)],
       ["THE SHAPE OVER TIME", () => cardShapeOverTime(input.timeline)],
       ["WHEN YOU CODE", () => cardRhythm(input.profile)],
-      ["HOW YOU DRIVE THE MACHINE", () => cardHowYouDrive(input.profile)],
+      ["YOUR HAND ON IT", () => cardHowYouDrive(input.profile)],
       ["HOW MANY AGENTS YOU JUGGLE", () => cardAgents(input.profile)],
       ["YOUR TOOLS & MODELS", () => cardStack(input.agg, input.profile)],
       ["YOUR TOP PROJECTS", () => cardProjects(input.agg)],
-      ["WHAT LEFT THIS MACHINE", () => cardProof(input.confinement)],
-      ["YOUR RANK", () => cardRank(input.levels, input.agg, input.timeline)],
-      ["SHARE IT", () => cardShare(input.levels, input.agg, input.url ?? "https://github.com/Alexander-Sorrell-IT/starforge")],
+      ["ZERO", () => cardProof(input.confinement)],
+      ["YOUR FORGE RANK", () => cardRank(input.levels, input.agg, input.timeline)],
+      ["SEND IT", () => cardShare(input.levels, input.agg, input.url ?? "https://github.com/Alexander-Sorrell-IT/starforge", input.contact ?? null)],
     ];
     for (const [name, fn] of each) {
       try {
@@ -679,7 +827,7 @@ export function cardRank(rawLevels, agg, timeline) {
   const arc = archetype(levels);
   const centre = (s) => " ".repeat(Math.max(0, Math.floor((W - vis(s)) / 2))) + s;
 
-  const lines = [head("YOUR RANK"), ""];
+  const lines = [head("YOUR FORGE RANK"), ""];
   for (const row of emblem(tier)) lines.push(`${CY}${centre(row)}${R}`);
   lines.push("");
   lines.push(centre(`${WH}${B}──  ${tier}  ──${R}`));
@@ -727,7 +875,7 @@ export function cardScoring(agg) {
   } catch {
     return null;
   }
-  const lines = [head("HOW THE STAR WAS SCORED"), ""];
+  const lines = [head("HOW IT WAS SCORED"), ""];
   for (const r of rows) {
     const cap = r.capped ? `  ${D}maxed${R}` : "";
     lines.push(`  ${WH}${pad(r.axis, 18)}${R}${bar(r.level, MAX_LEVEL, 8)} ${WH}${r.level}${R}${cap}`);

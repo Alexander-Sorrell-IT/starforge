@@ -73,11 +73,26 @@ const CONFINE_FIXTURE = [
   "",
 ].join("\n");
 
-// Writes the two allowlisted files AND the pin manifest that authorises them,
+
+const SERVE_FIXTURE = [
+  'import { createServer } from "node:http";',
+  'import { networkInterfaces } from "node:os";',
+  'export function lanIp() { return Object.values(networkInterfaces()).flat().find(i => !i.internal && i.family==="IPv4")?.address ?? "127.0.0.1"; }',
+  'export function startServe(opts={}) {',
+  '  const server = createServer((req,res) => res.end("ok"));',
+  '  server.listen(opts.port ?? 3141, "0.0.0.0", () => {});',
+  '  setTimeout(() => server.close(), (opts.timeoutMin??10)*60000);',
+  '  return new Promise(r => server.on("close", r));',
+  '}',
+  "",
+].join("\n");
+
+// Writes all allowlisted files AND the pin manifest that authorises them,
 // exactly as the real tree does.
 function writeAllowlisted(dir, { pins = true, pkg = { name: "fixture", version: "0.0.0" } } = {}) {
   writeFileSync(join(dir, "tripwire.mjs"), TRIPWIRE_FIXTURE);
   writeFileSync(join(dir, "confine.mjs"), CONFINE_FIXTURE);
+  writeFileSync(join(dir, "serve.mjs"), SERVE_FIXTURE);
   if (pkg) writeFileSync(join(dir, "package.json"), JSON.stringify(pkg, null, 2));
   if (pins) updatePins(dir);
 }
@@ -95,8 +110,10 @@ test("staticScan passes on a clean tree with intact, pinned allowlisted files", 
   assert.strictEqual(res.pass, true, JSON.stringify(res.findings));
   assert.ok(res.allowlist["tripwire.mjs"].hits > 0);
   assert.ok(res.allowlist["confine.mjs"].hits > 0);
+  assert.ok(res.allowlist["serve.mjs"].hits > 0);
   assert.strictEqual(res.allowlist["tripwire.mjs"].pin, "ok");
   assert.strictEqual(res.allowlist["confine.mjs"].pin, "ok");
+  assert.strictEqual(res.allowlist["serve.mjs"].pin, "ok");
   assert.ok(res.limits.length >= 3);
   assert.ok(res.inspected > 0, "a scan that read files must report what it read");
 });
