@@ -154,14 +154,20 @@ test("the card renders, fits its frame, and marks the floor", () => {
   const widths = new Set(box(lines).split("\n").map((l) => strip(l).length));
   assert.equal(widths.size, 1, `ragged: ${[...widths].join(", ")}`);
   const text = strip(lines.join("\n"));
-  assert.match(text, /floor/, "the fleet column must be labelled a floor");
-  assert.match(text, /—/, "an unmeasured axis must print a dash");
-  assert.match(text, /nothing is averaged/, "and must say the two are not merged");
+  assert.match(text, /floor/, "the fleet row must be labelled a floor");
+  assert.match(text, /not measured as zero|unmeasured/, "must explain why fleet arms are drawn at zero");
+  assert.match(text, /4 STARS/, "the card title must say 4 STARS");
 });
 
-test("no fleet, no card — rather than a card full of dashes", () => {
-  assert.equal(cardSources(null, {}, null), null);
-  assert.equal(cardSources(null, {}, { lifetime: null, months: [] }), null);
+test("no data at all → null, not an empty card", () => {
+  // If both corpus and fleet are absent/empty there is nothing to draw.
+  assert.equal(cardSources(null, null, null), null);
+  assert.equal(cardSources(null, null, { lifetime: null, months: [] }), null);
+  // With corpus data but no fleet, the card shows 2 corpus stars rather than
+  // returning null — 2 stars is more informative than nothing.
+  const corpusOnly = cardSources(null, { active_days: 5 }, null);
+  assert.ok(Array.isArray(corpusOnly) && corpusOnly.length > 0,
+    "corpus-only should still draw the 2 corpus stars");
 });
 
 test("a missing or junk fleet directory yields nothing, and does not throw", () => {

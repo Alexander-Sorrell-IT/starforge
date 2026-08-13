@@ -772,7 +772,7 @@ export function buildCardsSafe(input) {
       ["THE WORK", () => cardWhatYouBuilt(input.agg, input.levels, input.timeline)],
       ["FORGED", () => cardStar(input.levels, input.agg)],
       ["HOW IT WAS SCORED", () => cardScoring(input.agg)],
-      ["CORPUS vs FLEET", () => cardSources(input.corpusMonth ?? null, input.agg, input.fleetAgg ?? null)],
+      ["4 STARS", () => cardSources(input.corpusMonth ?? null, input.agg, input.fleetAgg ?? null)],
       ["THE FLOOR", () => cardFloor(input.floorData ?? null)],
       ["YOU SHOWED UP", () => cardManaged(input.agg, input.timeline)],
       ["THE STREAK", () => cardMomentum(input.agg, input.timeline)],
@@ -898,50 +898,128 @@ export function cardScoring(agg) {
 }
 
 /**
- * Corpus against fleet, month against lifetime — the four numbers, never blended.
+ * The 4-star view: corpus vs fleet × this month vs lifetime.
  *
- * The corpus is what survived on this machine; the fleet is the frozen
- * per-machine counters that outlive deleted transcripts. They measure different
- * things and they are shown as different things.
+ * Two rows, two columns — four mini-stars drawn side by side in a 2×2 grid.
+ * Each star is drawn from its own source only; nothing is blended or averaged.
  *
- * The fleet column is a FLOOR, and marked as one. token-usage has no languages,
- * tool calls or night hours, so two axes are unmeasured there and a third is
- * missing one of its terms. Every term is a non-negative addition, so those arms
- * can only be longer than drawn — never shorter. An unmeasured axis prints "—",
- * not 0: a zero would read as weakness rather than as silence.
+ *   CORPUS this month  |  CORPUS lifetime
+ *   FLEET  this month  |  FLEET  lifetime
+ *
+ * Fleet arms that cannot be measured (languages, tool calls, night hours) are
+ * drawn at zero inside the star and labelled as unmeasured underneath. A zero
+ * arm and an unmeasured arm are different facts: this card shows both.
+ *
+ * Falls back to a 2-star layout (corpus only) when no fleet data is available.
  */
 export function cardSources(corpusMonth, corpusLife, fleet) {
-  if (!fleet?.lifetime) return null;
-  const T = (agg) => (agg ? computeLevels(agg).reduce((a, b) => a + b, 0) : null);
-  const fleetMonth = arr(fleet.months).length ? arr(fleet.months)[arr(fleet.months).length - 1] : null;
-  const cell = (v) => (v == null ? `${D}—${R}` : v.toFixed(1).padStart(5));
+  // Need at least a corpus lifetime to draw anything meaningful.
+  if (!corpusLife && !corpusMonth && !fleet?.lifetime) return null;
 
-  const lines = [head("CORPUS vs FLEET"), ""];
-  lines.push(`  ${D}${pad("", 12)}${"this month".padStart(11)}${"lifetime".padStart(11)}${R}`);
-  lines.push(`  ${pad("corpus", 12)}${cell(T(corpusMonth))}      ${cell(T(corpusLife))}`);
-  lines.push(`  ${pad("fleet", 12)}${cell(T(fleetMonth))}      ${cell(T(fleet.lifetime))}  ${D}floor${R}`);
-  if (fleetMonth)
-    lines.push(`  ${D}${pad("", 12)}${"tokens + days only".padStart(22)}${R}`);
-  lines.push("");
+  // Helper: compute levels from an agg, respecting which inputs are available.
+  const levelsOf = (agg, available = null) => {
+    if (!agg) return new Array(ARMS).fill(0);
+    const lv = computeLevels(agg);
+    // Zero out unmeasured axes so the shape is honest.
+    if (available) {
+      const inputs = ["tokensM", "projects", "toolCalls", "models", "streak"];
+      // Map axis index → whether its primary input is measured.
+      // FIRST PRINCIPLES(0)=tokensM, ENGINEERING(1)=projects,
+      // CODING(2)=toolCalls, OUTSIDE(3)=models, TENACITY(4)=streak
+      const measured = [
+        available.tokensM !== false,
+        available.projects !== false,
+        available.toolCalls !== false,
+        available.models !== false,
+        available.streak !== false,
+      ];
+      return lv.map((v, i) => measured[i] ? v : 0);
+    }
+    return lv;
+  };
 
-  // Per axis, so "why is the fleet number lower" is answerable on the card.
-  const rows = explainLevels(fleet.lifetime, { available: FLEET_MEASURES });
-  const corpusRows = explainLevels(corpusLife ?? {});
-  lines.push(`  ${D}${pad("axis", 18)}${"corpus".padStart(7)}${"fleet".padStart(8)}${R}`);
-  for (let i = 0; i < rows.length; i++) {
-    const f = rows[i].measured
-      ? `${rows[i].level.toFixed(1).padStart(7)}${rows[i].partial ? `${D}+${R}` : " "}`
-      : `${D}${"—".padStart(7)} ${R}`;
-    lines.push(`  ${pad(rows[i].axis, 18)}${corpusRows[i].level.toFixed(1).padStart(7)}${f}`);
+  const total = (lv) => lv.reduce((a, b) => a + b, 0);
+  const fmt1 = (n) => n.toFixed(1);
+
+  const fleetMonth = arr(fleet?.months ?? []).length
+    ? arr(fleet.months)[arr(fleet.months).length - 1]
+    : null;
+  const fleetLife = fleet?.lifetime ?? null;
+  const hasFleet = Boolean(fleetLife);
+
+  // Compute all four level arrays.
+  const cMonthLv = levelsOf(corpusMonth);
+  const cLifeLv  = levelsOf(corpusLife);
+  const fMonthLv = levelsOf(fleetMonth, fleet?.available ?? FLEET_MEASURES);
+  const fLifeLv  = levelsOf(fleetLife,  fleet?.available ?? FLEET_MEASURES);
+
+  // Star size: two stars side by side must fit inside W=60 with a gap.
+  // 13 cols × 7 rows fits two with a 4-col gap and 5-col margins.
+  const SW = 13, SH = 7;
+
+  // Render one mini-star row by row, applying a colour or plain block char.
+  const drawStar = (lv) => miniStar(lv, SW, SH);
+
+  // Build the 4-star grid: top row = corpus, bottom row = fleet.
+  // Each row: [left star rows, right star rows] zipped together.
+  const renderRow = (leftLv, rightLv, leftLabel, rightLabel, leftScore, rightScore, note) => {
+    const left  = drawStar(leftLv);
+    const right = drawStar(rightLv);
+    const GAP = "   ";
+    const rowLines = [];
+    // Label row above the stars
+    rowLines.push(
+      `  ${D}${pad(leftLabel, SW)}${GAP}${rightLabel}${R}`
+    );
+    // Star rows side by side
+    for (let r = 0; r < SH; r++) {
+      rowLines.push(`  ${CY}${left[r]}${R}${GAP}${CY}${right[r]}${R}`);
+    }
+    // Score row below the stars
+    rowLines.push(
+      `  ${WH}${fmt1(leftScore).padEnd(SW)}${R}${GAP}${WH}${fmt1(rightScore)}${R}` +
+      (note ? `  ${D}${note}${R}` : "")
+    );
+    return rowLines;
+  };
+
+  const lines = [head("4 STARS"), ""];
+
+  // Top row: corpus
+  lines.push(...renderRow(
+    cMonthLv, cLifeLv,
+    "corpus · month", "corpus · lifetime",
+    total(cMonthLv), total(cLifeLv)
+  ));
+
+  if (hasFleet) {
+    lines.push("");
+    // Bottom row: fleet
+    lines.push(...renderRow(
+      fMonthLv, fLifeLv,
+      "fleet · month", "fleet · lifetime",
+      total(fMonthLv), total(fLifeLv),
+      "floor"
+    ));
   }
+
   lines.push("");
-  for (const l of wrapWords(
-    "the fleet column is a floor: token-usage records no languages, tool calls " +
-      "or night hours, so those arms are unmeasured (—) and one is missing a " +
-      "term (+). every term only adds, so a fleet arm can be longer than shown, " +
-      "never shorter. nothing is averaged between the two columns.",
-    W - 4
-  ))
-    lines.push(`  ${D}${l}${R}`);
-  return lines;
+
+  // Which axes are unmeasured in fleet — tell the reader why some fleet arms
+  // are drawn at zero, so "short arm" is not mistaken for "weak axis".
+  if (hasFleet) {
+    const missing = ["CODING", "OUTSIDE THE BOX"].filter(Boolean);
+    for (const l of wrapWords(
+      `fleet floor: language, tool-call and night-hour data not recorded ` +
+      `in token-usage — those arms are drawn at zero, not measured as zero. ` +
+      `every other arm is a lower bound.`,
+      W - 4
+    )) lines.push(`  ${D}${l}${R}`);
+  } else {
+    lines.push(`  ${D}run with --fleet=DIR to add the fleet stars${R}`);
+  }
+
+  // Denominator — same for all four stars.
+  lines.push(`  ${D}/35 per star  ·  ${ARMS} axes  ·  max ${MAX_LEVEL} per axis${R}`);
+  return lines.filter(keep);
 }
