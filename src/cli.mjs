@@ -108,6 +108,7 @@ import { buildReceipt, renderReceipt } from "./receipt.mjs";
 import { scanAllProviders } from "./scanners.mjs";
 import { discoverAccounts, floorTotals } from "./accounts.mjs";
 import { readContact, writeContact, FIELDS as CONTACT_FIELDS, KEYS as CONTACT_KEYS, LABELS as CONTACT_LABELS } from "./contact.mjs";
+import { readExclusions, addExclusion, removeExclusion, EXCLUDE_FILE } from "./exclude.mjs";
 import { readFleet, writeMachineFolder } from "./fleet.mjs";
 import { startServe } from "./serve.mjs";
 import { fleetAggregates, FLEET_MEASURES, FLEET_MEASURES_MONTH } from "./fleetstar.mjs";
@@ -541,7 +542,8 @@ async function main() {
   // SILENCE, so a user who never passed --yes was told nothing and reasonably
   // assumed they had been asked. The README sells this prompt as a feature; if
   // it does not happen, the run has to say so.
-  let excludedPrefixes = [];
+  const persistedExclusions = readExclusions();
+  let excludedPrefixes = [...persistedExclusions];
   if (!flag("--yes") && !process.stdin.isTTY) {
     console.log(
       `${DIM}stdin is not a TTY — the exclusion prompt was SKIPPED and NOTHING was excluded; every discovered log was scanned. Run in a terminal to be asked, or pass --yes to say so explicitly.${RESET}`
@@ -559,6 +561,8 @@ async function main() {
   }
   const excluded = (p) =>
     excludedPrefixes.some((frag) => p.toLowerCase().includes(frag.toLowerCase()));
+  if (persistedExclusions.length)
+    console.log(`${DIM}saved exclusions: ${persistedExclusions.join(", ")}${RESET}`);
   if (excludedPrefixes.length)
     console.log(`Excluding paths matching: ${excludedPrefixes.join(", ")}\n`);
 
@@ -1156,17 +1160,18 @@ async function main() {
     let done = false;
     while (!done) {
       console.log(`\n${BOLD}${CYAN}before you go${RESET}`);
-      console.log(`  ${BOLD}[p]${RESET} prove it   ${DIM}ask the kernel whether anything can leave${RESET}`);
-      console.log(`  ${BOLD}[r]${RESET} receipt    ${DIM}every field it KEPT, read from the bytes on disk${RESET}`);
+      console.log(`  ${BOLD}[P]${RESET} prove it      ${DIM}ask the kernel whether anything can leave${RESET}`);
+      console.log(`  ${BOLD}[T]${RESET} transparency  ${DIM}every field this tool KEPT, read from the bytes on disk${RESET}`);
       if (timeline.length)
-        console.log(`  ${BOLD}[c]${RESET} compare    ${DIM}this month against your lifetime shape${RESET}`);
+        console.log(`  ${BOLD}[C]${RESET} compare      ${DIM}local month vs lifetime${fleetStars?.lifetime ? " · or vs fleet" : ""}${RESET}`);
       const dst0 = daemonStatus();
       if (dst0.supported && !dst0.installed)
-        console.log(`  ${BOLD}[d]${RESET} daemon     ${DIM}schedule monthly re-scans so history outlives the logs${RESET}`);
-      console.log(`  ${BOLD}[r]${RESET} reach out ${DIM}set contact info shown in the QR (github, email, phone…)${RESET}`);
-      console.log(`  ${BOLD}[q]${RESET} done`);
-      const key = (await rl.question("  > ")).trim().toLowerCase();
-      if (key === "p") {
+        console.log(`  ${BOLD}[D]${RESET} daemon       ${DIM}schedule monthly re-scans so history outlives the logs${RESET}`);
+      console.log(`  ${BOLD}[E]${RESET} exclusions   ${DIM}add or remove paths never scanned${RESET}`);
+      console.log(`  ${BOLD}[R]${RESET} reach out    ${DIM}set contact info shown in the QR (github, email, phone…)${RESET}`);
+      console.log(`  ${BOLD}[Q]${RESET} done`);
+      const key = (await rl.question("  > ")).trim().toUpperCase();
+      if (key === "P") {
         console.log(`\n${BOLD}1/3 probe OUTSIDE the sandbox${RESET} ${DIM}(must connect, or the control is invalid)${RESET}`);
         // In a CHILD process: this one has the tripwire armed, so an in-process
         // probe could never connect and the control would be worthless.
@@ -1185,39 +1190,98 @@ async function main() {
         console.log(`\n${pass ? `${BOLD}PASS${RESET} — egress open outside, refused inside, scan fine either way` : `${BOLD}INCONCLUSIVE${RESET} — read the three results above`}`);
         console.log(`${DIM}this ran from inside starforge, so it is the weaker form. the strong${RESET}`);
         console.log(`${DIM}one is you running it: sh bin/starforge-proof.sh${RESET}`);
-      } else if (key === "r") {
+      } else if (key === "T") {
         console.log("");
         console.log(renderReceipt(buildReceipt(), { color: !process.env.NO_COLOR }));
-      } else if (key === "c" && timeline.length) {
-        // Monthly is the LAST snapshot, not `agg`: agg is "every log still on
-        // disk", which spans however many months survived retention, so
-        // comparing it to lifetime would compare a blurred window against a
-        // total and call the difference a trend.
+      } else if (key === "C" && timeline.length) {
+        // Compare sub-menu: local, fleet, or both
         const thisMonth = timeline[timeline.length - 1];
         const life = lifetimeFromTimeline(timeline);
-        console.log("");
-        console.log(renderCompare(thisMonth, life, { color: !process.env.NO_COLOR }));
-        // Offered, never assumed. The whole tool's position is that nothing is
-        // written unless you asked for it, and a comparison is no exception.
-        const save = (await rl.question(`\n  save this to a file? ${DIM}[y/N]${RESET} `))
-          .trim()
-          .toLowerCase();
-        if (save === "y" || save === "yes") {
-          mkdirSync(outDir, { recursive: true });
-          const p = join(outDir, `compare-${stamp}.txt`);
-          // Written WITHOUT colour: escape codes in a file are noise the next
-          // reader has to strip. Through auditWrite like every other write, so
-          // `receipt` and `verify` can still account for it.
-          const body =
-            renderCompare(thisMonth, life, { color: false }) +
-            `\n\ngenerated ${new Date().toISOString()} by starforge-cli\n`;
-          writeFileSync(p, auditWrite(audit, p, body));
-          console.log(`  wrote ${maskPath(p)}`);
-        } else {
-          console.log(`  ${DIM}not saved.${RESET}`);
+        const hasFleet = Boolean(fleetStars?.lifetime);
+        console.log(`\n${BOLD}compare${RESET}`);
+        console.log(`  ${BOLD}[L]${RESET}  local   ${DIM}this month vs your corpus lifetime${RESET}`);
+        if (hasFleet) {
+          console.log(`  ${BOLD}[F]${RESET}  fleet   ${DIM}this month vs fleet lifetime${RESET}`);
+          console.log(`  ${BOLD}[B]${RESET}  both    ${DIM}corpus month · corpus lifetime · fleet lifetime${RESET}`);
         }
-      } else if (key === "r") {
-        // [r] reach out — edit contact info written into the QR
+        console.log(`  ${BOLD}[←]${RESET}  back`);
+        const ck = (await rl.question("  > ")).trim().toUpperCase();
+        const color = !process.env.NO_COLOR;
+        let compareBody = null;
+        if (ck === "L" || (!hasFleet && ck !== "")) {
+          console.log("");
+          compareBody = renderCompare(thisMonth, life, { color });
+          console.log(compareBody);
+        } else if (ck === "F" && hasFleet) {
+          // Fleet month (last) vs fleet lifetime
+          const fleetMonth = fleetStars.months.length
+            ? fleetStars.months[fleetStars.months.length - 1] : null;
+          if (fleetMonth) {
+            console.log("");
+            compareBody = renderCompare(fleetMonth, fleetStars.lifetime, { color});
+            console.log(compareBody);
+          } else {
+            console.log(`  ${DIM}fleet has only one month of data — nothing to compare yet${RESET}`);
+          }
+        } else if (ck === "B" && hasFleet) {
+          console.log("");
+          const localCmp = renderCompare(thisMonth, life, { color});
+          const fleetMonth = fleetStars.months.length
+            ? fleetStars.months[fleetStars.months.length - 1] : null;
+          console.log(localCmp);
+          if (fleetMonth) {
+            console.log("");
+            const fleetCmp = renderCompare(fleetMonth, fleetStars.lifetime, { color});
+            console.log(fleetCmp);
+            compareBody = localCmp + "\n\n" + fleetCmp;
+          } else {
+            compareBody = localCmp;
+          }
+        }
+        // Save offer
+        if (compareBody !== null) {
+          const save = (await rl.question(`\n  save to a file? ${DIM}[y/N]${RESET} `)).trim().toUpperCase();
+          if (save === "Y") {
+            mkdirSync(outDir, { recursive: true });
+            const p = join(outDir, `compare-${stamp}.txt`);
+            const bodyPlain = compareBody.replace(/\x1b\[[0-9;]*m/g, "");
+            writeFileSync(p, auditWrite(audit, p,
+              bodyPlain + `\n\ngenerated ${new Date().toISOString()} by starforge-cli\n`));
+            console.log(`  wrote ${maskPath(p)}`);
+          } else {
+            console.log(`  ${DIM}not saved.${RESET}`);
+          }
+        }
+      } else if (key === "E") {
+        // [E] exclusions — add or remove persisted scan exclusions
+        const curExcl = readExclusions();
+        const exclFile = EXCLUDE_FILE.replace(homedir(), "~");
+        console.log(`\n${BOLD}saved exclusions${RESET} ${DIM}(${exclFile})${RESET}`);
+        if (!curExcl.length) {
+          console.log(`  ${DIM}none — every session is scanned${RESET}`);
+        } else {
+          curExcl.forEach((e, i) => console.log(`  ${BOLD}[${i}]${RESET}  ${e}`));
+        }
+        console.log(`\n  type a fragment to ADD    e.g.  client-work  or  /private/`);
+        console.log(`  type a number to REMOVE   e.g.  0`);
+        console.log(`  blank = back`);
+        const eAns = (await rl.question("  > ")).trim();
+        if (eAns === "") { /* back */ }
+        else if (/^\d+$/.test(eAns)) {
+          const idx = parseInt(eAns, 10);
+          if (idx >= 0 && idx < curExcl.length) {
+            const next = removeExclusion(idx);
+            console.log(`  removed "${curExcl[idx]}"`);
+            console.log(next.length ? `  remaining: ${next.join(", ")}` : `  ${DIM}no exclusions saved${RESET}`);
+          } else {
+            console.log(`  ${DIM}no entry at [${idx}]${RESET}`);
+          }
+        } else {
+          const next = addExclusion(eAns);
+          console.log(`  saved. active next scan: ${next.join(", ")}`);
+        }
+      } else if (key === "R") {
+        // [R] reach out — edit contact info written into the QR
         let ct = readContact();
         let rDone = false;
         while (!rDone) {
@@ -1268,7 +1332,7 @@ ${BOLD}${CYAN}── reach out (shown in QR) ───────────�
         }
         // Refresh contact so the QR on any subsequent re-render is current
         Object.assign(contact, readContact());
-      } else if (key === "d") {
+      } else if (key === "D") {
         const { files, activate } = writeSchedule();
         console.log("");
         for (const f of files) console.log(`wrote ${maskPath(f)}`);
