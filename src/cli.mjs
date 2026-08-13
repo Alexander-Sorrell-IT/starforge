@@ -49,6 +49,8 @@
 //   starforge-cli serve --serve-port=N  TCP port (default 3141)
 //   starforge-cli serve --serve-timeout=N  auto-shutdown after N minutes (default 10)
 //   starforge-cli serve --serve-visits=N   auto-shutdown after N visits (default 3)
+//   starforge-cli serve --serve-collect=DIR  accept POST /submit from other machines
+//                                 and write each submission as a machine folder in DIR
 //   starforge-cli --reset-audit[=WHY]
 //                                 delete every run log in ~/.starforge/audit and
 //                                 start a fresh chain whose first entry RECORDS
@@ -207,6 +209,7 @@ const FLAG_SPEC = Object.freeze({
   "--serve-port": "value",
   "--serve-timeout": "value",
   "--serve-visits": "value",
+  "--serve-collect": "value",
 });
 const KNOWN_FLAGS = Object.freeze(Object.keys(FLAG_SPEC));
 
@@ -263,7 +266,7 @@ for (const a of args) {
   // subcommand would be the same silent-ignore this block exists to end — just
   // with a flag that happens to be spelled correctly. The one exception is
   // declared, not inferred: `receipt --json` emits the machine-readable pack.
-  const SUBCOMMAND_FLAGS = { receipt: new Set(["--json"]), serve: new Set(["--serve-port", "--serve-timeout", "--serve-visits"]) };
+  const SUBCOMMAND_FLAGS = { receipt: new Set(["--json"]), serve: new Set(["--serve-port", "--serve-timeout", "--serve-visits", "--serve-collect"]) };
   if (subcommand !== "scan" && !SUBCOMMAND_FLAGS[subcommand]?.has(base))
     flagError(
       `\`${subcommand}\` takes no flags, and ${base} would have been ignored. Run \`starforge-cli ${subcommand}\` on its own (to re-pin the allowlist manifest: node src/verify.mjs --update-pins).`
@@ -375,8 +378,9 @@ if (subcommand === "serve") {
   const port = Number(opt("serve-port") ?? "3141") || 3141;
   const timeout = Number(opt("serve-timeout") ?? "10") || 10;
   const visits = Number(opt("serve-visits") ?? "3") || 3;
+  const collectDir = opt("serve-collect") ?? null;
   try {
-    await startServe({ port, timeoutMin: timeout, maxVisits: visits });
+    await startServe({ port, timeoutMin: timeout, maxVisits: visits, collectDir });
   } catch (e) {
     console.error(`starforge serve: ${maskText(e.message)}`);
     process.exit(1);

@@ -22,11 +22,12 @@
 
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { qrToTerminal } from "./qr.mjs";
 import { maskPath } from "./redact.mjs";
+import { writeMachineFolder } from "./fleet.mjs";
 
 const BOLD  = "\x1b[1m";
 const DIM   = "\x1b[2m";
@@ -71,32 +72,83 @@ export function findHtml(home) {
 }
 
 /**
- * Start the LAN server.
- *
- * opts:
- *   port       — TCP port (default 3141)
- *   timeoutMin — auto-shutdown after N minutes (default 10)
- *   maxVisits  — auto-shutdown after N page loads (default 3)
- *   home       — override home dir (for tests)
- *   html       — override HTML content directly (for tests)
- *
- * Returns a promise that resolves when the server shuts down.
+ * Validate and sanitise a machine folder name from untrusted POST input.
+ * Allows alphanumeric, hyphens, underscores. Strips everything else.
+ * Returns the sanitised slug, or null if the result would be empty/reserved.
+ * Exported for testing.
  */
+export function sanitizeFolderName(raw) {
+  if (!raw || typeof raw !== "string") return null;
+  const slug = raw.trim().toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  if (!slug) return null;
+  if (slug === "." || slug === ".." || slug.startsWith(".")) return null;
+  return slug;
+}
+
 /**
  * Build the HTTP request handler for a serve session.
  * Exported for unit-testing — no sockets needed.
  *
- * Returns { handler, getVisits } where:
+ * opts:
+ *   html        — HTML string to serve on GET /
+ *   maxVisits   — shutdown after this many successful GET / requests
+ *   collectDir  — if set, enables POST /submit endpoint that writes
+ *                 submitted machine folders into this directory
+ *
+ * Returns { handler, getVisits, onShutdown } where:
  *   handler(req, res) — standard node:http handler
  *   getVisits()       — how many successful GET / requests so far
  *   onShutdown(fn)    — register a zero-arg callback for when maxVisits is hit
  */
-export function makeHandler(html, maxVisits) {
+export function makeHandler(html, maxVisits, collectDir = null) {
   let visits = 0;
   let shutdownFn = null;
   function onShutdown(fn) { shutdownFn = fn; }
 
   function handler(req, res) {
+    // ── POST /submit — machine folder collection ──────────────────────────
+    if (req.method === "POST" && req.url === "/submit") {
+      if (!collectDir) {
+        res.writeHead(404, { "Content-Type": "text/plain" });
+        res.end("collection not enabled on this server");
+        return;
+      }
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        let data;
+        try { data = JSON.parse(body); } catch {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "invalid JSON" }));
+          return;
+        }
+        // Accept folderName, machine, or label as the folder identifier
+        const rawName = data.folderName ?? data.machine ?? data.label;
+        const folderName = sanitizeFolderName(rawName);
+        if (!folderName) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "missing or invalid folderName" }));
+          return;
+        }
+        try {
+          mkdirSync(collectDir, { recursive: true });
+          const result = writeMachineFolder(collectDir, folderName, data);
+          const from = (req.socket && req.socket.remoteAddress) ?? "unknown";
+          console.log(`  ${b("✓")} ${cy(from)} ${d(`submitted "${folderName}" (${result.grandTotal.toLocaleString("en-US")} tokens)`)}`);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, folder: folderName, grandTotal: result.grandTotal }));
+        } catch (err) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // ── GET / or /index.html — stats page ─────────────────────────────────
     if (req.method !== "GET" || (req.url !== "/" && req.url !== "/index.html")) {
       res.writeHead(404, { "Content-Type": "text/plain" });
       res.end("not found");
@@ -130,6 +182,20 @@ export function makeHandler(html, maxVisits) {
   return { handler, getVisits: () => visits, onShutdown };
 }
 
+/**
+ * Start the LAN server.
+ *
+ * opts:
+ *   port        — TCP port (default 3141)
+ *   timeoutMin  — auto-shutdown after N minutes (default 10)
+ *   maxVisits   — auto-shutdown after N page loads (default 3)
+ *   home        — override home dir (for tests)
+ *   html        — override HTML content directly (for tests / inline render)
+ *   collectDir  — if set, enables POST /submit endpoint that writes
+ *                 submitted machine folders into this directory
+ *
+ * Returns a promise that resolves when the server shuts down.
+ */
 export function startServe(opts = {}) {
   const port      = opts.port ?? 3141;
   const timeout   = (opts.timeoutMin ?? 10) * 60 * 1000;
@@ -154,13 +220,14 @@ export function startServe(opts = {}) {
 </body></html>`;
     }
 
+    const collectDir = opts.collectDir ?? null;
     const ip = lanIp();
     // Build scheme from parts so the egress literal scan does not flag this
     // file for a URL it only constructs at runtime and never sends outbound.
     const scheme = "ht" + "tp";
     const url = `${scheme}://${ip}:${port}`;
 
-    const { handler, onShutdown } = makeHandler(html, maxVisits);
+    const { handler, onShutdown } = makeHandler(html, maxVisits, collectDir);
     onShutdown(() => server.close(() => resolve()));
     const server = createServer(handler);
 
@@ -186,6 +253,17 @@ export function startServe(opts = {}) {
       }
       console.log(`\n  ${d("scan the QR from any device on the same WiFi")}`);
       console.log(`  ${d("or open " + url + " in a browser")}\n`);
+
+      // Collect mode: print the submit endpoint and a curl example
+      if (collectDir) {
+        const submitUrl = `${scheme}://${ip}:${port}/submit`;
+        console.log(`  ${b("collect mode")} — writing submissions to ${d(maskPath(String(collectDir)))}`);
+        console.log(`  POST ${b(submitUrl)}`);
+        console.log(`  ${d("example:")} curl -s -X POST ${submitUrl} \\`);
+        console.log(`  ${d("          ")} -H 'Content-Type: application/json' \\`);
+        console.log(`  ${d("          ")} -d '{"folderName":"my-machine","accounts":[],"sessions":[]}'`);
+        console.log();
+      }
 
       // Auto-shutdown timer
       const timer = setTimeout(() => {

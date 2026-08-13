@@ -250,3 +250,192 @@ test("EADDRINUSE produces a message containing 'already in use'", () => {
   assert.match(err.message, /already in use/);
   assert.match(err.message, /--serve-port/);
 });
+
+// ── sanitizeFolderName ────────────────────────────────────────────────────────
+
+import { sanitizeFolderName } from "../src/serve.mjs";
+
+test("sanitizeFolderName accepts a clean slug", () => {
+  assert.equal(sanitizeFolderName("my-laptop"), "my-laptop");
+});
+
+test("sanitizeFolderName lowercases and strips special chars", () => {
+  assert.equal(sanitizeFolderName("My Laptop!"), "my-laptop");
+});
+
+test("sanitizeFolderName trims leading/trailing hyphens", () => {
+  assert.equal(sanitizeFolderName("--laptop--"), "laptop");
+});
+
+test("sanitizeFolderName returns null for empty string", () => {
+  assert.equal(sanitizeFolderName(""), null);
+});
+
+test("sanitizeFolderName returns null for null/undefined", () => {
+  assert.equal(sanitizeFolderName(null), null);
+  assert.equal(sanitizeFolderName(undefined), null);
+});
+
+test("sanitizeFolderName returns null for dot-only name", () => {
+  assert.equal(sanitizeFolderName("."), null);
+  assert.equal(sanitizeFolderName(".."), null);
+});
+
+test("sanitizeFolderName strips leading dot and keeps the rest", () => {
+  // ".hidden" → strip leading dot → "hidden" (valid slug, not null)
+  assert.equal(sanitizeFolderName(".hidden"), "hidden");
+});
+
+test("sanitizeFolderName truncates at 64 characters", () => {
+  const long = "a".repeat(100);
+  assert.equal(sanitizeFolderName(long).length, 64);
+});
+
+// ── POST /submit — collect disabled ──────────────────────────────────────────
+
+test("POST /submit returns 404 when collect is not enabled", () => {
+  const { handler } = makeHandler("<html>x</html>", 3, null);
+  const res = fakeRes();
+  // Fake a POST with no data events needed (no collectDir path, returns synchronously)
+  handler({ method: "POST", url: "/submit", socket: null, on() {} }, res);
+  assert.equal(res._calls.writeHead, 404);
+});
+
+// ── POST /submit — collect enabled ───────────────────────────────────────────
+
+// Helper: build a fake req that emits data then end, simulating a POST body.
+function fakePost(url, bodyObj) {
+  const body = JSON.stringify(bodyObj);
+  const listeners = {};
+  return {
+    method: "POST",
+    url,
+    socket: { remoteAddress: "9.9.9.9" },
+    on(event, fn) {
+      listeners[event] = fn;
+      if (event === "end") {
+        // Schedule data+end in next microtask so handler can register both first
+        Promise.resolve().then(() => {
+          listeners["data"]?.(body);
+          listeners["end"]?.();
+        });
+      }
+    },
+  };
+}
+
+test("POST /submit with valid payload returns 200 and writes folder", async () => {
+  const dir = join(tmpdir(), "starforge-collect-" + Math.floor(Math.random() * 1e9));
+  const { handler } = makeHandler("<html>x</html>", 99, dir);
+  const res = fakeRes();
+
+  // Minimal valid payload: folderName + accounts (empty) + sessions (empty)
+  // writeMachineFolder tolerates empty arrays fine (grandTotal = 0)
+  const payload = { folderName: "test-machine", accounts: [], sessions: [] };
+  handler(fakePost("/submit", payload), res);
+
+  // Wait for the async body events to fire
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(res._calls.writeHead, 200, `expected 200 got ${res._calls.writeHead}: ${res._calls.ended}`);
+  const body = JSON.parse(res._calls.ended);
+  assert.equal(body.ok, true);
+  assert.equal(body.folder, "test-machine");
+  assert.equal(body.grandTotal, 0);
+
+  // Folder was actually written on disk
+  const { existsSync: exists } = await import("node:fs");
+  assert.ok(exists(join(dir, "test-machine", "machine-readable", "totals.json")));
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("POST /submit with invalid JSON returns 400", async () => {
+  const dir = join(tmpdir(), "starforge-collect-" + Math.floor(Math.random() * 1e9));
+  const { handler } = makeHandler("<html>x</html>", 99, dir);
+  const res = fakeRes();
+
+  // Build a fake req that sends bad JSON
+  const listeners = {};
+  const badReq = {
+    method: "POST", url: "/submit", socket: null,
+    on(event, fn) {
+      listeners[event] = fn;
+      if (event === "end") {
+        Promise.resolve().then(() => {
+          listeners["data"]?.("not json {{{{");
+          listeners["end"]?.();
+        });
+      }
+    },
+  };
+
+  handler(badReq, res);
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(res._calls.writeHead, 400);
+  assert.equal(JSON.parse(res._calls.ended).error, "invalid JSON");
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("POST /submit with missing folderName returns 400", async () => {
+  const dir = join(tmpdir(), "starforge-collect-" + Math.floor(Math.random() * 1e9));
+  const { handler } = makeHandler("<html>x</html>", 99, dir);
+  const res = fakeRes();
+
+  handler(fakePost("/submit", { accounts: [], sessions: [] }), res);
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(res._calls.writeHead, 400);
+  assert.match(JSON.parse(res._calls.ended).error, /folderName/);
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("POST /submit uses machine field as folder name when folderName absent", async () => {
+  const dir = join(tmpdir(), "starforge-collect-" + Math.floor(Math.random() * 1e9));
+  const { handler } = makeHandler("<html>x</html>", 99, dir);
+  const res = fakeRes();
+
+  handler(fakePost("/submit", { machine: "via-machine-field", accounts: [], sessions: [] }), res);
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(res._calls.writeHead, 200);
+  assert.equal(JSON.parse(res._calls.ended).folder, "via-machine-field");
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("POST /submit sanitises unsafe folder names before writing", async () => {
+  const dir = join(tmpdir(), "starforge-collect-" + Math.floor(Math.random() * 1e9));
+  const { handler } = makeHandler("<html>x</html>", 99, dir);
+  const res = fakeRes();
+
+  handler(fakePost("/submit", { folderName: "My Laptop 2025!", accounts: [], sessions: [] }), res);
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(res._calls.writeHead, 200);
+  // Sanitised to "my-laptop-2025"
+  assert.equal(JSON.parse(res._calls.ended).folder, "my-laptop-2025");
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("GET / visit counter is unaffected by POST /submit requests", async () => {
+  const dir = join(tmpdir(), "starforge-collect-" + Math.floor(Math.random() * 1e9));
+  const { handler, getVisits } = makeHandler("<html>x</html>", 5, dir);
+
+  handler(fakePost("/submit", { folderName: "m", accounts: [], sessions: [] }), fakeRes());
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(getVisits(), 0, "POST /submit must not increment GET visit counter");
+
+  rmSync(dir, { recursive: true, force: true });
+});
