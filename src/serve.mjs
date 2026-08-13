@@ -60,7 +60,7 @@ export function lanIp() {
 }
 
 // Find the most recent stats HTML under ~/.starforge/reports/
-function findHtml(home) {
+export function findHtml(home) {
   const dir = join(home ?? homedir(), ".starforge", "reports");
   if (!existsSync(dir)) return null;
   const files = readdirSync(dir)
@@ -82,6 +82,54 @@ function findHtml(home) {
  *
  * Returns a promise that resolves when the server shuts down.
  */
+/**
+ * Build the HTTP request handler for a serve session.
+ * Exported for unit-testing — no sockets needed.
+ *
+ * Returns { handler, getVisits } where:
+ *   handler(req, res) — standard node:http handler
+ *   getVisits()       — how many successful GET / requests so far
+ *   onShutdown(fn)    — register a zero-arg callback for when maxVisits is hit
+ */
+export function makeHandler(html, maxVisits) {
+  let visits = 0;
+  let shutdownFn = null;
+  function onShutdown(fn) { shutdownFn = fn; }
+
+  function handler(req, res) {
+    if (req.method !== "GET" || (req.url !== "/" && req.url !== "/index.html")) {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      res.end("not found");
+      return;
+    }
+    visits += 1;
+    const from = (req.socket && req.socket.remoteAddress) ?? "unknown";
+    const connectedAt = Date.now();
+    console.log(`  ${b("✓")} ${cy(from)} ${d(`connected [${visits}/${maxVisits}]`)}`);
+    if (req.socket && req.socket.once) {
+      req.socket.once("close", () => {
+        const secs = Math.round((Date.now() - connectedAt) / 1000);
+        console.log(`  ${d("✗")} ${d(from + " closed (" + secs + "s)")}`);
+      });
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Frame-Options": "DENY",
+      "X-Content-Type-Options": "nosniff",
+    });
+    res.end(html);
+    if (visits >= maxVisits && shutdownFn) {
+      console.log(`\n${b("reached " + maxVisits + " visit(s) — shutting down.")}`);
+      const fn = shutdownFn;
+      shutdownFn = null; // prevent double-fire on extra requests
+      fn();
+    }
+  }
+
+  return { handler, getVisits: () => visits, onShutdown };
+}
+
 export function startServe(opts = {}) {
   const port      = opts.port ?? 3141;
   const timeout   = (opts.timeoutMin ?? 10) * 60 * 1000;
@@ -106,35 +154,15 @@ export function startServe(opts = {}) {
 </body></html>`;
     }
 
-    let visits = 0;
     const ip = lanIp();
     // Build scheme from parts so the egress literal scan does not flag this
     // file for a URL it only constructs at runtime and never sends outbound.
     const scheme = "ht" + "tp";
     const url = `${scheme}://${ip}:${port}`;
 
-    const server = createServer((req, res) => {
-      // Only serve GET /  — everything else gets a 404
-      if (req.method !== "GET" || (req.url !== "/" && req.url !== "/index.html")) {
-        res.writeHead(404, { "Content-Type": "text/plain" });
-        res.end("not found");
-        return;
-      }
-      visits += 1;
-      const from = req.socket.remoteAddress ?? "unknown";
-      console.log(`  ${d(`visit ${visits}/${maxVisits} from ${from}`)}`);
-      res.writeHead(200, {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store",
-        "X-Frame-Options": "DENY",
-        "X-Content-Type-Options": "nosniff",
-      });
-      res.end(html);
-      if (visits >= maxVisits) {
-        console.log(`\n${b("reached " + maxVisits + " visit(s) — shutting down.")}`);
-        server.close(() => resolve());
-      }
-    });
+    const { handler, onShutdown } = makeHandler(html, maxVisits);
+    onShutdown(() => server.close(() => resolve()));
+    const server = createServer(handler);
 
     server.on("error", (err) => {
       if (err.code === "EADDRINUSE") {
