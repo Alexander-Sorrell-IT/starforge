@@ -1,6 +1,6 @@
-// Tamper-EVIDENT automatic run log for starforge (audit schema v2).
+// Tamper-EVIDENT automatic run log for starreckon (audit schema v2).
 //
-// Every run writes ~/.starforge/audit/run-<ISO ':'->'-'>.json recording what
+// Every run writes ~/.starreckon/audit/run-<ISO ':'->'-'>.json recording what
 // was read, what was written (path + sha256), the sha256 of every source file
 // that ran, any tripwire hits (see tripwire.mjs), a monotonic run_index, and
 // the sha256 of the PREVIOUS run log — a hash chain, so editing a past log
@@ -37,7 +37,7 @@ import { fileURLToPath } from "node:url";
 import { maskPath, maskText } from "./redact.mjs";
 
 const SRC_DIR = fileURLToPath(new URL(".", import.meta.url));
-export const AUDIT_DIR = join(homedir(), ".starforge", "audit");
+export const AUDIT_DIR = join(homedir(), ".starreckon", "audit");
 
 // The run counter deliberately lives one level ABOVE the audit dir, so that
 // deleting the audit dir does not delete the evidence of how many runs it held.
@@ -47,7 +47,7 @@ export const counterFileFor = (dir = AUDIT_DIR) =>
 // Exactly which writes this log can see. Stored inside every log so the
 // artifact states its own coverage instead of relying on the docs being read.
 const WRITES_SCOPE =
-  "Lists only writes routed through auditWrite: the report files (--json / --card / --page), the monthly snapshots under ~/.starforge/snapshots, and the per-month star SVGs under ~/.starforge/stars. Writes into a --join-fleet directory are made by fleet.mjs and are NOT listed here.";
+  "Lists only writes routed through auditWrite: the report files (--json / --card / --page), the monthly snapshots under ~/.starreckon/snapshots, and the per-month star SVGs under ~/.starreckon/stars. Writes into a --join-fleet directory are made by fleet.mjs and are NOT listed here.";
 
 // Plain-English limits of this log. The verify command prints these.
 export const AUDIT_LIMITS = Object.freeze([
@@ -56,29 +56,29 @@ export const AUDIT_LIMITS = Object.freeze([
   "Logs are written by the same process they describe: a compromised or malicious process can log whatever it likes. Trust in the log is trust in the source you ran (compare source_hash against the tree you audited).",
   "A run that dies can still lose its log. The log is flushed the moment a tripwire fires and again from the CLI's exit hook, which covers a thrown tripwire, an early exit and an uncaught error — but SIGKILL, a power cut or a full disk leave nothing. Absence of a log is not evidence of absence of a hit.",
   "The log lists only writes routed through auditWrite: report files, monthly snapshots and the per-month star SVGs. Writes into a --join-fleet directory you named are not listed (see writes_scope in each log).",
-  "Concurrent starforge runs share one audit dir. Interleaved writes — and a log rewritten in place after an early tripwire flush — can produce a chain break or a duplicate run_index that is a race, not tampering.",
+  "Concurrent starreckon runs share one audit dir. Interleaved writes — and a log rewritten in place after an early tripwire flush — can produce a chain break or a duplicate run_index that is a race, not tampering.",
   "The genesis, run_index-gap and completeness checks apply to SCHEMA-2 logs only. Pre-v2 (schema-1) logs carry no run_index and no complete flag, so a schema-1 stretch of history is covered by the hash chain alone — the counts printed above say how many logs of each schema are on disk, so you can see how much of the history the gap checks actually cover.",
   "`--reset-audit` deletes the logs and records the deletion (count, index range, sha256 of each removed log) in the genesis of the new chain, and never rolls the run counter back. That record is a CLAIM made by the process that wrote it: it proves the logs were removed and lets a copy you kept be matched by hash — it is not proof of what was in them.",
 ]);
 
 const sha256 = (buf) => createHash("sha256").update(buf).digest("hex");
 
-// A launcher that starts starforge under an OS sandbox sets
-// STARFORGE_CONFINEMENT: runConfined() in confine.mjs passes it to the confined
-// child, bin/starforge-proof.sh sets it on its sandboxed runs, and the command
-// printed by `starforge prove` carries it so a hand-run proof is labelled too.
+// A launcher that starts starreckon under an OS sandbox sets
+// STARRECKON_CONFINEMENT: runConfined() in confine.mjs passes it to the confined
+// child, bin/starreckon-proof.sh sets it on its sandboxed runs, and the command
+// printed by `starreckon prove` carries it so a hand-run proof is labelled too.
 // It is a CLAIM, never evidence: any process can set the variable, and a run
 // genuinely confined by a launcher that did NOT set it records "none". That is
 // why verified is false in every branch — the only proof is the user-run
 // positive control (PROVE-IT.md §1).
 function detectConfinement() {
-  const claimed = process.env.STARFORGE_CONFINEMENT;
+  const claimed = process.env.STARRECKON_CONFINEMENT;
   if (claimed === "sandbox-exec" || claimed === "netns") {
     return {
       mode: claimed,
       verified: false,
       detail:
-        "claimed via STARFORGE_CONFINEMENT by whatever launched this process; any process can set that variable, so this is an unverified self-report — the proof is the user-run positive control (see `starforge-cli prove`)",
+        "claimed via STARRECKON_CONFINEMENT by whatever launched this process; any process can set that variable, so this is an unverified self-report — the proof is the user-run positive control (see `starreckon prove`)",
     };
   }
   if (claimed) {
@@ -86,19 +86,19 @@ function detectConfinement() {
       mode: "none",
       verified: false,
       detail:
-        "STARFORGE_CONFINEMENT was set to an unrecognized value and ignored (only sandbox-exec and netns are recognized) — treat this run as unconfined unless you ran the positive control yourself",
+        "STARRECKON_CONFINEMENT was set to an unrecognized value and ignored (only sandbox-exec and netns are recognized) — treat this run as unconfined unless you ran the positive control yourself",
     };
   }
   return {
     mode: "none",
     verified: false,
     detail:
-      "no OS confinement claimed: either this run was unconfined, or it was confined by a launcher that did not set STARFORGE_CONFINEMENT. Only the in-process tripwire was active, and a tripwire is not a security boundary",
+      "no OS confinement claimed: either this run was unconfined, or it was confined by a launcher that did not set STARRECKON_CONFINEMENT. Only the in-process tripwire was active, and a tripwire is not a security boundary",
   };
 }
 
 // Begin a run log. opts.dir / opts.srcDir / opts.counterFile exist so tests
-// never touch the real ~/.starforge. Internal fields (_dir, recorder, …) are
+// never touch the real ~/.starreckon. Internal fields (_dir, recorder, …) are
 // non-enumerable so they stay out of the serialized JSON.
 export function startAudit(
   argv,
@@ -217,7 +217,7 @@ function writeRunCounter(file, index) {
           schema: 1,
           last_run_index: cur === null ? index : Math.max(cur, index),
           updated_at: new Date().toISOString(),
-          note: "Highest run_index starforge has written. Kept outside the audit dir so deleting that dir leaves a visible gap. Anyone who can write the audit dir can rewrite this file too.",
+          note: "Highest run_index starreckon has written. Kept outside the audit dir so deleting that dir leaves a visible gap. Anyone who can write the audit dir can rewrite this file too.",
         },
         null,
         2
@@ -435,7 +435,7 @@ export function resetAudit(dir = AUDIT_DIR, { counterFile = null, reason = null 
       removed,
     },
     note:
-      "This is the genesis of a new audit chain. The logs listed in audit_reset were DELETED by `starforge-cli --reset-audit`; their sha256 is kept so a copy can be matched, their contents are gone. The run counter was not rolled back.",
+      "This is the genesis of a new audit chain. The logs listed in audit_reset were DELETED by `starreckon --reset-audit`; their sha256 is kept so a copy can be matched, their contents are gone. The run counter was not rolled back.",
   };
 
   let ts = Date.parse(at);
@@ -572,7 +572,7 @@ export function verifyAuditChain(dir = AUDIT_DIR, { counterFile = null } = {}) {
             rec.removed_index_last === log.run_index - 1);
         if (accounts) {
           notes.push(
-            `the audit history was RESET at ${rec.at ?? "an unrecorded time"}: \`starforge-cli --reset-audit\` DELETED ${describeRemovedLogs(rec)}, and this genesis log records the sha256 of each one. Reason given: ${rec.reason ? `"${rec.reason}"` : "none"}. The run counter was not rolled back, so numbering continues at ${log.run_index}. The deleted logs are gone; this record is a claim, not a copy of them`
+            `the audit history was RESET at ${rec.at ?? "an unrecorded time"}: \`starreckon --reset-audit\` DELETED ${describeRemovedLogs(rec)}, and this genesis log records the sha256 of each one. Reason given: ${rec.reason ? `"${rec.reason}"` : "none"}. The run counter was not rolled back, so numbering continues at ${log.run_index}. The deleted logs are gone; this record is a claim, not a copy of them`
           );
         } else {
           breaks.push({
@@ -580,7 +580,7 @@ export function verifyAuditChain(dir = AUDIT_DIR, { counterFile = null } = {}) {
             file: maskPath(join(dir, f)),
             reason: wellFormed
               ? `history starts at run_index ${log.run_index} and carries an audit_reset record, but that record only accounts for logs up to index ${rec.removed_index_last} — ${log.run_index - 1 - rec.removed_index_last} run log(s) are missing that the reset does not explain`
-              : `history starts at run_index ${log.run_index}, not 0 — ${log.run_index} earlier run log(s) are missing (the audit dir was deleted or replaced while audit-counter.json survived). If you meant to retire them, \`starforge-cli --reset-audit\` records the deletion here instead of leaving this gap`,
+              : `history starts at run_index ${log.run_index}, not 0 — ${log.run_index} earlier run log(s) are missing (the audit dir was deleted or replaced while audit-counter.json survived). If you meant to retire them, \`starreckon --reset-audit\` records the deletion here instead of leaving this gap`,
           });
         }
       }

@@ -52,7 +52,7 @@ function report(home, tz) {
   const r = spawnSync(process.execPath,
     [join(ROOT, "src", "cli.mjs"), "--yes", "--no-pace", "--json", "--profile"],
     { encoding: "utf8", env: { ...process.env, HOME: home, TZ: tz, NO_COLOR: "1" } });
-  const dir = join(home, ".starforge", "reports");
+  const dir = join(home, ".starreckon", "reports");
   const f = readdirSync(dir).find((n) => n.startsWith("expanded-"));
   assert.ok(f, `no report: ${r.stdout}${r.stderr}`);
   return JSON.parse(readFileSync(join(dir, f), "utf8"));

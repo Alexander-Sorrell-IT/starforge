@@ -8,7 +8,7 @@
 // its story to a log nobody reads, so "what you saw in the terminal" cannot
 // police what it collected.
 //
-// So this walks ~/.starforge — the complete set of everything starforge retains
+// So this walks ~/.starreckon — the complete set of everything starreckon retains
 // — and reports the VOCABULARY of what is in there: every JSON key path, the
 // longest free-text string anywhere, and the size and hash of every file. Not a
 // promise that there is no transcript text; the actual list of what there is,
@@ -25,7 +25,7 @@ import { existsSync, readdirSync, readFileSync, statSync, lstatSync } from "node
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
 
-export const DATA_DIR = () => join(homedir(), ".starforge");
+export const DATA_DIR = () => join(homedir(), ".starreckon");
 
 // Above this, a string stops being a label/number and starts being prose. Same
 // threshold verify.mjs uses for its transcript heuristic, on purpose: two checks
@@ -248,7 +248,7 @@ const B = "\x1b[1m", D = "\x1b[2m", C = "\x1b[36m", G = "\x1b[32m", Y = "\x1b[33
 export function renderReceipt(r, { color = true } = {}) {
   const c = (code, s) => (color ? `${code}${s}${RS}` : s);
   const out = [];
-  out.push(c(B + C, "starforge receipt") + c(D, " — everything this tool has kept about you"));
+  out.push(c(B + C, "starreckon receipt") + c(D, " — everything this tool has kept about you"));
   out.push("");
   if (!r.exists) {
     out.push("no data directory yet — nothing has been retained.");
@@ -315,6 +315,6 @@ export function renderReceipt(r, { color = true } = {}) {
   out.push(c(D, "this is derived from the bytes on your disk, not from what the code"));
   out.push(c(D, "claims. it accounts for what was KEPT; the kernel proof accounts for"));
   out.push(c(D, "what was SENT. you need both, and neither is this tool's word:"));
-  out.push(`  ${c(C, "starforge-cli prove")}${c(D, "   the egress half, run by you")}`);
+  out.push(`  ${c(C, "starreckon prove")}${c(D, "   the egress half, run by you")}`);
   return out.join("\n");
 }

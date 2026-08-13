@@ -34,7 +34,7 @@ function fixture() {
     JSON.stringify({
       started_at: "2026-08-01T00:00:00.000Z",
       reads: { claude_code: 10, codex: 2 },
-      writes: [{ path: "~/.starforge/snapshots/2026-08.json", sha256: "ab", bytes: 100 }],
+      writes: [{ path: "~/.starreckon/snapshots/2026-08.json", sha256: "ab", bytes: 100 }],
       argv: ["--yes"],
     })
   );

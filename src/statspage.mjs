@@ -283,7 +283,7 @@ export function renderStatsPage(input = {}) {
   const rec = p.records ?? {};
   const mod = p.models ?? {};
 
-  const title = name ? `${name} · starforge` : "starforge · stats";
+  const title = name ? `${name} · starreckon` : "starreckon · stats";
   const today = (p.generated_at ?? new Date().toISOString()).slice(0, 10);
 
   // -- S1 hero ---------------------------------------------------------------

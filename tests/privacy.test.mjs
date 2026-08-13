@@ -1,6 +1,6 @@
 // Privacy-of-our-own-output regression tests.
 //
-// These lock the four red-team findings about what starforge WRITES:
+// These lock the four red-team findings about what starreckon WRITES:
 //   1. HIGH — `--accounts` / `--join-fleet` put the raw OAuth email address in
 //      expanded-*.json and in the shareable HTML stats page.
 //   2. MEDIUM — the transcript heuristic ran on .json only, so the ~57 KB stats
@@ -12,7 +12,7 @@
 //      bypassed maskPath.
 //
 // Everything here runs against temp dirs or the real cli.mjs under a throwaway
-// HOME. Nothing reads or writes the developer's own ~/.starforge.
+// HOME. Nothing reads or writes the developer's own ~/.starreckon.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -109,16 +109,16 @@ test("findEmail reports the first hit with its offset and carries no lastIndex s
 test("maskText masks a stack trace — the crash output people paste into bug reports", () => {
   const home = process.env.HOME || "";
   const stack =
-    `Error: ENOTDIR: not a directory, mkdir '${home}/.starforge/reports'\n` +
+    `Error: ENOTDIR: not a directory, mkdir '${home}/.starreckon/reports'\n` +
     `    at Object.mkdirSync (node:fs:1372:26)\n` +
-    `    at main (file://${home}/.npm/_npx/abc/node_modules/starforge-cli/src/cli.mjs:376:5)`;
+    `    at main (file://${home}/.npm/_npx/abc/node_modules/starreckon/src/cli.mjs:376:5)`;
   const out = maskText(stack);
   assert.ok(home.length > 1, "test needs a HOME to mask");
   assert.ok(!out.includes(home), `raw home survived the mask:\n${out}`);
-  assert.ok(out.includes("~/.starforge/reports"));
+  assert.ok(out.includes("~/.starreckon/reports"));
 });
 
-// Found by re-running the leak hunt against the REAL ~/.starforge after the
+// Found by re-running the leak hunt against the REAL ~/.starreckon after the
 // four reported findings were fixed: an audit log there contained the literal
 // username, because the path that carried it was MANGLED —
 // ".../-Users-<name>-.../token-usage" — and slash-delimited masking never saw
@@ -358,7 +358,7 @@ function runCli(home, argv) {
 }
 
 const outputsOf = (home) => {
-  const dir = join(home, ".starforge", "reports");
+  const dir = join(home, ".starreckon", "reports");
   if (!existsSync(dir)) return [];
   return readdirSync(dir).map((f) => ({ name: f, body: readFileSync(join(dir, f), "utf8") }));
 };
@@ -396,7 +396,7 @@ test("end to end: --accounts --json --page writes NO address; the terminal still
   assert.match(r.stdout, /hostname/);
 
   // and the scrub agrees: our own output dir is clean, findings and all
-  const scrub = outputScrub(join(home, ".starforge"), { home, user: "" });
+  const scrub = outputScrub(join(home, ".starreckon"), { home, user: "" });
   assert.deepEqual(scrub.findings, []);
   assert.equal(scrub.pass, true);
   assert.match(scrub.notes.join(" "), /scanned \d+ file/);
@@ -421,7 +421,7 @@ test("end to end: --show-accounts writes the raw address, and verify then FAILS 
 
   // The opt-in is not a licence to stay quiet: the scrub reports the addresses.
   // Asserted in-process, so this does not depend on verify's OTHER checks.
-  const scrub = outputScrub(join(home, ".starforge"), { home, user: "" });
+  const scrub = outputScrub(join(home, ".starreckon"), { home, user: "" });
   assert.equal(scrub.pass, false);
   assert.ok(
     scrub.findings.some((f) => /contains an email address/.test(f)),
@@ -540,7 +540,7 @@ test("end to end: --no-projects removes the label from EVERY file it writes", (t
   const expanded = files.find((f) => f.name.startsWith("expanded-"));
   assert.ok(expanded.body.includes(projectPseudonym(PROJECT)));
   // snapshots too — they are written on every run
-  const snapDir = join(home, ".starforge", "snapshots");
+  const snapDir = join(home, ".starreckon", "snapshots");
   for (const s of readdirSync(snapDir))
     assert.ok(!readFileSync(join(snapDir, s), "utf8").includes(PROJECT));
 
@@ -557,11 +557,11 @@ test("end to end: --no-projects removes the label from EVERY file it writes", (t
 test("a crash prints a MASKED stack — no absolute home path in the trace", (t) => {
   const home = fakeHome();
   t.after(() => rmSync(home, { recursive: true, force: true }));
-  // make ~/.starforge/reports a FILE so mkdirSync throws ENOTDIR with the
+  // make ~/.starreckon/reports a FILE so mkdirSync throws ENOTDIR with the
   // absolute path in both message and stack, on the one write path that is not
   // wrapped in a try/catch.
-  mkdirSync(join(home, ".starforge"), { recursive: true });
-  writeFileSync(join(home, ".starforge", "reports"), "not a directory");
+  mkdirSync(join(home, ".starreckon"), { recursive: true });
+  writeFileSync(join(home, ".starreckon", "reports"), "not a directory");
 
   const r = runCli(home, ["--yes", "--no-providers", "--json"]);
   assert.equal(r.status, 1, `expected a crash: ${r.stdout}${r.stderr}`);
@@ -570,7 +570,7 @@ test("a crash prints a MASKED stack — no absolute home path in the trace", (t)
     !r.stderr.includes(home),
     `the raw home path reached stderr:\n${r.stderr}`
   );
-  assert.ok(r.stderr.includes("~/.starforge/reports"), r.stderr);
+  assert.ok(r.stderr.includes("~/.starreckon/reports"), r.stderr);
 });
 
 // ---------------------------------------------------------------------------

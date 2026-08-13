@@ -33,10 +33,10 @@ import { armTripwire, tripwireStatus, TRIPWIRE_LIMITS } from "../src/tripwire.mj
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // The audit dir is a SUBDIR of a fresh temp root, because the run counter
-// deliberately lives one level above it (~/.starforge/audit-counter.json). Each
+// deliberately lives one level above it (~/.starreckon/audit-counter.json). Each
 // test therefore gets its own isolated counter file too.
 function freshDir() {
-  return join(mkdtempSync(join(tmpdir(), "starforge-audit-")), "audit");
+  return join(mkdtempSync(join(tmpdir(), "starreckon-audit-")), "audit");
 }
 
 const logNames = (dir) =>
@@ -409,27 +409,27 @@ test("a tripwire hit is on DISK at the moment of the hit — before any finishAu
 
 test("the confinement field records the launcher's claim, always as unverified", () => {
   const dir = freshDir();
-  const prev = process.env.STARFORGE_CONFINEMENT;
+  const prev = process.env.STARRECKON_CONFINEMENT;
   try {
-    process.env.STARFORGE_CONFINEMENT = "sandbox-exec";
+    process.env.STARRECKON_CONFINEMENT = "sandbox-exec";
     const claimed = startAudit([], { dir }).confinement;
     assert.equal(claimed.mode, "sandbox-exec");
     assert.equal(claimed.verified, false);
     assert.match(claimed.detail, /unverified self-report/i);
 
-    process.env.STARFORGE_CONFINEMENT = "definitely-a-sandbox";
+    process.env.STARRECKON_CONFINEMENT = "definitely-a-sandbox";
     const bogus = startAudit([], { dir }).confinement;
     assert.equal(bogus.mode, "none", "an unrecognized value is not a confinement claim");
     assert.match(bogus.detail, /unrecognized/i);
 
-    delete process.env.STARFORGE_CONFINEMENT;
+    delete process.env.STARRECKON_CONFINEMENT;
     const none = startAudit([], { dir }).confinement;
     assert.equal(none.mode, "none");
     // "none" must not be read as "definitely unconfined"
-    assert.match(none.detail, /did not set STARFORGE_CONFINEMENT/);
+    assert.match(none.detail, /did not set STARRECKON_CONFINEMENT/);
   } finally {
-    if (prev === undefined) delete process.env.STARFORGE_CONFINEMENT;
-    else process.env.STARFORGE_CONFINEMENT = prev;
+    if (prev === undefined) delete process.env.STARRECKON_CONFINEMENT;
+    else process.env.STARRECKON_CONFINEMENT = prev;
   }
 });
 

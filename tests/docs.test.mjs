@@ -21,7 +21,7 @@ const PKG = JSON.parse(read("package.json"));
 // than prose, which is allowed to *warn about* the wrong commands.
 // Blocks explicitly tagged as non-shell are OUTPUT, not instructions. The docs
 // show sample terminal output and a QR payload that legitimately begin with the
-// word "starforge" at column 0, and treating those as commands made the
+// word "starreckon" at column 0, and treating those as commands made the
 // bare-name guard cry wolf — which is how a real guard ends up deleted. A block
 // with NO language tag is still treated as a command block, because that is the
 // ambiguous case and the one worth being strict about.
@@ -43,56 +43,23 @@ function codeBlockLines(md) {
   return out;
 }
 
-// ---- finding: `npx starforge` runs a stranger's package ---------------------
+// ---- package name + bin check ------------------------------------------------
 
-test("package is named starforge-cli, and its bin matches", () => {
-  assert.equal(PKG.name, "starforge-cli");
-  assert.deepEqual(Object.keys(PKG.bin), ["starforge-cli"]);
+test("package is named starreckon, and its bin matches", () => {
+  assert.equal(PKG.name, "starreckon");
+  // Both bin aliases must point to the same entry point.
+  assert.ok(PKG.bin["starreckon"], "starreckon bin entry must exist");
+  assert.ok(PKG.bin["starreckon"], "starreckon bin entry must exist");
+  assert.equal(PKG.bin["starreckon"], PKG.bin["starreckon"], "both bin entries must point to the same file");
 });
 
-test("no copy-pastable command in the docs invokes the squatted bare name", () => {
-  // The risk is RUNNING the bare name: `npx starforge` fetches the unrelated
-  // 2017 package, and `starforge verify` implies a binary that isn't ours. So
-  // match command POSITION, not the token anywhere on the line — now that the
-  // repo is public the docs legitimately contain the word in a clone URL and in
-  // `cd starforge`, and neither of those executes anything. A blanket token
-  // search would fail on those and tempt the next person to delete the guard.
-  const bareName =
-    /(?:^\s*(?:\$\s*)?|\bnpx\s+|\bnpm\s+exec\s+)starforge(?![-\w])/;
+// starreckon IS our package — `npx starreckon` is the correct install command.
+// The old "squatted bare name" guards applied when the npm name was starforge-cli
+// and the bare `starforge` name was someone else's 2017 package. Those guards
+// are retired: starreckon is ours, `npx starreckon` is correct.
+test("docs name the published package with no stale pre-publish claims", () => {
   for (const [name, md] of [["README.md", README], ["PROVE-IT.md", PROVE]]) {
-    for (const line of codeBlockLines(md)) {
-      assert.ok(
-        !bareName.test(line),
-        `${name}: copy-pastable line invokes the bare name \`starforge\`: ${line}`
-      );
-    }
-  }
-});
-
-test("prose that mentions the bare npm name marks it as NOT this tool", () => {
-  for (const [name, md] of [["README.md", README], ["PROVE-IT.md", PROVE]]) {
-    for (const line of md.split("\n")) {
-      if (!/npx\s+starforge(?!-cli)/.test(line)) continue;
-      assert.ok(
-        /not this tool|don't run it|stranger/i.test(line),
-        `${name}: mentions \`npx starforge\` without warning it is not this tool: ${line}`
-      );
-    }
-  }
-});
-
-// starforge-cli IS published now, so the old "must disclose it is unpublished"
-// guard is retired rather than softened — a stale disclosure is its own kind of
-// false claim. What survives is the half that never changes: the BARE name is
-// somebody else's package, so the docs must keep saying which name to install.
-test("docs name the published package, and keep warning about the bare name", () => {
-  for (const [name, md] of [["README.md", README], ["PROVE-IT.md", PROVE]]) {
-    assert.match(md, /starforge-cli/, `${name} must name the published package`);
-    // Deliberately matches the SHAPE of the claim, not the exact wording I
-    // happened to write. The first version of this guard listed literal
-    // phrases, and PROVE-IT.md's "Neither the npm package nor the GitHub repo
-    // is published yet" walked straight past it — a stale claim surviving the
-    // very test written to kill stale claims.
+    assert.match(md, /starreckon/, `${name} must name the published package`);
     for (const stale of [
       /\bis(n't| not)? published yet\b/i,
       /\bnot (yet )?(published|on npm)\b/i,
@@ -105,21 +72,15 @@ test("docs name the published package, and keep warning about the bare name", ()
       assert.doesNotMatch(
         md,
         stale,
-        `${name}: starforge-cli IS published — a pre-publish claim matching ${stale} is stale and must be removed, not reworded`
+        `${name}: starreckon IS published — a pre-publish claim matching ${stale} is stale and must be removed`
       );
     }
   }
-  assert.match(
-    README,
-    /registered on npm in 2017|unrelated maintainer/i,
-    "README must keep explaining that the bare name is someone else's package"
-  );
 });
 
 test("the CLI's own usage header uses the real package name", () => {
   const header = CLI.split("import {")[0];
-  assert.ok(!/npx\s+starforge(?!-cli)/.test(header) || /NOT this tool/.test(header));
-  assert.match(header, /starforge-cli --yes/);
+  assert.match(header, /starreckon --yes/);
 });
 
 // ---- finding: banner asserts what the run cannot know -----------------------
@@ -130,12 +91,12 @@ test("banner does not assert 'Nothing leaves this machine'", () => {
     "the banner must not assert unconditionally what the same run's audit log records as unverified"
   );
   assert.match(CLI, /no process can prove that about itself/);
-  assert.match(CLI, /starforge-cli prove/);
+  assert.match(CLI, /starreckon prove/);
 });
 
 test("no headline asserts unconditional no-egress", () => {
   // Same class of overclaim as the banner: the tool cannot prove this about
-  // itself, and syncing ~/.starforge or --join-fleet is deliberate egress.
+  // itself, and syncing ~/.starreckon or --join-fleet is deliberate egress.
   const phrase = /everything stays on your machine/i;
   assert.ok(!phrase.test(README), "README tagline must not assert no-egress unconditionally");
   assert.ok(!phrase.test(PKG.description), "package.json description must not either");
@@ -255,26 +216,26 @@ test("commands that need root are marked as needing root", () => {
 
 // ---- finding: undocumented prove subcommand + scripted proof ---------------
 
-test("`prove` and bin/starforge-proof.sh are documented in both docs", () => {
+test("`prove` and bin/starreckon-proof.sh are documented in both docs", () => {
   for (const [name, md] of [["README.md", README], ["PROVE-IT.md", PROVE]]) {
-    assert.match(md, /bin\/starforge-proof\.sh/, `${name} must document the scripted proof`);
+    assert.match(md, /bin\/starreckon-proof\.sh/, `${name} must document the scripted proof`);
     assert.match(md, /\bprove\b/, `${name} must document the prove subcommand`);
   }
-  assert.ok(existsSync(root + "bin/starforge-proof.sh"));
+  assert.ok(existsSync(root + "bin/starreckon-proof.sh"));
 });
 
 // Both halves are live now — the repo is public and the package is published —
 // so this guard has flipped again, to the one thing that is still permanently
-// dangerous: a copyable `npx starforge` (bare name) runs an unrelated 2017
+// dangerous: a copyable `npx starreckon` (bare name) runs an unrelated 2017
 // package. Every copyable npx line must carry the -cli suffix.
-test("every copyable npx line installs starforge-cli, never the bare name", () => {
+test("every copyable npx line installs starreckon, never the bare name", () => {
   for (const [name, md] of [["README.md", README], ["PROVE-IT.md", PROVE]]) {
     for (const line of codeBlockLines(md)) {
       const m = /^\s*(?:\$\s*)?npx\s+(?:--yes\s+)?(\S+)/.exec(line);
       if (!m) continue;
       assert.ok(
-        /^starforge-cli(@|$)/.test(m[1]),
-        `${name}: a copyable line npx-es "${m[1]}" — it must be starforge-cli: ${line.trim()}`
+        /^starreckon(@|$)/.test(m[1]),
+        `${name}: a copyable line npx-es "${m[1]}" — it must be starreckon: ${line.trim()}`
       );
     }
   }
@@ -293,7 +254,7 @@ test("package.json files[] ships everything the docs reference", () => {
 });
 
 test("package.json points at the project's home", () => {
-  assert.match(PKG.repository.url, /github\.com\/Alexander-Sorrell-IT\/starforge/);
+  assert.match(PKG.repository.url, /github\.com\/Alexander-Sorrell-IT\/starreckon/);
   assert.ok(PKG.homepage && PKG.bugs?.url);
 });
 
@@ -306,19 +267,14 @@ test("package.json points at the project's home", () => {
 
 const lineOf = (md, needle) => md.split("\n").findIndex((l) => l.includes(needle));
 
-test("the README leads with the differentiator, not the npm-naming warning", () => {
+test("the README leads with the differentiator, not the install section", () => {
   const diff = lineOf(README, "npx standout");
   const install = lineOf(README, "## Install");
-  const squat = lineOf(README, "resure");
   assert.ok(diff >= 0, "README must name what it is being compared against");
-  assert.ok(install >= 0 && squat >= 0, "README must still carry the Install/squat section");
+  assert.ok(install >= 0, "README must have an Install section");
   assert.ok(
     diff < install,
     `the standout comparison (line ${diff + 1}) must come before Install (line ${install + 1})`
-  );
-  assert.ok(
-    diff < squat,
-    `the standout comparison (line ${diff + 1}) must come before the squat warning (line ${squat + 1})`
   );
   assert.ok(
     diff <= 40,
@@ -326,17 +282,16 @@ test("the README leads with the differentiator, not the npm-naming warning", () 
   );
 });
 
-test("the npm-squat warning is kept — demoted, not deleted, and still adjacent to Usage", () => {
-  // HONESTY: the warning is true and load-bearing. Moving it is fine; losing it
-  // is not, and it must sit where someone about to type a command will see it.
-  assert.match(README, /resure/, "the squatting maintainer must still be named");
-  assert.match(README, /don't run it/i, "the README must still say not to run the bare name");
+test("Install section is present and sits above Usage", () => {
+  // starreckon IS our npm package — no squat warning needed.
+  // The section just needs to exist and sit above Usage.
   const install = lineOf(README, "## Install");
   const usage = lineOf(README, "## Usage");
+  assert.ok(install >= 0, "README must have an ## Install section");
   assert.ok(install < usage, "Install must sit above Usage");
   assert.ok(
     usage - install <= 20,
-    `Install must be compressed and adjacent to Usage; it spans ${usage - install} lines`
+    `Install must be compact and adjacent to Usage; it spans ${usage - install} lines`
   );
 });
 
@@ -373,10 +328,10 @@ test("README states publication status and how to run it today, up top", () => {
   // to be able to see BOTH at the top — the install name because that is what
   // they will type, and the repo because reading the source before running it
   // is the entire pitch.
-  assert.match(head, /starforge-cli/, "the Status line must name the published package");
+  assert.match(head, /starreckon/, "the Status line must name the published package");
   assert.match(
     head,
-    /github\.com\/Alexander-Sorrell-IT\/starforge/,
+    /github\.com\/Alexander-Sorrell-IT\/starreckon/,
     "the Status line must name where the source actually is"
   );
   for (const stale of [/not pushed yet/i, /not published to npm yet/i]) {
@@ -432,7 +387,7 @@ test("PROVE-IT §4 matches whether the CLI actually calls runConfined()", () => 
     );
   }
   // Either way, the strong form stays the headline.
-  assert.match(PROVE, /bin\/starforge-proof\.sh/);
+  assert.match(PROVE, /bin\/starreckon-proof\.sh/);
 });
 
 test("PROVE-IT states the three-way exit-code contract verify itself prints", () => {

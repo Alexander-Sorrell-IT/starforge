@@ -2,9 +2,10 @@
   "note": "SHA-256 of the two files the static scan allowlists. verify FAILS if either file changes without this manifest being regenerated on purpose: node src/verify.mjs --update-pins",
   "algorithm": "sha256",
   "files": {
-    "tripwire.mjs": "e5d8169e04cc8406363d37bc89d5e49cd4190cce9e4d068c646649f41f95b4bd",
-    "confine.mjs": "f7a0e2219e2abc8e494c5a3091bab68b6860e6f1be7d07a878dd9d76c17d1578",
-    "serve.mjs": "596d600911ccd75200c01c03f5fe8b4c39502b1ae8311f7f468e2630f8dd4d03",
-    "search.mjs": "b0f540247e6aaf3744dac0b870d8ad554dc45b5ffc27cc91c975543fe15ebfa7"
+    "tripwire.mjs": "8d3ef1c6d85450eff8a818c45ee0a0871d5dab1da858fddbe0fc64efb478d7d9",
+    "confine.mjs": "d87b7c2524b972d5e8e47828ad98eb59fc23c8def5bb8a26f6902df9b3659efb",
+    "serve.mjs": "a2377a6c6f9bde67330f1dbc32ee0a9728af5a06d505aac2bd1e29701b4a2327",
+    "search.mjs": "eaa6122f011ece99bd3908df829bfa2062deaaf657f23d2b672fb0685bef090a",
+    "cli.mjs": "3c64801a05cf109c516a194cf4cc433f00e740bb42f67616c60b054c308726b2"
   }
 }

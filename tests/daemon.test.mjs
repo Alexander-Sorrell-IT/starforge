@@ -1,7 +1,7 @@
 // The scheduled re-scan.
 //
 // This is the one feature in the package that touches anything outside
-// ~/.starforge, so it gets the strictest test in the suite: it must write a
+// ~/.starreckon, so it gets the strictest test in the suite: it must write a
 // schedule file and NOTHING else, and it must never activate itself. A
 // privacy-first tool that silently registers a background job which reads your
 // disk every month would be arguing against its own pitch — so "does not
@@ -44,8 +44,8 @@ test("daemon on writes a schedule file and activates nothing", (t) => {
 
   const file =
     platform() === "darwin"
-      ? join(home, "Library", "LaunchAgents", "work.starforge.scan.plist")
-      : join(home, ".config", "systemd", "user", "starforge-scan.timer");
+      ? join(home, "Library", "LaunchAgents", "work.starreckon.scan.plist")
+      : join(home, ".config", "systemd", "user", "starreckon-scan.timer");
   assert.ok(existsSync(file), `expected a schedule file at ${file}`);
 
   // The load command must be PRINTED, not executed. If this tool ever starts
@@ -59,7 +59,7 @@ test("the scheduled command is the same local scan, with no network flags", (t) 
   const home = fresh();
   t.after(() => rmSync(home, { recursive: true, force: true }));
   run(home, ["daemon", "on"]);
-  const plist = readFileSync(join(home, "Library", "LaunchAgents", "work.starforge.scan.plist"), "utf8");
+  const plist = readFileSync(join(home, "Library", "LaunchAgents", "work.starreckon.scan.plist"), "utf8");
 
   assert.match(plist, /--yes/, "a scheduled run cannot answer prompts");
   assert.match(plist, /--no-wrapped/, "a background run must not render a paced story to nobody");
@@ -85,7 +85,7 @@ test("daemon off removes the file and prints the unload command", (t) => {
   assert.equal(off.status, 0, off.stdout);
   assert.match(off.stdout, /removed/);
   assert.match(off.stdout, /unload|disable/, "must print how to deactivate what may already be loaded");
-  const file = join(home, "Library", "LaunchAgents", "work.starforge.scan.plist");
+  const file = join(home, "Library", "LaunchAgents", "work.starreckon.scan.plist");
   if (platform() === "darwin") assert.ok(!existsSync(file), "the schedule file must be gone");
   // ...and running it twice must not be an error.
   assert.equal(run(home, ["daemon", "off"]).status, 0, "daemon off must be idempotent");
@@ -108,7 +108,7 @@ test("a plain scan never writes a schedule", (t) => {
   const r = run(home, ["--yes", "--no-providers", "--no-pace"]);
   assert.equal(r.status, 0, r.stdout);
   assert.ok(
-    !existsSync(join(home, "Library", "LaunchAgents", "work.starforge.scan.plist")),
+    !existsSync(join(home, "Library", "LaunchAgents", "work.starreckon.scan.plist")),
     "scanning must never register a background job"
   );
 });

@@ -21,7 +21,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { encodeQR, qrToSvg, qrToTerminal } from "../src/qr.mjs";
 
-const URL = "https://github.com/Alexander-Sorrell-IT/starforge";
+const URL = "https://github.com/Alexander-Sorrell-IT/starreckon";
 
 test("finder patterns sit in exactly the three corners", () => {
   // If these are wrong nothing can even locate the symbol.
@@ -129,13 +129,13 @@ test("a payload too big for level M falls back to L instead of refusing", () => 
   assert.equal(short.level, "M", "short payloads must keep the stronger error correction");
 
   const real = [
-    "starforge skill star 23.7/25 (MASTERWORK)",
+    "starreckon skill star 23.7/25 (MASTERWORK)",
     "firs 5 engi 5 codi 4.7 outs 5 tena 4",
     "153 sessions, 344h active, 29 days",
     "5.7B tokens, 99% cached",
     "longest streak 16d",
     "this code carries the numbers themselves, not a link to them.",
-    "https://github.com/Alexander-Sorrell-IT/starforge",
+    "https://github.com/Alexander-Sorrell-IT/starreckon",
   ].join("\n");
   assert.ok(real.length > 213, "the fixture must exceed the level-M ceiling to be a real test");
   const big = encodeQR(real);
@@ -157,7 +157,7 @@ test("the share payload always fits the encoder", async () => {
       longest_streak_days: 3650 },
   ];
   for (const agg of extremes) {
-    const text = sharePayload([5, 5, 5, 5, 5], agg, "https://github.com/Alexander-Sorrell-IT/starforge");
+    const text = sharePayload([5, 5, 5, 5, 5], agg, "https://github.com/Alexander-Sorrell-IT/starreckon");
     assert.ok(text.length <= MAX_BYTES, `payload is ${text.length} bytes, over the ${MAX_BYTES} ceiling`);
     assert.doesNotThrow(() => encodeQR(text), "the share payload must always encode");
   }

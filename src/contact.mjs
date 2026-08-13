@@ -1,8 +1,8 @@
 // Contact info — the optional block shown in the QR and on the Share card.
 //
-// Storage: ~/.starforge/contact.json. That file is NEVER written by a scan or
+// Storage: ~/.starreckon/contact.json. That file is NEVER written by a scan or
 // by any automatic process — only by the [C] menu in the terminal, or by the
-// user editing it directly. That keeps the privacy contract intact: starforge
+// user editing it directly. That keeps the privacy contract intact: starreckon
 // never collects contact info, you opt in by creating the file.
 //
 // The fields are deliberate: github, email, phone, website, linkedin, twitter.
@@ -49,11 +49,11 @@ export const KEYS = {
 };
 
 export function contactPath(home) {
-  return join(home ?? homedir(), ".starforge", "contact.json");
+  return join(home ?? homedir(), ".starreckon", "contact.json");
 }
 
 /**
- * Read ~/.starforge/contact.json. Returns {} when absent or unparseable.
+ * Read ~/.starreckon/contact.json. Returns {} when absent or unparseable.
  * Only the known FIELDS keys are kept — unknown keys from manual edits are
  * silently dropped rather than propagated (they would show up in the QR as
  * unrecognised garbage, and nothing in the menu knows how to display them).
@@ -77,7 +77,7 @@ export function readContact(home) {
 }
 
 /**
- * Write a contact object back to ~/.starforge/contact.json.
+ * Write a contact object back to ~/.starreckon/contact.json.
  * Passing an empty object (or one with no non-empty fields) deletes the file.
  * Only FIELDS keys are written — anything else is stripped.
  */
@@ -92,7 +92,7 @@ export function writeContact(home, obj) {
     if (existsSync(file)) unlinkSync(file);
     return;
   }
-  mkdirSync(join(home ?? homedir(), ".starforge"), { recursive: true });
+  mkdirSync(join(home ?? homedir(), ".starreckon"), { recursive: true });
   writeFileSync(file, JSON.stringify(clean, null, 2) + "\n", "utf8");
 }
 

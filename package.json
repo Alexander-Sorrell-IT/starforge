@@ -1,10 +1,11 @@
 {
-  "name": "starforge-cli",
+  "name": "starreckon",
   "version": "0.14.0",
   "description": "Privacy-first developer wrapped: scans your local AI-coding session logs (Claude Code, Codex, Cowork), redacts secrets and masks paths BEFORE anything is written, keeps rolling monthly snapshots for longitudinal velocity, and renders your skill star live in the terminal. No network code on the scan path \u2014 and PROVE-IT.md shows you how to have the kernel confirm it rather than taking the claim on faith.",
   "type": "module",
   "bin": {
-    "starforge-cli": "src/cli.mjs"
+    "starreckon": "src/cli.mjs",
+    "starreckon": "src/cli.mjs"
   },
   "main": "./src/cli.mjs",
   "files": [
@@ -17,11 +18,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Alexander-Sorrell-IT/starforge.git"
+    "url": "git+https://github.com/Alexander-Sorrell-IT/starreckon.git"
   },
-  "homepage": "https://github.com/Alexander-Sorrell-IT/starforge#readme",
+  "homepage": "https://github.com/Alexander-Sorrell-IT/starreckon#readme",
   "bugs": {
-    "url": "https://github.com/Alexander-Sorrell-IT/starforge/issues"
+    "url": "https://github.com/Alexander-Sorrell-IT/starreckon/issues"
   },
   "scripts": {
     "start": "node src/cli.mjs",

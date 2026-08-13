@@ -34,11 +34,11 @@ import { detectConfinement } from "../src/confine.mjs";
 
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = join(PKG_ROOT, "src", "cli.mjs");
-const PROOF = join(PKG_ROOT, "bin", "starforge-proof.sh");
+const PROOF = join(PKG_ROOT, "bin", "starreckon-proof.sh");
 const tmp = (p = "sf-blocker-") => mkdtempSync(join(tmpdir(), p));
 
 const newestLog = (home) => {
-  const dir = join(home, ".starforge", "audit");
+  const dir = join(home, ".starreckon", "audit");
   if (!existsSync(dir)) return null;
   const files = readdirSync(dir).filter((f) => /^run-.*\.json$/.test(f)).sort();
   if (!files.length) return null;
@@ -59,7 +59,7 @@ test("a machine with no AI-coding logs exits 0 and says so — it is not a failu
   assert.equal(
     r.status,
     0,
-    `having nothing to scan must not be an error (bin/starforge-proof.sh gates its verdict on this):\n${r.stdout}${r.stderr}`
+    `having nothing to scan must not be an error (bin/starreckon-proof.sh gates its verdict on this):\n${r.stdout}${r.stderr}`
   );
   assert.match(r.stdout, /No AI-coding session logs found/);
   assert.match(r.stdout, /not a failure/i);
@@ -84,7 +84,7 @@ test("the clean-machine run is logged COMPLETE, not as a crash", (t) => {
   assert.deepEqual(log.writes, []);
 
   // and the chain check must not then announce an INCOMPLETE run to the user
-  const chain = verifyAuditChain(join(home, ".starforge", "audit"));
+  const chain = verifyAuditChain(join(home, ".starreckon", "audit"));
   assert.equal(chain.incomplete_runs, 0, JSON.stringify(chain.notes));
   assert.ok(
     !chain.notes.some((n) => /INCOMPLETE/.test(n)),
@@ -107,7 +107,7 @@ test("an abort_reason never asserts a crash it cannot know about", (t) => {
   const r = spawnSync(process.execPath, ["-e", `
     process.env.HOME = ${JSON.stringify(home)};
     const { startAudit, armAuditExitHook } = await import(${JSON.stringify(join(PKG_ROOT, "src", "audit.mjs"))});
-    const a = startAudit(["--yes"], { dir: ${JSON.stringify(join(home, ".starforge", "audit"))} });
+    const a = startAudit(["--yes"], { dir: ${JSON.stringify(join(home, ".starreckon", "audit"))} });
     armAuditExitHook(a);
     process.exit(7);
   `, "--input-type=module"], { encoding: "utf8", timeout: 60000 });
@@ -125,7 +125,7 @@ test("an abort_reason never asserts a crash it cannot know about", (t) => {
 
 // ---- 1: the headline proof --------------------------------------------------
 
-test("bin/starforge-proof.sh never reports FAIL for a machine that simply has no logs", (t) => {
+test("bin/starreckon-proof.sh never reports FAIL for a machine that simply has no logs", (t) => {
   if (process.platform !== "darwin" || !existsSync("/usr/bin/sandbox-exec")) {
     t.skip("macOS + sandbox-exec only (the script refuses to run elsewhere)");
     return;
@@ -158,8 +158,8 @@ test("verifyCli masks the stack it prints when verify itself crashes", () => {
   const home = homedir();
   const boom = new Error("verify blew up");
   boom.stack =
-    `Error: verify blew up\n    at runVerify (file://${home}/starforge/src/verify.mjs:1:1)\n` +
-    `    at main (${home}/starforge/src/cli.mjs:2:2)`;
+    `Error: verify blew up\n    at runVerify (file://${home}/starreckon/src/verify.mjs:1:1)\n` +
+    `    at main (${home}/starreckon/src/cli.mjs:2:2)`;
 
   const printed = [];
   const realError = console.error;
@@ -182,7 +182,7 @@ test("verifyCli masks the stack it prints when verify itself crashes", () => {
     !out.includes(home),
     `an unmasked absolute stack reached the terminal — this is what gets pasted into bug reports:\n${out}`
   );
-  assert.ok(out.includes("~/starforge/src/verify.mjs"), `the stack must survive masking, not vanish:\n${out}`);
+  assert.ok(out.includes("~/starreckon/src/verify.mjs"), `the stack must survive masking, not vanish:\n${out}`);
 });
 
 // ---- 4: the output scrub ----------------------------------------------------
@@ -250,16 +250,16 @@ test("an empty data dir still reports SKIP, and says the walk covered everything
   assert.doesNotMatch(note, /reports\/snapshots\/audit files yet/);
 });
 
-// ---- 5: "writes only under ~/.starforge" was false whenever --join-fleet ran -
+// ---- 5: "writes only under ~/.starreckon" was false whenever --join-fleet ran -
 
-test("nothing claims starforge writes ONLY under ~/.starforge — --join-fleet writes where you point it", () => {
+test("nothing claims starreckon writes ONLY under ~/.starreckon — --join-fleet writes where you point it", () => {
   const confineNote = detectConfinement().notes.join("\n");
   assert.match(confineNote, /--join-fleet/, "the confinement note still hides the second write target");
   assert.doesNotMatch(confineNote, /writes only under/);
 
-  for (const f of [join(PKG_ROOT, "src", "confine.mjs"), join(PKG_ROOT, "bin", "starforge-proof.sh")]) {
+  for (const f of [join(PKG_ROOT, "src", "confine.mjs"), join(PKG_ROOT, "bin", "starreckon-proof.sh")]) {
     const body = readFileSync(f, "utf8");
-    assert.doesNotMatch(body, /writes\s+(?:reports\s+)?only under ~\/\.starforge/, `${f} still claims it`);
+    assert.doesNotMatch(body, /writes\s+(?:reports\s+)?only under ~\/\.starreckon/, `${f} still claims it`);
     assert.match(body, /--join-fleet/, `${f} never mentions the directory it also writes`);
   }
 });

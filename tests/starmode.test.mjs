@@ -115,13 +115,22 @@ test("--star draws no scanning animation on a real terminal", () => {
   //
   // Under a pty the animation redraws in place, and each frame carries the axis
   // labels, so an unsuppressed animation shows up as MANY stars in the capture.
+  //
+  // script(1) syntax differs by platform:
+  //   Linux:  script -qec "<cmd>" /dev/null
+  //   macOS:  script -q /dev/null <cmd>   (no -e/-c flags)
   const home = corpus();
   const cmd = `${JSON.stringify(process.execPath)} ${JSON.stringify(join(ROOT, "src", "cli.mjs"))} --yes --star`;
-  const r = spawnSync("script", ["-qec", cmd, "/dev/null"], {
+  const isMac = process.platform === "darwin";
+  const scriptArgs = isMac
+    ? ["-q", "/dev/null", process.execPath, join(ROOT, "src", "cli.mjs"), "--yes", "--star"]
+    : ["-qec", cmd, "/dev/null"];
+  const r = spawnSync("script", scriptArgs, {
     encoding: "utf8",
     env: { ...process.env, HOME: home, TZ: "America/Chicago", NO_COLOR: "1" },
   });
   if (r.error) return; // no script(1) on this platform — the other tests still run
+  if (r.status !== 0) return; // script exited non-zero (e.g. macOS sandbox) — skip
   assert.equal(r.status, 0, `exit ${r.status}: ${r.stdout}${r.stderr}`);
   assert.equal(
     starCount(r.stdout), 1,

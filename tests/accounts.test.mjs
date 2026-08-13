@@ -34,7 +34,7 @@ function writeJsonl(path, lines) {
 
 // Build the full fixture home described inline below. Returns its path.
 function buildFixtureHome() {
-  const home = mkdtempSync(join(tmpdir(), "starforge-accounts-"));
+  const home = mkdtempSync(join(tmpdir(), "starreckon-accounts-"));
 
   // --- account A: dir named ".claude" — identity via the HOME quirk file.
   mkdirSync(join(home, ".claude", "projects", "p1", "s1", "subagents"), {
@@ -341,8 +341,8 @@ test("displayAccount pseudonymises the two identifying tiers and only those", ()
 });
 
 test("CLAUDE_CONFIG_DIR is ignored when scanning an overridden home", async (t) => {
-  const home = mkdtempSync(join(tmpdir(), "starforge-accounts-env-"));
-  const other = mkdtempSync(join(tmpdir(), "starforge-accounts-envdir-"));
+  const home = mkdtempSync(join(tmpdir(), "starreckon-accounts-env-"));
+  const other = mkdtempSync(join(tmpdir(), "starreckon-accounts-envdir-"));
   t.after(() => {
     rmSync(home, { recursive: true, force: true });
     rmSync(other, { recursive: true, force: true });
@@ -362,7 +362,7 @@ test("CLAUDE_CONFIG_DIR is ignored when scanning an overridden home", async (t) 
 });
 
 test("empty or absent home yields empty results, never throws", async () => {
-  const home = mkdtempSync(join(tmpdir(), "starforge-accounts-empty-"));
+  const home = mkdtempSync(join(tmpdir(), "starreckon-accounts-empty-"));
   try {
     assert.deepEqual(await discoverAccounts({ home }), []);
     assert.deepEqual(readStatsCache(home), []);
@@ -382,7 +382,7 @@ test("empty or absent home yields empty results, never throws", async () => {
 });
 
 test("accountFor tiers and the ~/.claude quirk", () => {
-  const home = mkdtempSync(join(tmpdir(), "starforge-accounts-acct-"));
+  const home = mkdtempSync(join(tmpdir(), "starreckon-accounts-acct-"));
   try {
     mkdirSync(join(home, ".claude"), { recursive: true });
     mkdirSync(join(home, ".claude-o"), { recursive: true });
@@ -409,7 +409,7 @@ test("accountFor tiers and the ~/.claude quirk", () => {
 });
 
 test("readStatsCache sums only the four billed counters", () => {
-  const home = mkdtempSync(join(tmpdir(), "starforge-accounts-sc-"));
+  const home = mkdtempSync(join(tmpdir(), "starreckon-accounts-sc-"));
   try {
     mkdirSync(join(home, ".claude-sc"), { recursive: true });
     writeFileSync(

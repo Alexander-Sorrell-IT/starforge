@@ -143,8 +143,8 @@ test("a project whose folder name contains a dash is ONE project", async () => {
   // The union counts two witnesses: projectLabel(cwd) and projectFromPath(dir).
   // Claude Code encodes the working directory by replacing every separator with
   // a dash, so decoding cannot tell a separator from a dash that was always in
-  // the name: "-srv-code-starforge-cli" decodes to "starforge/cli" while the cwd
-  // reads "code/starforge-cli". Two spellings, one project, counted twice — and
+  // the name: "-srv-code-starreckon" decodes to "starreckon/cli" while the cwd
+  // reads "code/starreckon". Two spellings, one project, counted twice — and
   // projects_count feeds the ENGINEERING axis, so the star inflated.
   //
   // Every earlier test in this file was blind to it: they either use the

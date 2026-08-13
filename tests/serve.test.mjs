@@ -56,21 +56,21 @@ test("lanIp never returns a link-local address (169.254.x.x)", () => {
 // ── findHtml() ────────────────────────────────────────────────────────────────
 
 test("findHtml returns null when the reports dir does not exist", () => {
-  const absent = join(tmpdir(), "starforge-no-such-home-" + Math.random());
+  const absent = join(tmpdir(), "starreckon-no-such-home-" + Math.random());
   assert.equal(findHtml(absent), null);
 });
 
 test("findHtml returns null when reports dir exists but has no stats-*.html files", () => {
-  const home = join(tmpdir(), "starforge-test-" + Math.floor(Math.random() * 1e9));
-  mkdirSync(join(home, ".starforge", "reports"), { recursive: true });
-  writeFileSync(join(home, ".starforge", "reports", "readme.txt"), "nothing here");
+  const home = join(tmpdir(), "starreckon-test-" + Math.floor(Math.random() * 1e9));
+  mkdirSync(join(home, ".starreckon", "reports"), { recursive: true });
+  writeFileSync(join(home, ".starreckon", "reports", "readme.txt"), "nothing here");
   assert.equal(findHtml(home), null);
   rmSync(home, { recursive: true, force: true });
 });
 
 test("findHtml returns the most recent stats-*.html file", () => {
-  const home = join(tmpdir(), "starforge-test-" + Math.floor(Math.random() * 1e9));
-  const dir = join(home, ".starforge", "reports");
+  const home = join(tmpdir(), "starreckon-test-" + Math.floor(Math.random() * 1e9));
+  const dir = join(home, ".starreckon", "reports");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "stats-2025-01.html"), "jan");
   writeFileSync(join(dir, "stats-2025-03.html"), "mar");
@@ -327,7 +327,7 @@ function fakePost(url, bodyObj) {
 }
 
 test("POST /submit with valid payload returns 200 and writes folder", async () => {
-  const dir = join(tmpdir(), "starforge-collect-" + Math.floor(Math.random() * 1e9));
+  const dir = join(tmpdir(), "starreckon-collect-" + Math.floor(Math.random() * 1e9));
   const { handler } = makeHandler("<html>x</html>", 99, dir);
   const res = fakeRes();
 
@@ -353,7 +353,7 @@ test("POST /submit with valid payload returns 200 and writes folder", async () =
 });
 
 test("POST /submit with invalid JSON returns 400", async () => {
-  const dir = join(tmpdir(), "starforge-collect-" + Math.floor(Math.random() * 1e9));
+  const dir = join(tmpdir(), "starreckon-collect-" + Math.floor(Math.random() * 1e9));
   const { handler } = makeHandler("<html>x</html>", 99, dir);
   const res = fakeRes();
 
@@ -383,7 +383,7 @@ test("POST /submit with invalid JSON returns 400", async () => {
 });
 
 test("POST /submit with missing folderName returns 400", async () => {
-  const dir = join(tmpdir(), "starforge-collect-" + Math.floor(Math.random() * 1e9));
+  const dir = join(tmpdir(), "starreckon-collect-" + Math.floor(Math.random() * 1e9));
   const { handler } = makeHandler("<html>x</html>", 99, dir);
   const res = fakeRes();
 
@@ -398,7 +398,7 @@ test("POST /submit with missing folderName returns 400", async () => {
 });
 
 test("POST /submit uses machine field as folder name when folderName absent", async () => {
-  const dir = join(tmpdir(), "starforge-collect-" + Math.floor(Math.random() * 1e9));
+  const dir = join(tmpdir(), "starreckon-collect-" + Math.floor(Math.random() * 1e9));
   const { handler } = makeHandler("<html>x</html>", 99, dir);
   const res = fakeRes();
 
@@ -413,7 +413,7 @@ test("POST /submit uses machine field as folder name when folderName absent", as
 });
 
 test("POST /submit sanitises unsafe folder names before writing", async () => {
-  const dir = join(tmpdir(), "starforge-collect-" + Math.floor(Math.random() * 1e9));
+  const dir = join(tmpdir(), "starreckon-collect-" + Math.floor(Math.random() * 1e9));
   const { handler } = makeHandler("<html>x</html>", 99, dir);
   const res = fakeRes();
 
@@ -429,7 +429,7 @@ test("POST /submit sanitises unsafe folder names before writing", async () => {
 });
 
 test("GET / visit counter is unaffected by POST /submit requests", async () => {
-  const dir = join(tmpdir(), "starforge-collect-" + Math.floor(Math.random() * 1e9));
+  const dir = join(tmpdir(), "starreckon-collect-" + Math.floor(Math.random() * 1e9));
   const { handler, getVisits } = makeHandler("<html>x</html>", 5, dir);
 
   handler(fakePost("/submit", { folderName: "m", accounts: [], sessions: [] }), fakeRes());

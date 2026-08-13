@@ -12,7 +12,7 @@
 //   3. the stats page footer asserted "no text left this machine; nothing was
 //      uploaded" — the one claim the project says no process can prove about
 //      itself, on the output most likely to be screenshotted out of context.
-//   4. a permission error on ~/.starforge dumped a raw Node stack.
+//   4. a permission error on ~/.starreckon dumped a raw Node stack.
 //   5. the interactive exclusion prompt was skipped in SILENCE whenever stdin
 //      was not a TTY, though the README sells it as a headline feature.
 //   6. a legacy log that fails today's leak scan could not be retired: the
@@ -20,7 +20,7 @@
 //      no documented way out. `--reset-audit` is the way out, and these tests
 //      pin down that it cannot be used to erase a history quietly.
 //
-// Temp dirs only: nothing here touches the real ~/.starforge, and no path in
+// Temp dirs only: nothing here touches the real ~/.starreckon, and no path in
 // this file is written by hand (a hardcoded absolute path is how this repo
 // leaked its author's username into the tarball once already).
 import { test } from "node:test";
@@ -85,7 +85,7 @@ test("a mistyped privacy flag EXITS 2 instead of failing open", () => {
   // and nothing ran: no scan, no reports, and — because validation happens
   // before the audit hook is armed — no run log claiming a crash either.
   assert.equal(
-    existsSync(join(home, ".starforge")),
+    existsSync(join(home, ".starreckon")),
     false,
     "a rejected flag must not read or write anything"
   );
@@ -175,7 +175,7 @@ test("the flags the proof path passes to the CLI are registered — the headline
     }
   }
   // (b) flags on any line of the shipped proof script that invokes cli.mjs
-  const sh = readFileSync(join(ROOT, "bin", "starforge-proof.sh"), "utf8");
+  const sh = readFileSync(join(ROOT, "bin", "starreckon-proof.sh"), "utf8");
   for (const line of sh.split("\n").filter((l) => l.includes("cli.mjs")))
     for (const m of line.matchAll(/--[a-z0-9-]+/g)) srcFlags.add(m[0]);
   assert.ok(srcFlags.size > 0, "found no proof-path flags to check");
@@ -266,23 +266,23 @@ test("a non-TTY run says the exclusion prompt was skipped and nothing was exclud
 
 // ---- 6. permission errors read like messages, not like crashes -------------
 
-test("EACCES on ~/.starforge prints one line, not a stack (stack stays behind STARFORGE_DEBUG)", (t) => {
+test("EACCES on ~/.starreckon prints one line, not a stack (stack stays behind STARRECKON_DEBUG)", (t) => {
   if (typeof process.getuid === "function" && process.getuid() === 0)
     return t.skip("running as root: a read-only dir would not stop the write");
   const home = fakeHome();
-  const data = join(home, ".starforge");
+  const data = join(home, ".starreckon");
   mkdirSync(data, { recursive: true });
   chmodSync(data, 0o555); // readable, not writable: mkdir of snapshots/ fails
   try {
     const r = runCli(home, ["--yes", "--no-providers"]);
     assert.equal(r.status, 1, `${r.stdout}${r.stderr}`);
-    assert.match(r.stderr, /permission denied writing ~\/\.starforge/);
+    assert.match(r.stderr, /permission denied writing ~\/\.starreckon/);
     assert.match(r.stderr, /EACCES/);
-    assert.match(r.stderr, /STARFORGE_DEBUG=1/);
+    assert.match(r.stderr, /STARRECKON_DEBUG=1/);
     assert.ok(!/\bat \w+ \(node:/.test(r.stderr), `a raw stack was printed:\n${r.stderr}`);
 
-    const dbg = runCli(home, ["--yes", "--no-providers"], { STARFORGE_DEBUG: "1" });
-    assert.match(dbg.stderr, /\bat /, "STARFORGE_DEBUG=1 must still give the stack");
+    const dbg = runCli(home, ["--yes", "--no-providers"], { STARRECKON_DEBUG: "1" });
+    assert.match(dbg.stderr, /\bat /, "STARRECKON_DEBUG=1 must still give the stack");
     // …and the debug stack is masked like every other output path
     assert.ok(!dbg.stderr.includes(home), "the debug stack leaked the absolute home path");
   } finally {
@@ -445,7 +445,7 @@ test("a leaky legacy log has a documented way out: the FAIL says what to do, and
   const home = fakeHome();
   // one clean run, so there is a real chain to poison
   assert.equal(runCli(home, ["--yes", "--no-providers"]).status, 0);
-  const auditDir = join(home, ".starforge", "audit");
+  const auditDir = join(home, ".starreckon", "audit");
   const logs = readdirSync(auditDir).filter((f) => f.startsWith("run-"));
   assert.equal(logs.length, 1);
 
@@ -485,4 +485,278 @@ test("this test file hardcodes no absolute machine path", () => {
   const self = readFileSync(fileURLToPath(import.meta.url), "utf8");
   assert.ok(!self.includes(homedir()), "this file contains the real home path");
   assert.ok(!/\/private\/tmp\/claude-/.test(self), "this file contains an agent sandbox path");
+});
+
+// ── Persisted exclusions integration ─────────────────────────────────────────
+// Tests that ~/.starreckon/exclude.json is loaded before the scan and that
+// matching session files are excluded from the output.
+
+function fakeHomeWithExclusion(fragToExclude, projectName = "secret-client") {
+  // Build a home with two session projects: one that matches the exclusion
+  // fragment, one that does not.
+  const home = mkdtempSync(join(tmpdir(), "sf-excl-"));
+  const projSecret = join(home, ".claude", "projects",
+    projectName.replace(/[/\\]/g, "-"));
+  const projPublic = join(home, ".claude", "projects", "public-work");
+  mkdirSync(projSecret, { recursive: true });
+  mkdirSync(projPublic, { recursive: true });
+  const ts = new Date().toISOString();
+  writeFileSync(join(projSecret, "session.jsonl"),
+    JSON.stringify({ type: "user", timestamp: ts, uuid: "s1", cwd: "/" + projectName }) + "\n");
+  writeFileSync(join(projPublic, "session.jsonl"),
+    JSON.stringify({ type: "user", timestamp: ts, uuid: "p1", cwd: "/public-work" }) + "\n");
+
+  // Write the exclude.json
+  const sfDir = join(home, ".starreckon");
+  mkdirSync(sfDir, { recursive: true });
+  writeFileSync(join(sfDir, "exclude.json"),
+    JSON.stringify({ paths: [fragToExclude] }, null, 2));
+
+  return home;
+}
+
+test("persisted exclusion suppresses matching project from the scan output", () => {
+  const home = fakeHomeWithExclusion("secret-client");
+  const r = runCli(home, ["--yes", "--no-wrapped", "--no-pace", "--no-snapshot",
+    "--no-providers", "--json"]);
+  assert.equal(r.status, 0, r.stderr);
+  // The saved exclusion is printed before the scan
+  assert.match(r.stdout, /saved exclusions.*secret-client/i);
+  // The excluded project must not appear in any report
+  const repDir = join(home, ".starreckon", "reports");
+  const reports = existsSync(repDir) ? readdirSync(repDir) : [];
+  for (const f of reports.filter(f => f.endsWith(".json"))) {
+    const txt = readFileSync(join(repDir, f), "utf8");
+    assert.ok(!txt.includes("secret-client"),
+      `excluded project leaked into ${f}`);
+  }
+});
+
+test("persisted exclusion does not suppress non-matching projects", () => {
+  const home = fakeHomeWithExclusion("secret-client");
+  const r = runCli(home, ["--yes", "--no-wrapped", "--no-pace", "--no-snapshot",
+    "--no-providers", "--json"]);
+  assert.equal(r.status, 0, r.stderr);
+  // public-work should still be scanned (appears in sessions count > 0 or projects)
+  assert.match(r.stdout, /Found:/);
+});
+
+test("no exclude.json means no saved exclusions message and everything is scanned", () => {
+  const home = fakeHome();
+  const r = runCli(home, ["--yes", "--no-wrapped", "--no-pace", "--no-snapshot",
+    "--no-providers"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!r.stdout.includes("saved exclusions"), r.stdout);
+});
+
+test("empty paths array in exclude.json excludes nothing", () => {
+  const home = fakeHome();
+  const sfDir = join(home, ".starreckon");
+  mkdirSync(sfDir, { recursive: true });
+  writeFileSync(join(sfDir, "exclude.json"), JSON.stringify({ paths: [] }));
+  const r = runCli(home, ["--yes", "--no-wrapped", "--no-pace", "--no-snapshot",
+    "--no-providers"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!r.stdout.includes("saved exclusions"), r.stdout);
+});
+
+test("corrupt exclude.json is silently ignored and scan proceeds", () => {
+  const home = fakeHome();
+  const sfDir = join(home, ".starreckon");
+  mkdirSync(sfDir, { recursive: true });
+  writeFileSync(join(sfDir, "exclude.json"), "not json {{{");
+  const r = runCli(home, ["--yes", "--no-wrapped", "--no-pace", "--no-snapshot",
+    "--no-providers"]);
+  // Must not crash
+  assert.equal(r.status, 0, r.stderr);
+});
+
+// ── Menu uppercase keys ───────────────────────────────────────────────────────
+// The before-you-go menu now uses uppercase P/T/C/D/E/R/Q. Tests that the
+// output uses uppercase and that the old lowercase labels are gone.
+
+const FORCE_INTERACTIVE = { STARRECKON_FORCE_INTERACTIVE: "1" };
+
+test("before-you-go menu uses uppercase key labels [P][T][E][R][Q]", () => {
+  const home = fakeHome();
+  // Pass Q to immediately quit the menu
+  const r = spawnSync(process.execPath, [CLI, "--yes", "--no-wrapped",
+    "--no-pace", "--no-snapshot", "--no-providers"], {
+    input: "Q\n",
+    encoding: "utf8",
+    timeout: 30000,
+    env: { ...process.env, HOME: home, ...FORCE_INTERACTIVE },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /\[P\]/, "missing [P] prove it");
+  assert.match(r.stdout, /\[T\]/, "missing [T] transparency");
+  assert.match(r.stdout, /\[E\]/, "missing [E] exclusions");
+  assert.match(r.stdout, /\[R\]/, "missing [R] reach out");
+  assert.match(r.stdout, /\[Q\]/, "missing [Q] done");
+});
+
+test("before-you-go menu shows [T] transparency not [r] receipt", () => {
+  const home = fakeHome();
+  const r = spawnSync(process.execPath, [CLI, "--yes", "--no-wrapped",
+    "--no-pace", "--no-snapshot", "--no-providers"], {
+    input: "Q\n",
+    encoding: "utf8",
+    timeout: 30000,
+    env: { ...process.env, HOME: home, ...FORCE_INTERACTIVE },
+  });
+  assert.ok(!r.stdout.includes("[r] receipt"), "old [r] receipt label still present");
+  assert.match(r.stdout, /transparency/i, "transparency label missing");
+});
+
+test("[T] transparency prints the data receipt", () => {
+  const home = fakeHome();
+  const r = spawnSync(process.execPath, [CLI, "--yes", "--no-wrapped",
+    "--no-pace", "--no-snapshot", "--no-providers"], {
+    input: "T\nQ\n",
+    encoding: "utf8",
+    timeout: 30000,
+    env: { ...process.env, HOME: home, ...FORCE_INTERACTIVE },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /starreckon receipt/i);
+});
+
+test("[E] exclusions menu shows current list and accepts a new fragment", () => {
+  const home = fakeHome();
+  // Pre-seed one exclusion
+  const sfDir = join(home, ".starreckon");
+  mkdirSync(sfDir, { recursive: true });
+  writeFileSync(join(sfDir, "exclude.json"),
+    JSON.stringify({ paths: ["existing-excl"] }));
+  const r = spawnSync(process.execPath, [CLI, "--yes", "--no-wrapped",
+    "--no-pace", "--no-snapshot", "--no-providers"], {
+    input: "E\nnew-fragment\nQ\n",
+    encoding: "utf8",
+    timeout: 30000,
+    env: { ...process.env, HOME: home, ...FORCE_INTERACTIVE },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  // Shows saved exclusions header
+  assert.match(r.stdout, /saved exclusions/i);
+  // The new fragment was accepted
+  assert.match(r.stdout, /saved\. active next scan/);
+  // It is now in the file
+  const updated = JSON.parse(readFileSync(join(sfDir, "exclude.json"), "utf8"));
+  assert.ok(updated.paths.includes("new-fragment"),
+    "new fragment not written to exclude.json");
+});
+
+test("[E] exclusions menu removes an entry by index", () => {
+  const home = fakeHome();
+  const sfDir = join(home, ".starreckon");
+  mkdirSync(sfDir, { recursive: true });
+  writeFileSync(join(sfDir, "exclude.json"),
+    JSON.stringify({ paths: ["first", "second"] }));
+  const r = spawnSync(process.execPath, [CLI, "--yes", "--no-wrapped",
+    "--no-pace", "--no-snapshot", "--no-providers"], {
+    input: "E\n0\nQ\n",
+    encoding: "utf8",
+    timeout: 30000,
+    env: { ...process.env, HOME: home, ...FORCE_INTERACTIVE },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /removed "first"/);
+  const updated = JSON.parse(readFileSync(join(sfDir, "exclude.json"), "utf8"));
+  assert.ok(!updated.paths.includes("first"), "removed entry still present");
+  assert.ok(updated.paths.includes("second"), "other entry wrongly removed");
+});
+
+// ── --serve-collect flag accepted ─────────────────────────────────────────────
+
+test("serve --serve-collect=DIR is a known flag and does not exit 2", () => {
+  // We don't actually start the server; we just confirm the flag is not rejected.
+  // Pass an invalid port so it fails fast without binding.
+  const home = fakeHome();
+  const r = runCli(home, ["serve", "--serve-collect=/tmp/sf-collect-test",
+    "--serve-port=1", "--serve-visits=1", "--serve-timeout=0"]);
+  // Exit must not be 2 (unknown flag). It may be 1 (port in use / bind error).
+  assert.notEqual(r.status, 2,
+    `serve --serve-collect rejected as unknown flag: ${r.stderr}`);
+});
+
+// ---- clipboardCmds() -------------------------------------------------------
+// These tests verify the OS/session detection logic without ever spawning a
+// clipboard binary. Each case reproduces a real environment that the old
+// flat array would have handled wrong.
+
+import { clipboardCmds } from "../src/clipboard.mjs";
+
+test("clipboardCmds — macOS returns pbcopy only", () => {
+  // Tested via the exported function with a neutral env. process.platform is
+  // macOS in CI so we just call with default env.
+  // We cannot easily override process.platform in the same process, so we
+  // test the Linux / env-variable paths below and trust the platform branch
+  // on the machine where it runs natively.
+  const cmds = clipboardCmds({});
+  // On the machine running this test (macOS) it must be pbcopy.
+  if (process.platform === "darwin") {
+    assert.deepEqual(cmds, [["pbcopy", []]]);
+  }
+});
+
+test("clipboardCmds — WSL env prefers clip.exe, then wl-copy, then xclip", () => {
+  const cmds = clipboardCmds({ WSL_INTEROP: "/run/WSL/123_interop" }, "linux");
+  assert.equal(cmds[0][0], "clip.exe", "WSL: first choice must be clip.exe");
+  assert.ok(cmds.some(([c]) => c === "wl-copy"), "WSL: wl-copy must be a fallback");
+  assert.ok(cmds.some(([c]) => c === "xclip"), "WSL: xclip must be a fallback");
+});
+
+test("clipboardCmds — WSLENV also triggers WSL path", () => {
+  const cmds = clipboardCmds({ WSLENV: "PATH/l" }, "linux");
+  assert.equal(cmds[0][0], "clip.exe");
+});
+
+test("clipboardCmds — Wayland returns only wl-copy", () => {
+  const cmds = clipboardCmds({ WAYLAND_DISPLAY: "wayland-0" }, "linux");
+  assert.deepEqual(cmds, [["wl-copy", []]]);
+});
+
+test("clipboardCmds — X11 Linux (no Wayland, no WSL) returns xclip", () => {
+  const cmds = clipboardCmds({ DISPLAY: ":0" }, "linux");
+  assert.deepEqual(cmds, [["xclip", ["-selection", "clipboard"]]]);
+});
+
+test("clipboardCmds — xdotool is never returned on any platform", () => {
+  const cases = [
+    [{}, process.platform],
+    [{ WAYLAND_DISPLAY: "wayland-0" }, "linux"],
+    [{ WSL_INTEROP: "/run/WSL/1" }, "linux"],
+    [{ DISPLAY: ":0" }, "linux"],
+  ];
+  for (const [env, plat] of cases) {
+    const cmds = clipboardCmds(env, plat);
+    const hasXdotool = cmds.some(([c]) => c === "xdotool");
+    assert.equal(hasXdotool, false, `xdotool must never appear (env: ${JSON.stringify(env)})`);
+  }
+});
+
+test("clipboardCmds — xclip gets -selection clipboard flag", () => {
+  const cmds = clipboardCmds({ DISPLAY: ":0" }, "linux");
+  const entry = cmds.find(([c]) => c === "xclip");
+  assert.ok(entry, "xclip must be present for X11");
+  assert.ok(entry[1].includes("-selection"), "xclip must have -selection flag");
+  assert.ok(entry[1].includes("clipboard"), "xclip must target clipboard");
+});
+
+test("clipboardCmds — failure message names the commands that were tried", () => {
+  // The error message template uses cmds.map(([c]) => c).join(", ").
+  // Verify the shape is always [string, string[]] so that join works.
+  const cases = [
+    [{}, process.platform],
+    [{ WAYLAND_DISPLAY: "x" }, "linux"],
+    [{ WSL_INTEROP: "x" }, "linux"],
+    [{ DISPLAY: ":0" }, "linux"],
+  ];
+  for (const [env, plat] of cases) {
+    const cmds = clipboardCmds(env, plat);
+    for (const entry of cmds) {
+      assert.equal(typeof entry[0], "string", "cmd name must be a string");
+      assert.ok(Array.isArray(entry[1]), "cmd args must be an array");
+    }
+  }
 });

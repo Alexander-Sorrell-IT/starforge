@@ -71,9 +71,9 @@ test("a tripped tripwire leaves its evidence on disk, and verify then FAILS", ()
   const home = fakeHome();
   const r = runCli(join(src, "cli.mjs"), home, ["--yes", "--no-providers"]);
   assert.equal(r.status, 1, `expected the tripwire to abort the run: ${r.stdout}${r.stderr}`);
-  assert.match(r.stderr, /starforge tripwire: fetch/);
+  assert.match(r.stderr, /starreckon tripwire: fetch/);
 
-  const auditDir = join(home, ".starforge", "audit");
+  const auditDir = join(home, ".starreckon", "audit");
   const files = logsIn(auditDir);
   assert.equal(files.length, 1, "the aborted run must still have written its log");
   const log = JSON.parse(readFileSync(join(auditDir, files[0]), "utf8"));
@@ -93,11 +93,11 @@ test("a tripped tripwire leaves its evidence on disk, and verify then FAILS", ()
 test("an early exit still writes a run log, and records the confinement claim", () => {
   const home = mkdtempSync(join(tmpdir(), "sf-home-")); // no session logs at all
   const r = runCli(join(SRC, "cli.mjs"), home, ["--yes", "--no-providers"], {
-    STARFORGE_CONFINEMENT: "sandbox-exec",
+    STARRECKON_CONFINEMENT: "sandbox-exec",
   });
   // Contract change (publication review): having nothing to scan is not an
   // error and is not an abort. This path exits 0 and CLOSES its log. It used
-  // to exit 1 with complete:false, which made bin/starforge-proof.sh print
+  // to exit 1 with complete:false, which made bin/starreckon-proof.sh print
   // "FAIL … do not trust the no-egress claim" on any clean machine and made
   // `verify` report the run as INCOMPLETE. What this test still guards is the
   // original point: an early exit must not swallow the log, and the
@@ -106,7 +106,7 @@ test("an early exit still writes a run log, and records the confinement claim", 
   assert.equal(r.status, 0);
   assert.match(r.stdout, /No AI-coding session logs found/);
 
-  const auditDir = join(home, ".starforge", "audit");
+  const auditDir = join(home, ".starreckon", "audit");
   const files = logsIn(auditDir);
   assert.equal(files.length, 1, "process.exit() must not swallow the run log");
   const log = JSON.parse(readFileSync(join(auditDir, files[0]), "utf8"));
@@ -118,7 +118,7 @@ test("an early exit still writes a run log, and records the confinement claim", 
   assert.equal(log.confinement.verified, false);
   assert.match(log.confinement.detail, /unverified/i);
   // the counter that makes tail truncation visible lives OUTSIDE the audit dir
-  const counter = join(home, ".starforge", "audit-counter.json");
+  const counter = join(home, ".starreckon", "audit-counter.json");
   assert.ok(existsSync(counter));
   assert.equal(JSON.parse(readFileSync(counter, "utf8")).last_run_index, 0);
 });
@@ -128,13 +128,13 @@ test("a normal run logs the snapshots it writes (not just --json/--card/--page)"
   const r = runCli(join(SRC, "cli.mjs"), home, ["--yes", "--no-providers"]);
   assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
 
-  const auditDir = join(home, ".starforge", "audit");
+  const auditDir = join(home, ".starreckon", "audit");
   const files = logsIn(auditDir);
   assert.equal(files.length, 1);
   const log = JSON.parse(readFileSync(join(auditDir, files[0]), "utf8"));
   assert.equal(log.complete, true);
 
-  const snapDir = join(home, ".starforge", "snapshots");
+  const snapDir = join(home, ".starreckon", "snapshots");
   const snaps = existsSync(snapDir) ? readdirSync(snapDir).filter((f) => f.endsWith(".json")) : [];
   assert.ok(snaps.length > 0, "the fixture must produce at least one monthly snapshot");
   // A default run also writes one SVG star per snapshot. Those are writes like
@@ -142,7 +142,7 @@ test("a normal run logs the snapshots it writes (not just --json/--card/--page)"
   // equality against what is actually on disk rather than a count: that catches
   // an unlogged write AND a logged write that never happened, and it does not
   // quietly pass when a future artifact is added without an audit entry.
-  const starDir = join(home, ".starforge", "stars");
+  const starDir = join(home, ".starreckon", "stars");
   const stars = existsSync(starDir) ? readdirSync(starDir).filter((f) => f.endsWith(".svg")) : [];
   assert.equal(stars.length, snaps.length, "every snapshot must get its own star");
   const onDisk = [

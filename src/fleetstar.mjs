@@ -3,7 +3,7 @@
 // The corpus on this machine is what SURVIVED: Claude Code deletes transcripts
 // after cleanupPeriodDays, so a scan can never see the work whose logs are gone.
 // token-usage keeps per-machine counters that outlive them — 46,488,455,959 on
-// disk against a floor of 118,688,898,254 — and until now starforge printed that
+// disk against a floor of 118,688,898,254 — and until now starreckon printed that
 // as a rollup and scored the star from the corpus alone.
 //
 // The trap is blending. The fleet knows projects, models and days; it does NOT

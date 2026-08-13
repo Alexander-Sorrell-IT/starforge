@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>starreckon skill star</title>
+<meta name="description" content="Privacy-first developer wrapped — skill star shared from starreckon">
+<!-- OG tags so social media unfurls the card -->
+<meta property="og:title" content="starreckon skill star">
+<meta property="og:description" content="Local AI-coding skill star — computed on-device by starreckon, zero upload.">
+<meta property="og:type" content="website">
+<style>
+  :root{color-scheme:dark}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0d0d0d;color:#e8e8e8;font-family:'SF Mono',ui-monospace,monospace;
+       min-height:100vh;display:flex;flex-direction:column;align-items:center;
+       justify-content:center;padding:2rem 1rem}
+  #card{background:#111;border:1px solid #2a2a2a;border-radius:12px;
+        padding:2rem;max-width:520px;width:100%;text-align:center}
+  #star-wrap{margin:1.5rem auto;max-width:320px}
+  svg{width:100%;height:auto}
+  .tier{font-size:.75rem;letter-spacing:.15em;color:#888;text-transform:uppercase;
+        margin-bottom:.4rem}
+  .score{font-size:2.4rem;font-weight:700;color:#fff;line-height:1}
+  .arch{font-size:.9rem;color:#aaa;margin-top:.35rem;letter-spacing:.05em}
+  .axes{display:grid;grid-template-columns:1fr 1fr;gap:.35rem .8rem;
+        margin:1.2rem 0;text-align:left;font-size:.78rem;color:#888}
+  .axes span b{color:#ddd;font-weight:600}
+  .stats{font-size:.78rem;color:#666;margin:.8rem 0 1.2rem;line-height:1.6}
+  .npx{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:6px;
+       padding:.55rem 1rem;font-size:.82rem;color:#5af;margin:.8rem 0;
+       display:inline-block;user-select:all;cursor:pointer}
+  .npx:hover{border-color:#5af;color:#8cf}
+  .copy-btn{margin-top:1rem;background:#1e1e1e;border:1px solid #333;
+            border-radius:6px;padding:.5rem 1.2rem;color:#aaa;font-size:.8rem;
+            font-family:inherit;cursor:pointer;transition:all .15s}
+  .copy-btn:hover{border-color:#5af;color:#5af}
+  .copy-btn.copied{border-color:#4a4;color:#4a4}
+  .note{margin-top:1.5rem;font-size:.72rem;color:#444;line-height:1.6}
+  .note a{color:#666;text-decoration:none}
+  .note a:hover{color:#aaa}
+  #no-data{display:none;font-size:.9rem;color:#666;text-align:center;padding:2rem}
+  .name{font-size:.85rem;color:#777;margin-bottom:.6rem;letter-spacing:.05em}
+</style>
+</head>
+<body>
+<div id="card">
+  <div id="no-data">
+    <p>No results in this URL.</p>
+    <p style="margin-top:.5rem">Run <span class="npx">npx starreckon</span> to generate your star.</p>
+  </div>
+  <div id="result" style="display:none">
+    <div id="name-el" class="name"></div>
+    <div id="tier-el" class="tier"></div>
+    <div id="score-el" class="score"></div>
+    <div id="arch-el" class="arch"></div>
+    <div id="star-wrap"><svg id="star-svg" viewBox="0 0 200 200"></svg></div>
+    <div id="axes-el" class="axes"></div>
+    <div id="stats-el" class="stats"></div>
+    <div><span class="npx" title="click to copy" id="npx-el">npx starreckon</span></div>
+    <button class="copy-btn" id="copy-btn">copy share link</button>
+    <p class="note">
+      computed locally by <a href="https://github.com/Alexander-Sorrell-IT/starreckon">starreckon</a>
+      — no upload, no account.<br>
+      the numbers in the URL are <em>your</em> numbers, not a link to them.
+    </p>
+  </div>
+</div>
+<script>
+const AXES   = ["FIRST PRINCIPLES","ENGINEERING","CODING","OUTSIDE THE BOX","TENACITY"];
+const ARMS   = 5;
+const MAX_LV = 7;
+const TAU    = Math.PI * 2;
+const VR     = 0.3; // valley ratio
+
+function clamp(v){ return Math.min(MAX_LV,Math.max(0,+v||0)); }
+function armAngle(i){ return -Math.PI/2 + (i*TAU)/ARMS; }
+function valleyAngle(i){ return -Math.PI/2 + ((i+0.5)*TAU)/ARMS; }
+function armR(lv,R){ return R*VR + (clamp(lv)/MAX_LV)*R*(1-VR); }
+
+function starPath(levels,R,cx,cy){
+  const pts=[];
+  for(let i=0;i<ARMS;i++){
+    const a=armAngle(i), r=armR(levels[i]||0,R);
+    pts.push([cx+r*Math.cos(a), cy+r*Math.sin(a)]);
+    const va=valleyAngle(i), vr=R*VR;
+    pts.push([cx+vr*Math.cos(va), cy+vr*Math.sin(va)]);
+  }
+  return pts.map((p,i)=>(i===0?"M":"L")+p[0].toFixed(2)+","+p[1].toFixed(2)).join(" ")+"Z";
+}
+
+function fmt(n){ return Number(n).toLocaleString("en-US"); }
+
+function render(d){
+  if(!d||!d.levels||d.levels.length<ARMS){
+    document.getElementById("no-data").style.display="block";
+    return;
+  }
+
+  document.getElementById("result").style.display="block";
+
+  const tierColors={MASTERWORK:"#c8a84b",TEMPERED:"#aaa",FORGED:"#c87941",
+                    CAST:"#7aa",RAW:"#777"};
+  const col=tierColors[d.tier]||"#5af";
+
+  if(d.name){ document.getElementById("name-el").textContent=d.name; }
+  document.getElementById("tier-el").textContent=d.tier;
+  document.getElementById("score-el").textContent=
+    d.total.toFixed(1)+" / "+(ARMS*MAX_LV);
+  document.getElementById("arch-el").textContent=d.archetype;
+
+  // Axes grid
+  const axEl=document.getElementById("axes-el");
+  d.levels.forEach((lv,i)=>{
+    const sp=document.createElement("span");
+    sp.innerHTML=`${AXES[i]}<br><b>${(+lv).toFixed(1)}</b>`;
+    axEl.appendChild(sp);
+  });
+
+  // Stats
+  const parts=[];
+  if(d.sessions) parts.push(fmt(d.sessions)+" sessions");
+  if(d.hours)    parts.push(d.hours+"h active");
+  if(d.days)     parts.push(d.days+" days");
+  if(d.streak)   parts.push("streak "+d.streak+"d");
+  document.getElementById("stats-el").textContent=parts.join(" · ");
+
+  // SVG star
+  const R=90, cx=100, cy=100;
+  const svg=document.getElementById("star-svg");
+  const ns="http://www.w3.org/2000/svg";
+
+  // ghost hull
+  const ghost=document.createElementNS(ns,"path");
+  ghost.setAttribute("d",starPath(new Array(ARMS).fill(MAX_LV),R,cx,cy));
+  ghost.setAttribute("fill","none");
+  ghost.setAttribute("stroke","#333");
+  ghost.setAttribute("stroke-width","0.8");
+  svg.appendChild(ghost);
+
+  // rings at 25% 50% 75%
+  [0.25,0.5,0.75].forEach(f=>{
+    const rg=document.createElementNS(ns,"path");
+    rg.setAttribute("d",starPath(new Array(ARMS).fill(MAX_LV*f),R,cx,cy));
+    rg.setAttribute("fill","none");
+    rg.setAttribute("stroke","#222");
+    rg.setAttribute("stroke-width","0.6");
+    svg.appendChild(rg);
+  });
+
+  // glow
+  const defs=document.createElementNS(ns,"defs");
+  defs.innerHTML=`<filter id="glow"><feGaussianBlur stdDeviation="4" result="blur"/>
+    <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>`;
+  svg.appendChild(defs);
+
+  // fill
+  const fill=document.createElementNS(ns,"path");
+  fill.setAttribute("d",starPath(d.levels,R,cx,cy));
+  fill.setAttribute("fill",col+"22");
+  fill.setAttribute("stroke",col);
+  fill.setAttribute("stroke-width","1.5");
+  fill.setAttribute("filter","url(#glow)");
+  svg.appendChild(fill);
+
+  // axis labels at tip
+  d.levels.forEach((lv,i)=>{
+    const a=armAngle(i), r=armR(lv,R)+14;
+    const lx=cx+r*Math.cos(a), ly=cy+r*Math.sin(a);
+    const t=document.createElementNS(ns,"text");
+    t.setAttribute("x",lx.toFixed(1));
+    t.setAttribute("y",ly.toFixed(1));
+    t.setAttribute("text-anchor","middle");
+    t.setAttribute("dominant-baseline","central");
+    t.setAttribute("fill","#666");
+    t.setAttribute("font-size","7");
+    t.setAttribute("font-family","monospace");
+    t.textContent=AXES[i].split(" ")[0].slice(0,4).toUpperCase();
+    svg.appendChild(t);
+  });
+
+  // centre score
+  const ct=document.createElementNS(ns,"text");
+  ct.setAttribute("x","100"); ct.setAttribute("y","100");
+  ct.setAttribute("text-anchor","middle"); ct.setAttribute("dominant-baseline","central");
+  ct.setAttribute("fill",col); ct.setAttribute("font-size","11");
+  ct.setAttribute("font-family","monospace"); ct.setAttribute("font-weight","600");
+  ct.textContent=d.total.toFixed(1);
+  svg.appendChild(ct);
+}
+
+// Parse fragment
+function parse(){
+  try{
+    const hash=location.hash.replace(/^#/,"");
+    if(!hash) return null;
+    const p=new URLSearchParams(hash);
+    const v=(p.get("v")||"").split(",").map(Number).filter(n=>!isNaN(n));
+    return{
+      total:parseFloat(p.get("s")||"0"),
+      tier:p.get("g")||"",
+      archetype:(p.get("a")||"").replace(/_/g," "),
+      levels:v,
+      sessions:parseInt(p.get("ss")||"0",10),
+      hours:parseInt(p.get("h")||"0",10),
+      days:parseInt(p.get("d")||"0",10),
+      streak:parseInt(p.get("k")||"0",10),
+      name:p.get("n")||null,
+    };
+  }catch{return null;}
+}
+
+const data=parse();
+render(data);
+
+// npx click to copy
+document.getElementById("npx-el").addEventListener("click",()=>{
+  navigator.clipboard?.writeText("npx starreckon").catch(()=>{});
+});
+
+// Copy share link button
+const copyBtn=document.getElementById("copy-btn");
+copyBtn.addEventListener("click",()=>{
+  const url=location.href;
+  navigator.clipboard?.writeText(url).then(()=>{
+    copyBtn.textContent="copied!";
+    copyBtn.classList.add("copied");
+    setTimeout(()=>{
+      copyBtn.textContent="copy share link";
+      copyBtn.classList.remove("copied");
+    },2000);
+  }).catch(()=>{
+    copyBtn.textContent="copy: "+url;
+  });
+});
+
+// Update OG title dynamically if data present
+if(data&&data.total){
+  const t=data.name
+    ? `${data.name} — starreckon ${data.total.toFixed(1)}/${ARMS*MAX_LV} ${data.tier}`
+    : `starreckon ${data.total.toFixed(1)}/${ARMS*MAX_LV} ${data.tier}`;
+  document.title=t;
+}
+</script>
+</body>
+</html>

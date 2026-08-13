@@ -16,20 +16,20 @@
 // arguing against itself.
 //
 // Nothing here is network-aware. The scheduled run is the same local scan, with
-// --yes --no-pace, writing under ~/.starforge exactly as an interactive run does.
+// --yes --no-pace, writing under ~/.starreckon exactly as an interactive run does.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const LABEL = "work.starforge.scan";
+export const LABEL = "work.starreckon.scan";
 
 const HOME = () => homedir();
 const plistPath = () => join(HOME(), "Library", "LaunchAgents", `${LABEL}.plist`);
 const systemdDir = () => join(HOME(), ".config", "systemd", "user");
-const servicePath = () => join(systemdDir(), "starforge-scan.service");
-const timerPath = () => join(systemdDir(), "starforge-scan.timer");
+const servicePath = () => join(systemdDir(), "starreckon-scan.service");
+const timerPath = () => join(systemdDir(), "starreckon-scan.timer");
 
 // The CLI entry point to schedule. Resolved from THIS file so a checkout and an
 // installed package both schedule the copy you actually ran.
@@ -47,7 +47,7 @@ function esc(s) {
  * a laptop that was asleep still gets its snapshot.
  */
 export function launchdPlist({ node = process.execPath, entry = cliEntry(), day = 1, hour = 9 } = {}) {
-  const logDir = join(HOME(), ".starforge", "daemon");
+  const logDir = join(HOME(), ".starreckon", "daemon");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -78,14 +78,14 @@ export function launchdPlist({ node = process.execPath, entry = cliEntry(), day 
 export function systemdUnits({ node = process.execPath, entry = cliEntry() } = {}) {
   return {
     service: `[Unit]
-Description=starforge monthly local scan (no network)
+Description=starreckon monthly local scan (no network)
 
 [Service]
 Type=oneshot
 ExecStart=${node} ${entry} --yes --no-wrapped --no-pace
 `,
     timer: `[Unit]
-Description=Run starforge monthly so snapshots outlive the ~30-day log retention
+Description=Run starreckon monthly so snapshots outlive the ~30-day log retention
 
 [Timer]
 OnCalendar=monthly
@@ -122,7 +122,7 @@ export function writeSchedule(opts = {}) {
   if (p === "darwin") {
     const file = plistPath();
     mkdirSync(dirname(file), { recursive: true });
-    mkdirSync(join(HOME(), ".starforge", "daemon"), { recursive: true });
+    mkdirSync(join(HOME(), ".starreckon", "daemon"), { recursive: true });
     writeFileSync(file, launchdPlist(opts));
     return {
       files: [file],
@@ -138,8 +138,8 @@ export function writeSchedule(opts = {}) {
     writeFileSync(timerPath(), units.timer);
     return {
       files: [servicePath(), timerPath()],
-      activate: "systemctl --user daemon-reload && systemctl --user enable --now starforge-scan.timer",
-      deactivate: "systemctl --user disable --now starforge-scan.timer",
+      activate: "systemctl --user daemon-reload && systemctl --user enable --now starreckon-scan.timer",
+      deactivate: "systemctl --user disable --now starreckon-scan.timer",
     };
   }
   return { files: [], activate: null, deactivate: null, unsupported: p };
@@ -159,7 +159,7 @@ export function removeSchedule() {
     removed,
     deactivate:
       st.platform === "linux"
-        ? "systemctl --user disable --now starforge-scan.timer"
+        ? "systemctl --user disable --now starreckon-scan.timer"
         : `launchctl unload ${plistPath()}`,
   };
 }

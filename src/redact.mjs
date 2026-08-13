@@ -81,7 +81,7 @@ export const MIN_MASKABLE_USER_LEN = 4;
 // surrounding punctuation) exists because slash-delimited masking is not
 // enough: paths get MANGLED into single directory names, with "/" rewritten to
 // something else, and the username rides along. Claude Code does exactly this —
-// ~/.claude/projects/-Users-alice-Desktop-Bug — and that is a tree starforge
+// ~/.claude/projects/-Users-alice-Desktop-Bug — and that is a tree starreckon
 // reads on every run. A found leak, not a hypothetical: a real run log here
 // recorded `--join-fleet=/private/tmp/.../-Users-<name>-.../token-usage`, which
 // the first two rules left untouched and the output-scrub check then flagged as
@@ -150,7 +150,7 @@ export function maskText(text) {
 // An account identity (the Claude OAuth email address, or the userID tier) is
 // not a "secret" in the redactSecrets sense — it is the user's NAME, and none
 // of the 25+ patterns above match an email. It must not land in a file
-// starforge writes, because reports, the stats page and a --join-fleet folder
+// starreckon writes, because reports, the stats page and a --join-fleet folder
 // are all things people sync and share.
 //
 // The replacement is a pseudonym, not [redacted], because the identity is also
@@ -161,12 +161,12 @@ export function maskText(text) {
 // domain mask ("a***@gmail.com"), which silently merges two accounts that share
 // a first letter and a provider.
 //
-// HONEST LIMIT (printed by `starforge verify` and stated in the README): this
+// HONEST LIMIT (printed by `starreckon verify` and stated in the README): this
 // is a constant-salted SHA-256 prefix. It stops a reader of the file from
 // READING your address; it does not stop someone who already suspects an
 // address from CONFIRMING it by hashing their guess. It is de-identification,
 // not anonymity. Raw identities are available on purpose via --show-accounts.
-const PSEUDONYM_SALT = "starforge-account-v1:";
+const PSEUDONYM_SALT = "starreckon-account-v1:";
 
 export function accountPseudonym(identity) {
   return (
@@ -190,7 +190,7 @@ export function accountPseudonym(identity) {
 //
 // Same reasoning as accountPseudonym: a stable hash, not [redacted], because
 // the label is a GROUPING KEY — per-project counts must survive it.
-const PROJECT_SALT = "starforge-project-v1:";
+const PROJECT_SALT = "starreckon-project-v1:";
 
 export function projectPseudonym(label) {
   return (

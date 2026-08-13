@@ -3,7 +3,7 @@
 // Written rather than installed on purpose. This package ships with no
 // dependencies at all, and that is not a vanity metric here: the whole pitch is
 // that you can read every line that runs on your machine before you run it, and
-// `starforge-cli verify` scans the SHIPPED files for network and process APIs.
+// `starreckon verify` scans the SHIPPED files for network and process APIs.
 // A dependency would be code the verifier never sees and the reader never
 // audits, pulled in to draw a square.
 //

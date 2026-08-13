@@ -128,7 +128,7 @@ const zero4 = () => ({
   output_tokens: 0,
 });
 
-// Accepts either canonical field names or starforge's short tok keys
+// Accepts either canonical field names or starreckon's short tok keys
 // ({in,cw,cr,out}); always returns a full 4-field dict — combine.py indexes
 // v[k] for all four unconditionally, so a missing field is a pipeline crash.
 const ALIASES = {
@@ -493,7 +493,7 @@ export function readFleet(tokenUsageDir) {
 // ---- writer (interchange the Python pipeline accepts) ----------------------
 
 const DEFAULT_SCANNER_VERSION = createHash("sha256")
-  .update("starforge-fleet-1")
+  .update("starreckon-fleet-1")
   .digest("hex")
   .slice(0, 12);
 
@@ -771,7 +771,7 @@ export function writeMachineFolder(tokenUsageDir, folderName, data = {}) {
   if (!existsSync(report)) {
     writeFileSync(
       report,
-      `# ${label}\n\nWritten by starforge (fleet.mjs) ${generatedAt}.\n` +
+      `# ${label}\n\nWritten by starreckon (fleet.mjs) ${generatedAt}.\n` +
         `Grand total: ${grandTotal.toLocaleString("en-US")} tokens across ${accounts.length} account(s).\n` +
         `Data lives in ../machine-readable/.\n`,
       "utf-8"

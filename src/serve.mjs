@@ -1,6 +1,6 @@
-// starforge serve — LAN-only HTTP server for WiFi sharing.
+// starreckon serve — LAN-only HTTP server for WiFi sharing.
 //
-// Generates the stats page HTML from ~/.starforge/reports/ (or triggers a
+// Generates the stats page HTML from ~/.starreckon/reports/ (or triggers a
 // fresh render if none exists) and serves it to anyone on the same local
 // network. Zero external network calls — binds to 0.0.0.0 so LAN devices
 // can reach it, but the content is already on disk and nothing is uploaded.
@@ -15,7 +15,7 @@
 //   os.networkInterfaces() — universal, used to find the LAN IP
 //   LAN IP selection — prefers non-loopback IPv4, works on macOS/Linux/Windows
 //
-// @starforge-intentional-egress
+// @starreckon-intentional-egress
 // This module uses node:http to LISTEN (inbound only). It never opens an
 // outbound connection. The static warden (verify.mjs) allowlists this file
 // by name for node:http, the same pattern as confine.mjs for node:net.
@@ -60,9 +60,9 @@ export function lanIp() {
   return "127.0.0.1";
 }
 
-// Find the most recent stats HTML under ~/.starforge/reports/
+// Find the most recent stats HTML under ~/.starreckon/reports/
 export function findHtml(home) {
-  const dir = join(home ?? homedir(), ".starforge", "reports");
+  const dir = join(home ?? homedir(), ".starreckon", "reports");
   if (!existsSync(dir)) return null;
   const files = readdirSync(dir)
     .filter((f) => f.startsWith("stats-") && f.endsWith(".html"))
@@ -214,9 +214,9 @@ export function startServe(opts = {}) {
     }
     if (!html) {
       html = `<!doctype html><html><head><meta charset="utf-8">
-<title>starforge — no page yet</title></head><body style="font-family:monospace;padding:2em">
+<title>starreckon — no page yet</title></head><body style="font-family:monospace;padding:2em">
 <h2>No stats page found</h2>
-<p>Run <code>starforge-cli --page</code> first to generate the HTML page, then run <code>starforge-cli serve</code> again.</p>
+<p>Run <code>starreckon --page</code> first to generate the HTML page, then run <code>starreckon serve</code> again.</p>
 </body></html>`;
     }
 
@@ -240,7 +240,7 @@ export function startServe(opts = {}) {
     });
 
     server.listen(port, "0.0.0.0", () => {
-      console.log(`\n${b(cy("starforge serve"))} ${d("— LAN-only, zero external calls")}\n`);
+      console.log(`\n${b(cy("starreckon serve"))} ${d("— LAN-only, zero external calls")}\n`);
       console.log(`  URL    ${b(url)}`);
       console.log(`  stops  after ${maxVisits} visit(s) or ${opts.timeoutMin ?? 10} minutes\n`);
 

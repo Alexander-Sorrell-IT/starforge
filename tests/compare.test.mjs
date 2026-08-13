@@ -34,11 +34,11 @@ function month(m, over = {}) {
   };
 }
 
-// snapshots.mjs reads from ~/.starforge/snapshots, so a fake HOME is the only
+// snapshots.mjs reads from ~/.starreckon/snapshots, so a fake HOME is the only
 // way to drive loadTimeline without stubbing the module.
 async function withTimeline(months) {
   const home = tmp();
-  const dir = join(home, ".starforge", "snapshots");
+  const dir = join(home, ".starreckon", "snapshots");
   mkdirSync(dir, { recursive: true });
   for (const m of months)
     writeFileSync(

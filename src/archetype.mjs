@@ -11,7 +11,7 @@
 // constant rather than typed as numbers.
 //
 // The second is the archetype. The obvious model to copy grades you against
-// other people ("top 1% of 3,756 users"), and starforge structurally cannot do
+// other people ("top 1% of 3,756 users"), and starreckon structurally cannot do
 // that: no account, no upload, no server that has ever seen anyone else's data.
 // The wrapped literally makes a point of it. So the archetype is read off YOUR
 // OWN shape instead — which two arms are longest — and it is a description, not

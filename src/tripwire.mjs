@@ -1,4 +1,4 @@
-// In-process egress TRIPWIRE for starforge.
+// In-process egress TRIPWIRE for starreckon.
 //
 // HONEST LABEL: this is a tripwire for ACCIDENTAL egress, not a security
 // boundary; the boundary is OS confinement (see confine.mjs — sandbox-exec
@@ -54,7 +54,7 @@ function targetOf(args) {
 // Record the hit, THEN throw. The recorder must be called before the throw and
 // must make the hit durable on its own, because this throw usually aborts the
 // run: the audit recorder from startAudit() writes the run log to disk right
-// here (see audit.mjs), so `starforge verify` can still count a hit from a run
+// here (see audit.mjs), so `starreckon verify` can still count a hit from a run
 // that never reached its normal end. An alarm that erases its own evidence
 // would be worse than no alarm.
 function trip(api, args) {
@@ -68,7 +68,7 @@ function trip(api, args) {
     state.recorder?.(hit);
   } catch {}
   throw new Error(
-    `starforge tripwire: ${api} -> ${hit.target} blocked. This process is local-only; no network API should ever be reached. (Tripwire, not a boundary — see TRIPWIRE_LIMITS.)`
+    `starreckon tripwire: ${api} -> ${hit.target} blocked. This process is local-only; no network API should ever be reached. (Tripwire, not a boundary — see TRIPWIRE_LIMITS.)`
   );
 }
 

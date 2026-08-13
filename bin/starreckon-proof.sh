@@ -1,9 +1,9 @@
 #!/bin/sh
-# starforge-proof.sh — kernel-level proof that starforge cannot reach the network.
+# starreckon-proof.sh — kernel-level proof that starreckon cannot reach the network.
 #
 # What this does, in order:
 #   1. prints the OS sandbox profile (deny all network, allow everything else)
-#   2. runs the starforge scan INSIDE that sandbox (its exit code is reported
+#   2. runs the starreckon scan INSIDE that sandbox (its exit code is reported
 #      on its own line; it is a scan result, NOT part of the egress verdict)
 #   3. positive control: tries to open TCP 1.1.1.1:443
 #        OUTSIDE the sandbox  -> should CONNECT  (proves the probe works)
@@ -12,9 +12,9 @@
 # A proof that says "we tried to leave and the kernel stopped us" is worth
 # more than one that says "we did not try".
 #
-# Scope, honestly: this seals SOCKETS for starforge and all its children.
+# Scope, honestly: this seals SOCKETS for starreckon and all its children.
 # It cannot stop a file written into a cloud-synced folder from leaving the
-# machine later; starforge writes under ~/.starforge, plus any --join-fleet
+# machine later; starreckon writes under ~/.starreckon, plus any --join-fleet
 # directory you name (that one is a path you chose, so it is the one that can
 # sit inside Dropbox or iCloud — PROVE-IT.md §6). sandbox-exec is marked
 # DEPRECATED in Apple's man page — step 3 verifies it still enforces instead
@@ -36,12 +36,12 @@ echo "== sandbox profile =="
 echo "$PROFILE"
 
 echo
-echo "== 1/3: starforge scan INSIDE the sandbox (network denied) =="
-# STARFORGE_CONFINEMENT labels the run in its own audit log ("this run was
+echo "== 1/3: starreckon scan INSIDE the sandbox (network denied) =="
+# STARRECKON_CONFINEMENT labels the run in its own audit log ("this run was
 # launched under sandbox-exec"). It is a CLAIM, not proof — any process can set
 # it, so the log records it with verified:false. Without it a genuinely
 # confined run would be logged as unconfined; steps 2/3 below are the proof.
-STARFORGE_CONFINEMENT=sandbox-exec "$SANDBOX" -p "$PROFILE" "$NODE" "$DIR/src/cli.mjs" --yes "$@"
+STARRECKON_CONFINEMENT=sandbox-exec "$SANDBOX" -p "$PROFILE" "$NODE" "$DIR/src/cli.mjs" --yes "$@"
 SCAN=$?
 
 echo
@@ -51,7 +51,7 @@ OUTSIDE=$?    # probe exit codes: 0 = blocked, 1 = egress open, 2 = ambiguous
 
 echo
 echo "== 3/3: same probe INSIDE the sandbox (expected: kernel refuses) =="
-STARFORGE_CONFINEMENT=sandbox-exec "$SANDBOX" -p "$PROFILE" "$NODE" "$DIR/src/confine.mjs" --probe
+STARRECKON_CONFINEMENT=sandbox-exec "$SANDBOX" -p "$PROFILE" "$NODE" "$DIR/src/confine.mjs" --probe
 INSIDE=$?
 
 echo

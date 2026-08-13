@@ -162,7 +162,7 @@ test("computeToolRelationship: loyalist and switch", () => {
 // ---- collectProfileSignals on temp fixtures --------------------------------
 
 test("collectProfileSignals: counts prompts, filters low-signal, dedups usage, no text stored", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "starforge-profile-"));
+  const dir = mkdtempSync(join(tmpdir(), "starreckon-profile-"));
   try {
     const claudePath = writeClaudeFixture(dir);
     const codexPath = writeCodexFixture(dir);

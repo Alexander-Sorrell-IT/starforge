@@ -1,6 +1,6 @@
-// starforge search — semantic search over AI-coding sessions via SecureBERT.
+// starreckon search — semantic search over AI-coding sessions via SecureBERT.
 //
-// Delegates to src/search.py which runs inside ~/.starforge/.venv-search/.
+// Delegates to src/search.py which runs inside ~/.starreckon/.venv-search/.
 // The Python side uses two Cisco SecureBERT models:
 //
 //   cisco-ai/SecureBERT2.0-biencoder     fast ANN candidate retrieval
@@ -9,14 +9,14 @@
 // This module is the thin Node bridge: resolve the path to search.py, spawn
 // Python, stream output to the terminal. No ML in JS.
 //
-// @starforge-intentional-spawn
+// @starreckon-intentional-spawn
 // Uses node:child_process ONLY to call src/search.py — a Python script
 // bundled in this package. Never downloads anything; the Python side owns
 // model access and the venv. The static warden (verify.mjs) allowlists this
 // file for the spawn call, same pattern as confine.mjs.
 // The Python side sets HF_HUB_OFFLINE=1 before loading models so
 // sentence-transformers makes zero network calls at inference time.
-// Models are downloaded exactly once during `starforge-cli search --setup`.
+// Models are downloaded exactly once during `starreckon search --setup`.
 
 import { spawn, spawnSync } from "node:child_process"; // launcher — only spawns src/search.py
 import { existsSync } from "node:fs";

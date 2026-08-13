@@ -17,7 +17,7 @@ import {
 } from "../src/scanners.mjs";
 
 function mkHome() {
-  return mkdtempSync(join(tmpdir(), "starforge-scanners-"));
+  return mkdtempSync(join(tmpdir(), "starreckon-scanners-"));
 }
 
 function put(path, content) {

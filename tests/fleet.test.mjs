@@ -32,7 +32,7 @@ const F4 = (i, cw, cr, o) => ({
 // box-b: hand-written FLAT layout (pre-split), totals.json only.
 // never-box: registered in machines.json, no folder.
 function makeFixtureFleet() {
-  const root = mkdtempSync(join(tmpdir(), "starforge-fleet-"));
+  const root = mkdtempSync(join(tmpdir(), "starreckon-fleet-"));
   writeFileSync(join(root, "machines.json"), JSON.stringify({
     machines: [
       { folder: "box-a", label: "Box A" },
@@ -147,11 +147,11 @@ test("providerOf matches analyze_tokens.provider_of", () => {
 // ---- graceful absence ------------------------------------------------------
 
 test("readFleet on a missing or empty dir returns empty results, never throws", () => {
-  const r1 = readFleet("/nonexistent/path/starforge-test");
+  const r1 = readFleet("/nonexistent/path/starreckon-test");
   assert.deepEqual(r1.machines, []);
   assert.deepEqual(r1.accounts, []);
   assert.deepEqual(r1.fleetTotals, { onDisk: 0, floor: 0 });
-  const empty = mkdtempSync(join(tmpdir(), "starforge-empty-"));
+  const empty = mkdtempSync(join(tmpdir(), "starreckon-empty-"));
   const r2 = readFleet(empty);
   assert.deepEqual(r2.fleetTotals, { onDisk: 0, floor: 0 });
 });
@@ -248,7 +248,7 @@ test("written totals.json satisfies check_consistency arithmetic", () => {
 });
 
 test("writeMachineFolder rejects arithmetic the Python gate would fail", () => {
-  const root = mkdtempSync(join(tmpdir(), "starforge-bad-"));
+  const root = mkdtempSync(join(tmpdir(), "starreckon-bad-"));
   // by_model does not partition totals.
   assert.throws(() => writeMachineFolder(root, "bad-a", {
     label: "Bad A",
@@ -343,7 +343,7 @@ test("archiveSnapshots snapshots each machine and dedups by digest", () => {
 });
 
 test("snapshotDigest matches Python's sha256(name+bytes)[:12] scheme", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "starforge-digest-"));
+  const dir = mkdtempSync(join(tmpdir(), "starreckon-digest-"));
   writeFileSync(join(dir, "totals.json"), '{"x":1}');
   writeFileSync(join(dir, "sessions.json"), '{"y":2}');
   const js = snapshotDigest([join(dir, "totals.json"), join(dir, "sessions.json")]);
@@ -374,7 +374,7 @@ print(hashlib.sha256(payload).hexdigest()[:12])
 // author's home path in its own test suite has already lost the argument; see
 // tests/shipset.test.mjs, which now fails the build if any shipped file
 // carries this machine's username again.
-test("Python check_consistency.py passes on a starforge-written fleet", (t) => {
+test("Python check_consistency.py passes on a starreckon-written fleet", (t) => {
   const pySrc = process.env.STARFORGE_TOKEN_USAGE_DIR;
   const needed = ["check_consistency.py", "paths.py", "analyze_tokens.py"];
   if (!pySrc) {
@@ -402,7 +402,7 @@ test("Python check_consistency.py passes on a starforge-written fleet", (t) => {
 // ---- flat-layout fallback (paths.find order) -------------------------------
 
 test("readers fall back machine-readable -> human-readable -> flat", () => {
-  const root = mkdtempSync(join(tmpdir(), "starforge-flat-"));
+  const root = mkdtempSync(join(tmpdir(), "starreckon-flat-"));
   // totals.json parked under human-readable/ (middle of the fallback chain)
   mkdirSync(join(root, "box-h", "human-readable"), { recursive: true });
   writeFileSync(join(root, "box-h", "human-readable", "totals.json"), JSON.stringify({

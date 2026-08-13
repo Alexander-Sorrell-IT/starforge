@@ -11,7 +11,7 @@
 //   keep the first row   -> 35.6% of all output tokens silently discarded
 //                           (31,005,673 of 87,199,429)
 //
-// starforge shipped the second one. Both are pinned here, because a future
+// starreckon shipped the second one. Both are pinned here, because a future
 // "simplification" to either shape is a plausible edit that no other test sees:
 // the totals stay in the right ballpark and nothing throws.
 import { test } from "node:test";

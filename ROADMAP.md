@@ -1,4 +1,4 @@
-# starforge — next steps roadmap
+# starreckon — next steps roadmap
 
 Current state: v0.13.1, 387/389 tests passing, committed to main.
 
@@ -7,7 +7,7 @@ Current state: v0.13.1, 387/389 tests passing, committed to main.
 ## Phase 1 — Make it work end-to-end (this session)
 
 ### 1a. `serve --scan` — one command does everything
-**Problem today:** `starforge-cli serve` shows "no page yet" unless you ran
+**Problem today:** `starreckon serve` shows "no page yet" unless you ran
 `--page` first. Two commands, easy to forget the first one.
 
 **Fix:** Wire the scan directly into serve. When `serve` runs:
@@ -96,7 +96,7 @@ labelled. `--dual` keeps its current 2-star layout but adds a fleet pair below.
 ## Phase 3 — Make it shareable (after Phase 2)
 
 ### 3a. GitHub Pages share target
-**What:** a static page at `https://alexander-sorrell-it.github.io/starforge/`
+**What:** a static page at `https://alexander-sorrell-it.github.io/starreckon/`
 that reads URL params (`?star=27.0&arch=BUILDER&fp=5.4&en=5.3...`) and renders
 the star as SVG in the browser. The QR in the terminal encodes this URL instead
 of raw text, so scanning opens a real page on the phone.
@@ -112,9 +112,9 @@ the star itself, the tier emblem, the archetype name, and the npx command.
 ---
 
 ### 3b. Fleet sync over LAN (no shared folder)
-**What:** machine B runs `starforge-cli broadcast` — it announces itself on the
+**What:** machine B runs `starreckon broadcast` — it announces itself on the
 LAN via mDNS (Bonjour/Avahi) and serves its machine folder. Machine A runs
-`starforge-cli serve --discover` — it finds B automatically, pulls B's data,
+`starreckon serve --discover` — it finds B automatically, pulls B's data,
 merges it with its own, and serves the combined 4-star page.
 
 **Why this matters:** today the fleet requires a shared directory (Dropbox,
@@ -131,7 +131,7 @@ same room can see a combined star with no setup.
 **What:** bump version 0.13.1 → 0.14.0, run `npm pack --dry-run` to verify
 the package contents, publish to npm.
 
-**After this:** anyone can run `npx starforge-cli` with no install step.
+**After this:** anyone can run `npx starreckon` with no install step.
 
 **Needs:** npm token (starts `npm_...`) OR you run `npm publish` yourself.
 
@@ -139,7 +139,7 @@ the package contents, publish to npm.
 - `README.md` updated with new features (serve, contact, forge tiers, 4 stars)
 - `package.json` version bumped
 - `npm pack --dry-run` shows only the right files
-- No secrets in any shipped file (`starforge-cli verify` passes)
+- No secrets in any shipped file (`starreckon verify` passes)
 
 ---
 
@@ -187,11 +187,11 @@ Ongoing:
 
 ---
 
-## What is NOT in scope for starforge
+## What is NOT in scope for starreckon
 
 - Server-side percentile ranking — requires other users' data, structurally
   impossible while keeping zero outbound calls
 - Cost estimates — rate tables go stale, same model bills differently through
   different routes, a stale number wearing a dollar sign is worse than nothing
-- Transcript storage or cloud backup — starforge reads, never archives
+- Transcript storage or cloud backup — starreckon reads, never archives
 

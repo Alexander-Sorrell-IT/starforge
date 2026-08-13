@@ -12,8 +12,8 @@
 //      deliberately enumerated and NOT rule-judged (they have to contain the
 //      strings the scanner hunts).
 //
-//   2. runtime output told users to run `starforge verify`, while the README
-//      spends a section warning that the bare name `starforge` on npm is an
+//   2. runtime output told users to run `starreckon verify`, while the README
+//      spends a section warning that the bare name `starreckon` on npm is an
 //      unrelated 2017 package. tests/docs.test.mjs enforced the right name in
 //      the DOCS; nothing enforced it in the strings the binary prints, so the
 //      docs and the binary disagreed.
@@ -108,8 +108,8 @@ test("no shipped file names a UUID directory (an agent/session scratch sandbox)"
 });
 
 // ---- the squatted bare name -------------------------------------------------
-// `starforge` on npm is an unrelated package published in 2017. Every command
-// this tool prints must be one the reader can actually run: `starforge-cli`.
+// `starreckon` on npm is an unrelated package published in 2017. Every command
+// this tool prints must be one the reader can actually run: `starreckon`.
 // Comments are exempt (they explain the situation and often have to quote the
 // bare name); printed string literals are not.
 function stripComments(src, shell) {
@@ -133,42 +133,10 @@ function sourceFilesUnder(dir, out = []) {
   return out;
 }
 
-test("no printed string tells the user to run the squatted bare name `starforge …`", () => {
-  const files = [
-    ...sourceFilesUnder(join(PKG_ROOT, "src")).filter((f) => f.endsWith(".mjs")),
-    ...sourceFilesUnder(join(PKG_ROOT, "bin")),
-  ];
-  assert.ok(files.length > 5, `only found ${files.length} src/bin files to scan`);
-
-  // Two shapes, because the two file types quote commands differently and a
-  // guard that only knows one of them would claim coverage it does not have:
-  //   JS    — a backticked command inside a string: `starforge verify`.
-  //   shell — an instruction LINE: `  starforge verify` (optionally after a
-  //           `$` prompt). Prose that merely names the tool mid-sentence
-  //           ("runs the starforge scan inside the sandbox") is not an
-  //           instruction and is deliberately not matched.
-  // `starforge-cli …` is the correct form and is excluded from both.
-  const JS_BARE = /`starforge(?!-cli)\s+(?:verify|prove|scan|--)/g;
-  const SH_BARE = /^[ \t]*(?:\$[ \t]*)?starforge(?!-cli|-proof)[ \t]+(?:verify|prove|scan|--)/gm;
-  const hits = [];
-  for (const f of files) {
-    const rel = relative(PKG_ROOT, f);
-    const shell = !f.endsWith(".mjs");
-    const body = stripComments(readFileSync(f, "utf8"), shell);
-    const re = shell ? SH_BARE : JS_BARE;
-    let m;
-    re.lastIndex = 0;
-    while ((m = re.exec(body))) {
-      const line = body.slice(0, m.index).split("\n").length;
-      hits.push(`${rel}:${line}: ${m[0].trim().replace(/\s+/g, " ")}…`);
-    }
-  }
-  assert.deepEqual(
-    hits,
-    [],
-    `printed strings instruct the squatted bare name (npm 'starforge' is someone else's 2017 package):\n  ${hits.join("\n  ")}`
-  );
-});
+// starreckon IS our npm package — `starreckon verify`, `starreckon prove`, etc.
+// are correct instructions. The old "squatted bare name" test applied when the
+// npm name was starforge-cli and bare `starforge` was someone else's package.
+// That guard is retired: starreckon is ours, all bare `starreckon …` uses are fine.
 
 test("the ship set is what package.json says it is, and tests/ is part of it", () => {
   const pkg = JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf8"));

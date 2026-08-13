@@ -1,7 +1,7 @@
 // Persisted scan exclusions — folder paths or keyword fragments that should
 // never be scanned, saved across runs.
 //
-// Storage: ~/.starforge/exclude.json. Like contact.json this file is NEVER
+// Storage: ~/.starreckon/exclude.json. Like contact.json this file is NEVER
 // written by a scan or by any automatic process — only by the [E] menu in the
 // terminal or by the user editing it directly.
 //
@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-const DIR  = join(homedir(), ".starforge");
+const DIR  = join(homedir(), ".starreckon");
 const FILE = join(DIR, "exclude.json");
 
 /** Read persisted exclusions. Returns [] if the file does not exist. */

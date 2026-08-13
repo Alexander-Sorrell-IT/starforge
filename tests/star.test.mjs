@@ -264,7 +264,7 @@ test("changing one axis changes the rendered terminal frame", () => {
 test("more work never shortens an arm", () => {
   // Found adversarially, and it was the ugly kind of wrong: OUTSIDE THE BOX used
   // night hours as a SHARE of the day, so every daytime event shrank it. During
-  // a live scan users watched that arm collapse from 3.5 to 1.5 as starforge
+  // a live scan users watched that arm collapse from 3.5 to 1.5 as starreckon
   // discovered MORE of their work, and the arm's real driver was daytime tool
   // volume — a different axis's input, in a star whose whole claim is that an
   // arm answers to its own axis. Monotonicity is the property; this is the test.
@@ -330,7 +330,7 @@ test("a model id from a log cannot carry a path, a secret or prose into a snapsh
   // Snapshots are the file this tool tells you is safe to sync, and `model` is
   // the one string copied out of a log that reaches them. It had no
   // sanitisation: a crafted (or merely non-standard) log wrote an absolute path,
-  // an api-key-shaped string and an email straight into ~/.starforge/snapshots,
+  // an api-key-shaped string and an email straight into ~/.starreckon/snapshots,
   // and the leak scan passed it because the path belonged to another home.
   const { sanitizeModel } = await import("../src/scan.mjs");
   assert.equal(sanitizeModel("claude-opus-5"), "claude-opus-5", "a real model id must survive intact");

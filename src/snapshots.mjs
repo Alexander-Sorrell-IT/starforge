@@ -1,5 +1,5 @@
 // Rolling snapshot architecture. Each run writes/updates one snapshot per
-// calendar month into ~/.starforge/snapshots/YYYY-MM.json (already redacted +
+// calendar month into ~/.starreckon/snapshots/YYYY-MM.json (already redacted +
 // masked — snapshots are safe to sync between machines). Velocity = the
 // month-over-month trend across every snapshot present, from any machine.
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -9,8 +9,8 @@ import { auditWrite } from "./audit.mjs";
 import { computeLevels } from "./star.mjs";
 import { renderStarSvg } from "./starsvg.mjs";
 
-export const SNAP_DIR = join(homedir(), ".starforge", "snapshots");
-export const STAR_DIR = join(homedir(), ".starforge", "stars");
+export const SNAP_DIR = join(homedir(), ".starreckon", "snapshots");
+export const STAR_DIR = join(homedir(), ".starreckon", "stars");
 
 // Pass { audit } so these writes land in the run log — snapshots are written on
 // every default run, and an audit log that skipped them would report no writes

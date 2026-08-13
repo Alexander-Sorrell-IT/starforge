@@ -367,7 +367,7 @@ export function computeLevels(agg) {
   // Night activity is counted ABSOLUTELY, not as a share of the day. As a ratio
   // it made the axis non-monotonic in the worst way: every daytime event you
   // added SHRANK the arm, so a user watched OUTSIDE THE BOX collapse from 3.5 to
-  // 1.5 while starforge was still discovering their work, and the arm's length
+  // 1.5 while starreckon was still discovering their work, and the arm's length
   // was really a function of daytime tool volume — another axis's input. That
   // also broke the promise the whole shape rests on, that an arm answers to its
   // own axis and nothing else. Doing more work must never shorten an arm.

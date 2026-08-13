@@ -89,7 +89,7 @@ test("a full run prints no price, and says why", () => {
 
   // And nothing written to disk carries one either — the reports are the part
   // that gets attached to things.
-  const reports = join(home, ".starforge", "reports");
+  const reports = join(home, ".starreckon", "reports");
   for (const f of readdirSync(reports)) {
     const body = readFileSync(join(reports, f), "utf8");
     assert.doesNotMatch(body, MONEY, `${f} contains a currency figure`);

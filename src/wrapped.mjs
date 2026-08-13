@@ -21,6 +21,7 @@ import { explainLevels, computeLevels } from "./star.mjs";
 import { FLEET_MEASURES, FLEET_MEASURES_MONTH } from "./fleetstar.mjs";
 import { qrToTerminal } from "./qr.mjs";
 import { readContact, contactLines } from "./contact.mjs";
+import { buildShareUrl, PAGES_BASE } from "./shareurl.mjs";
 
 const R = "\x1b[0m";
 const B = "\x1b[1m";
@@ -501,8 +502,8 @@ export function cardProof(confinement) {
     `  ${D}history instead — which you can check from the snapshots.${R}`,
     "",
     `  ${WH}no process can prove that about itself. so let the kernel:${R}`,
-    `  ${CY}starforge-cli prove${R}${D}   → the command, without running it${R}`,
-    `  ${CY}sh bin/starforge-proof.sh${R}${D}  → runs the scan under a${R}`,
+    `  ${CY}starreckon prove${R}${D}   → the command, without running it${R}`,
+    `  ${CY}sh bin/starreckon-proof.sh${R}${D}  → runs the scan under a${R}`,
     `  ${D}  deny-network sandbox and fires a real TCP probe both${R}`,
     `  ${D}  sides of the wall. outside it connects; inside the${R}`,
     `  ${D}  kernel refuses with EPERM before a packet leaves.${R}`,
@@ -533,7 +534,7 @@ export function sharePayload(rawLevels, agg, url, contact) {
   const cachePct = work + cache > 0 ? Math.round((cache / (work + cache)) * 100) : 0;
   const axes = AXES.map((ax, i) => `${ax.split(" ")[0].slice(0, 4).toLowerCase()} ${levels[i]}`).join(" ");
   const baseLines = [
-    `starforge skill star ${total.toFixed(1)}/${ARMS * MAX_LEVEL} (${grade}) — ${archetype(levels).name}`,
+    `starreckon skill star ${total.toFixed(1)}/${ARMS * MAX_LEVEL} (${grade}) — ${archetype(levels).name}`,
     axes,
     `${fmt(num(a.total_sessions))} sessions, ${Math.round(num(a.total_duration_hours))}h active, ${num(a.active_days)} days`,
     `${human(work + cache)} tokens, ${cachePct}% cached`,
@@ -567,12 +568,12 @@ export function cardShare(rawLevels, agg, url, contact) {
     `  ${WH}${archetype(levels).name}${R}`,
     `  ${D}${AXES.map((a, i) => `${a.split(" ")[0].slice(0, 4).toLowerCase()} ${levels[i]}`).join(" · ")}${R}`,
     "",
-    `  ${CY}npx starforge-cli${R}`,
+    `  ${CY}npx starreckon${R}`,
     url ? `  ${D}${url}${R}` : "",
     "",
-    `  ${D}the QR below carries these numbers outright. scan it and${R}`,
-    `  ${D}your phone shows them — no link, no server to be up.${R}`,
-    hasContact ? `  ${D}contact fields in QR: ${contactSummary}${R}` : `  ${D}add contact info: press [C] in the menu${R}`,
+    `  ${D}the QR points to your results page — opens in any browser${R}`,
+    `  ${D}the numbers are in the URL, not on a server. press [X] to copy${R}`,
+    hasContact ? `  ${D}contact fields in QR: ${contactSummary}${R}` : `  ${D}add contact info: press [R] in the menu${R}`,
   ].filter(keep);
   return lines;
 }
@@ -587,7 +588,11 @@ export function cardShare(rawLevels, agg, url, contact) {
  * the width it needs by living below the frame.
  */
 export function shareQrLines(rawLevels, agg, url, contact) {
-  const payload = sharePayload(lv5(rawLevels), agg, url ?? "https://github.com/Alexander-Sorrell-IT/starforge", contact);
+  // Prefer encoding the GitHub Pages URL (short, clickable, renders the star
+  // in a browser) over the raw-text payload. Fall back to raw text if the
+  // URL can't be built (e.g. levels missing).
+  const shareUrl = buildShareUrl(lv5(rawLevels), agg, null);
+  const payload = shareUrl ?? sharePayload(lv5(rawLevels), agg, url ?? PAGES_BASE, contact);
   try {
     return qrToTerminal(payload, { color: !plain() }).split("\n").map((r) => "  " + r);
   } catch (e) {
@@ -746,7 +751,7 @@ export function buildCards(input) {
     [cardProjects(agg), "\x1b[38;5;120m"],
     [cardProof(confinement), GOLD],
     [cardRank(levels, agg, timeline), "\x1b[38;5;213m"],
-    [cardShare(levels, agg, url ?? "https://github.com/Alexander-Sorrell-IT/starforge", contact), CY],
+    [cardShare(levels, agg, url ?? "https://github.com/Alexander-Sorrell-IT/starreckon", contact), CY],
   ];
   return specs.filter(([lines]) => Array.isArray(lines) && lines.length).map(([lines, color]) => ({ lines, color }));
 }
@@ -786,7 +791,7 @@ export function buildCardsSafe(input) {
       ["YOUR TOP PROJECTS", () => cardProjects(input.agg)],
       ["ZERO", () => cardProof(input.confinement)],
       ["YOUR FORGE RANK", () => cardRank(input.levels, input.agg, input.timeline)],
-      ["SEND IT", () => cardShare(input.levels, input.agg, input.url ?? "https://github.com/Alexander-Sorrell-IT/starforge", input.contact ?? null)],
+      ["SEND IT", () => cardShare(input.levels, input.agg, input.url ?? "https://github.com/Alexander-Sorrell-IT/starreckon", input.contact ?? null)],
     ];
     for (const [name, fn] of each) {
       try {

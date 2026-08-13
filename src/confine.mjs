@@ -1,7 +1,7 @@
 // OS-level confinement — the only layer that actually proves no-egress.
 //
-// Everything else in starforge is policy ("we don't call the network").
-// This module is enforcement: it re-runs starforge inside an OS sandbox
+// Everything else in starreckon is policy ("we don't call the network").
+// This module is enforcement: it re-runs starreckon inside an OS sandbox
 // where the KERNEL refuses network syscalls. That closes every bypass an
 // in-process monkey-patch leaves open — Worker-thread realms, spawned
 // child processes, dgram UDP, process.binding('tcp_wrap'), patch
@@ -17,20 +17,20 @@
 //
 // Scope, stated honestly: this seals SOCKETS for the confined process and
 // all of its descendants. It cannot stop a file written into a
-// cloud-synced directory from leaving the machine later. starforge writes
-// under ~/.starforge, PLUS any --join-fleet directory you name — and that
+// cloud-synced directory from leaving the machine later. starreckon writes
+// under ~/.starreckon, PLUS any --join-fleet directory you name — and that
 // one is a path you chose, so it is the one that can be inside Dropbox or
 // iCloud (PROVE-IT.md §6).
 //
 // ---------------------------------------------------------------------------
 // INTENTIONAL, NAMED EXCEPTION TO THE NO-NETWORK RULE
-// @starforge-intentional-egress
+// @starreckon-intentional-egress
 //
 // proveEgressBlocked() DELIBERATELY attempts ONE outbound TCP connect
 // (1.1.1.1:443, a public resolver, short timeout) so the proof can say
 // "we tried to leave and the kernel stopped us" — a positive control,
 // strictly stronger than "we did not try". This file is the single
-// allowed importer of node:net in starforge; the static warden allowlists
+// allowed importer of node:net in starreckon; the static warden allowlists
 // src/confine.mjs by name for exactly this function.
 //
 // node:child_process is also imported here and ONLY here: runConfined()
@@ -39,7 +39,7 @@
 // ---------------------------------------------------------------------------
 import { existsSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process"; // launcher exception — spawns the CONFINED child
-import { connect } from "node:net"; // @starforge-intentional-egress — used only by proveEgressBlocked()
+import { connect } from "node:net"; // @starreckon-intentional-egress — used only by proveEgressBlocked()
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { maskPath } from "./redact.mjs";
@@ -97,7 +97,7 @@ export function detectConfinement() {
   }
   notes.push(
     "OS confinement seals sockets, not files: a report written into a cloud-synced " +
-      "folder can still leave the machine later. starforge writes under ~/.starforge, plus " +
+      "folder can still leave the machine later. starreckon writes under ~/.starreckon, plus " +
       "any --join-fleet directory you name — and that directory is the one that can be inside " +
       "a synced folder, because you chose it (PROVE-IT.md §6)."
   );
@@ -133,7 +133,7 @@ function which(cmd) {
 export function sandboxProfile() {
   return [
     "(version 1)",
-    ";; starforge no-egress profile: allow everything EXCEPT the network.",
+    ";; starreckon no-egress profile: allow everything EXCEPT the network.",
     ";; Applied by the kernel to the whole process tree — Workers, child",
     ";; processes, and raw tcp_wrap binds inside are all equally confined.",
     "(allow default)",
@@ -156,11 +156,11 @@ function profileOneLine() {
 // the executed process can never drift apart.
 //
 // The child is launched through /usr/bin/env so it carries
-// STARFORGE_CONFINEMENT=<mode>. That is the ONLY reason the variable exists:
+// STARRECKON_CONFINEMENT=<mode>. That is the ONLY reason the variable exists:
 // audit.mjs reads it and records which sandbox the run claims to have been
 // launched under. It is a label, not evidence — any process can set it, so the
 // run log stores it with verified:false. Setting it here (and in
-// bin/starforge-proof.sh) is what stops a genuinely confined run from being
+// bin/starreckon-proof.sh) is what stops a genuinely confined run from being
 // recorded as "none". Putting it INSIDE argv rather than in spawn's env keeps
 // the printed command byte-identical to what is executed.
 const ENV_BIN = "/usr/bin/env";
@@ -174,7 +174,7 @@ function buildParts({ argv = [], srcDir = SRC_DIR, mode, entry = "cli.mjs" } = {
   if (mode === "sandbox-exec") {
     return [
       ENV_BIN,
-      "STARFORGE_CONFINEMENT=sandbox-exec",
+      "STARRECKON_CONFINEMENT=sandbox-exec",
       SANDBOX_EXEC,
       "-p",
       profileOneLine(),
@@ -184,7 +184,7 @@ function buildParts({ argv = [], srcDir = SRC_DIR, mode, entry = "cli.mjs" } = {
     ];
   }
   if (mode === "netns") {
-    return [ENV_BIN, "STARFORGE_CONFINEMENT=netns", "unshare", "-rn", process.execPath, cli, ...argv];
+    return [ENV_BIN, "STARRECKON_CONFINEMENT=netns", "unshare", "-rn", process.execPath, cli, ...argv];
   }
   throw new Error(
     "no OS-level confinement available on this system (need sandbox-exec on macOS " +
@@ -197,7 +197,7 @@ function shQuote(s) {
   return `'${s.replaceAll("'", `'\\''`)}'`;
 }
 
-// The exact shell command that re-runs starforge under confinement. This is
+// The exact shell command that re-runs starreckon under confinement. This is
 // PRINTED for the user: they can run it themselves and see there is nothing
 // hidden in it. A command the user runs is legitimate proof — the user
 // controls it.
@@ -207,7 +207,7 @@ export function buildProofCommand({ argv = [], srcDir = SRC_DIR } = {}) {
 }
 
 // ---- running under confinement ---------------------------------------------
-// The ONE place starforge spawns a child process: the launcher for the
+// The ONE place starreckon spawns a child process: the launcher for the
 // confined re-run. Streams the child's output straight through.
 export async function runConfined({ argv = [], srcDir = SRC_DIR, entry = "cli.mjs", quiet = false } = {}) {
   const det = detectConfinement();
@@ -261,7 +261,7 @@ export async function runProbe({ confined, srcDir = SRC_DIR } = {}) {
 }
 
 // ---- the positive control ---------------------------------------------------
-// @starforge-intentional-egress
+// @starreckon-intentional-egress
 // Actively TRIES to open TCP 1.1.1.1:443. Run inside confinement, the kernel
 // must refuse it; run outside, it should connect — together those two results
 // prove the wall is real. `blocked` is true ONLY for a definite kernel
@@ -320,7 +320,7 @@ export function profileParses() {
 }
 
 // ---- CLI entry: `node src/confine.mjs --probe` ------------------------------
-// Used by bin/starforge-proof.sh so the probe logic lives HERE, in the one
+// Used by bin/starreckon-proof.sh so the probe logic lives HERE, in the one
 // warden-allowlisted file, instead of hiding in a shell one-liner.
 // Exit codes: 0 = kernel blocked the attempt, 1 = egress open, 2 = ambiguous.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
