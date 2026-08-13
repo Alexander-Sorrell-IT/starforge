@@ -77,6 +77,8 @@ export const STATIC_ALLOWLIST = Object.freeze({
     "the OS-sandbox launcher (spawns the CONFINED child) plus the positive-control egress attempt the kernel must refuse",
   "serve.mjs":
     "creates an INBOUND-only HTTP server on the LAN (node:http listen, no outbound connects) so other devices on the same WiFi can view the stats page",
+  "search.mjs":
+    "spawns src/search.py (bundled Python script) to run SecureBERT semantic search locally — no network calls from JS, Python side uses HF_HUB_OFFLINE=1 at inference time",
 });
 
 // SHA-256 manifest for the allowlisted files, committed next to them.
@@ -243,6 +245,15 @@ export const ALLOWLIST_REQUIREMENTS = Object.freeze({
       { label: "binds to LAN (0.0.0.0), not an outbound connect", re: /0\.0\.0\.0/ },
       { label: "auto-shutdown after visit cap or timeout", re: /server\.close/ },
       { label: "LAN IP discovery (no outbound)", re: /networkInterfaces/ },
+    ],
+    allowedApis: [API_NODE_BUILTIN],
+  },
+  "search.mjs": {
+    minPatchCalls: 0,
+    markers: [
+      { label: "spawns only the bundled search.py", re: /SEARCH_PY/ },
+      { label: "spawn call (the single child_process use)", re: /\bspawn\s*\(/ },
+      { label: "HF_HUB_OFFLINE comment (offline-at-inference guarantee)", re: /HF_HUB_OFFLINE/ },
     ],
     allowedApis: [API_NODE_BUILTIN],
   },

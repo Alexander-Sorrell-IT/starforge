@@ -304,6 +304,9 @@ test("POST /submit returns 404 when collect is not enabled", () => {
 // ── POST /submit — collect enabled ───────────────────────────────────────────
 
 // Helper: build a fake req that emits data then end, simulating a POST body.
+// Uses process.nextTick (not Promise microtasks) so the callbacks fire after
+// both "data" and "end" listeners have been registered, without creating
+// Promise chains that can outlive the test in Node 20 worker IPC.
 function fakePost(url, bodyObj) {
   const body = JSON.stringify(bodyObj);
   const listeners = {};
@@ -314,10 +317,9 @@ function fakePost(url, bodyObj) {
     on(event, fn) {
       listeners[event] = fn;
       if (event === "end") {
-        // Schedule data+end in next microtask so handler can register both first
-        Promise.resolve().then(() => {
+        process.nextTick(() => {
           listeners["data"]?.(body);
-          listeners["end"]?.();
+          process.nextTick(() => listeners["end"]?.());
         });
       }
     },
@@ -335,8 +337,8 @@ test("POST /submit with valid payload returns 200 and writes folder", async () =
   handler(fakePost("/submit", payload), res);
 
   // Wait for the async body events to fire
-  await new Promise((r) => setImmediate(r));
-  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => process.nextTick(r));
+  await new Promise((r) => process.nextTick(r));
 
   assert.equal(res._calls.writeHead, 200, `expected 200 got ${res._calls.writeHead}: ${res._calls.ended}`);
   const body = JSON.parse(res._calls.ended);
@@ -371,8 +373,8 @@ test("POST /submit with invalid JSON returns 400", async () => {
   };
 
   handler(badReq, res);
-  await new Promise((r) => setImmediate(r));
-  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => process.nextTick(r));
+  await new Promise((r) => process.nextTick(r));
 
   assert.equal(res._calls.writeHead, 400);
   assert.equal(JSON.parse(res._calls.ended).error, "invalid JSON");
@@ -386,8 +388,8 @@ test("POST /submit with missing folderName returns 400", async () => {
   const res = fakeRes();
 
   handler(fakePost("/submit", { accounts: [], sessions: [] }), res);
-  await new Promise((r) => setImmediate(r));
-  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => process.nextTick(r));
+  await new Promise((r) => process.nextTick(r));
 
   assert.equal(res._calls.writeHead, 400);
   assert.match(JSON.parse(res._calls.ended).error, /folderName/);
@@ -401,8 +403,8 @@ test("POST /submit uses machine field as folder name when folderName absent", as
   const res = fakeRes();
 
   handler(fakePost("/submit", { machine: "via-machine-field", accounts: [], sessions: [] }), res);
-  await new Promise((r) => setImmediate(r));
-  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => process.nextTick(r));
+  await new Promise((r) => process.nextTick(r));
 
   assert.equal(res._calls.writeHead, 200);
   assert.equal(JSON.parse(res._calls.ended).folder, "via-machine-field");
@@ -416,8 +418,8 @@ test("POST /submit sanitises unsafe folder names before writing", async () => {
   const res = fakeRes();
 
   handler(fakePost("/submit", { folderName: "My Laptop 2025!", accounts: [], sessions: [] }), res);
-  await new Promise((r) => setImmediate(r));
-  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => process.nextTick(r));
+  await new Promise((r) => process.nextTick(r));
 
   assert.equal(res._calls.writeHead, 200);
   // Sanitised to "my-laptop-2025"
@@ -431,8 +433,8 @@ test("GET / visit counter is unaffected by POST /submit requests", async () => {
   const { handler, getVisits } = makeHandler("<html>x</html>", 5, dir);
 
   handler(fakePost("/submit", { folderName: "m", accounts: [], sessions: [] }), fakeRes());
-  await new Promise((r) => setImmediate(r));
-  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => process.nextTick(r));
+  await new Promise((r) => process.nextTick(r));
 
   assert.equal(getVisits(), 0, "POST /submit must not increment GET visit counter");
 

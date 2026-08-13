@@ -87,12 +87,31 @@ const SERVE_FIXTURE = [
   "",
 ].join("\n");
 
+const SEARCH_FIXTURE = [
+  'import { spawn, spawnSync } from "node:child_process";',
+  'import { join, dirname } from "node:path";',
+  'import { fileURLToPath } from "node:url";',
+  'const __dirname = dirname(fileURLToPath(import.meta.url));',
+  'export const SEARCH_PY = join(__dirname, "search.py");',
+  '// HF_HUB_OFFLINE=1 set at inference time in search.py',
+  'export function runSearch(argv, opts={}) {',
+  '  const child = spawn(opts.python ?? "python3", [SEARCH_PY, ...argv], { stdio: "inherit" });',
+  '  return new Promise((resolve, reject) => { child.on("error", reject); child.on("close", resolve); });',
+  '}',
+  'export function checkPython(python="python3") {',
+  '  const r = spawnSync(python, ["--version"], { encoding: "utf8" });',
+  '  return r.status === 0 ? (r.stdout || r.stderr || "").trim() : null;',
+  '}',
+  "",
+].join("\n");
+
 // Writes all allowlisted files AND the pin manifest that authorises them,
 // exactly as the real tree does.
 function writeAllowlisted(dir, { pins = true, pkg = { name: "fixture", version: "0.0.0" } } = {}) {
   writeFileSync(join(dir, "tripwire.mjs"), TRIPWIRE_FIXTURE);
   writeFileSync(join(dir, "confine.mjs"), CONFINE_FIXTURE);
   writeFileSync(join(dir, "serve.mjs"), SERVE_FIXTURE);
+  writeFileSync(join(dir, "search.mjs"), SEARCH_FIXTURE);
   if (pkg) writeFileSync(join(dir, "package.json"), JSON.stringify(pkg, null, 2));
   if (pins) updatePins(dir);
 }
@@ -111,9 +130,11 @@ test("staticScan passes on a clean tree with intact, pinned allowlisted files", 
   assert.ok(res.allowlist["tripwire.mjs"].hits > 0);
   assert.ok(res.allowlist["confine.mjs"].hits > 0);
   assert.ok(res.allowlist["serve.mjs"].hits > 0);
+  assert.ok(res.allowlist["search.mjs"].hits > 0);
   assert.strictEqual(res.allowlist["tripwire.mjs"].pin, "ok");
   assert.strictEqual(res.allowlist["confine.mjs"].pin, "ok");
   assert.strictEqual(res.allowlist["serve.mjs"].pin, "ok");
+  assert.strictEqual(res.allowlist["search.mjs"].pin, "ok");
   assert.ok(res.limits.length >= 3);
   assert.ok(res.inspected > 0, "a scan that read files must report what it read");
 });

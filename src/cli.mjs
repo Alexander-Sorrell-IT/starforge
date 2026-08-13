@@ -51,6 +51,11 @@
 //   starforge-cli serve --serve-visits=N   auto-shutdown after N visits (default 3)
 //   starforge-cli serve --serve-collect=DIR  accept POST /submit from other machines
 //                                 and write each submission as a machine folder in DIR
+//   starforge-cli search QUERY      semantic search over your sessions (SecureBERT)
+//   starforge-cli search --search-setup   download models (~600 MB, one-time)
+//   starforge-cli search --search-index   embed sessions into FAISS index
+//   starforge-cli search --search-status  show index state
+//   starforge-cli search --search-top=N  number of results (default 10)
 //   starforge-cli --reset-audit[=WHY]
 //                                 delete every run log in ~/.starforge/audit and
 //                                 start a fresh chain whose first entry RECORDS
@@ -161,7 +166,7 @@ const monthOf = (p) => String(p).split("/").pop().replace(/\.svg$/, "");
 // Subcommands are explicit. An unknown positional argument EXITS NON-ZERO
 // rather than falling through to a scan — a proof command that silently runs
 // something else and prints success would be worse than having none.
-const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove", "daemon", "receipt", "serve"]);
+const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove", "daemon", "receipt", "serve", "search"]);
 const positional = args.filter((a) => !a.startsWith("-"));
 const subcommand = positional[0] ?? "scan";
 if (!KNOWN_SUBCOMMANDS.has(subcommand)) {
@@ -210,6 +215,10 @@ const FLAG_SPEC = Object.freeze({
   "--serve-timeout": "value",
   "--serve-visits": "value",
   "--serve-collect": "value",
+  "--search-top": "value",
+  "--search-index": "bool",
+  "--search-setup": "bool",
+  "--search-status": "bool",
 });
 const KNOWN_FLAGS = Object.freeze(Object.keys(FLAG_SPEC));
 
@@ -266,7 +275,7 @@ for (const a of args) {
   // subcommand would be the same silent-ignore this block exists to end — just
   // with a flag that happens to be spelled correctly. The one exception is
   // declared, not inferred: `receipt --json` emits the machine-readable pack.
-  const SUBCOMMAND_FLAGS = { receipt: new Set(["--json"]), serve: new Set(["--serve-port", "--serve-timeout", "--serve-visits", "--serve-collect"]) };
+  const SUBCOMMAND_FLAGS = { receipt: new Set(["--json"]), serve: new Set(["--serve-port", "--serve-timeout", "--serve-visits", "--serve-collect"]), search: new Set(["--search-top", "--search-index", "--search-setup", "--search-status", "--roots"]) };
   if (subcommand !== "scan" && !SUBCOMMAND_FLAGS[subcommand]?.has(base))
     flagError(
       `\`${subcommand}\` takes no flags, and ${base} would have been ignored. Run \`starforge-cli ${subcommand}\` on its own (to re-pin the allowlist manifest: node src/verify.mjs --update-pins).`
@@ -386,6 +395,40 @@ if (subcommand === "serve") {
     process.exit(1);
   }
   process.exit(0);
+}
+
+// `starforge search` — semantic search over AI-coding sessions via SecureBERT.
+// Delegates entirely to src/search.py running in ~/.starforge/.venv-search/.
+// search.mjs is imported lazily here (not at module top) because it imports
+// node:child_process, which the tripwire patches at module load in scan runs.
+if (subcommand === "search") {
+  const { runSearch, checkPython } = await import("./search.mjs");
+  const py = checkPython("python3") ? "python3" : null;
+  if (!py) {
+    console.error("starforge search: python3 not found on PATH. Install Python 3.8+ and try again.");
+    process.exit(1);
+  }
+  const roots = opt("roots")?.split(",").filter(Boolean) ?? [];
+  let searchArgv;
+  if (flag("--search-setup")) {
+    searchArgv = ["setup"];
+  } else if (flag("--search-index")) {
+    searchArgv = ["index"];
+  } else if (flag("--search-status")) {
+    searchArgv = ["status"];
+  } else {
+    // positional[1] is the query term
+    const query = positional[1];
+    if (!query) {
+      console.error('starforge search: provide a query, e.g.  starforge-cli search "SQL injection"');
+      console.error("  or use --search-setup / --search-index / --search-status");
+      process.exit(2);
+    }
+    const top = opt("search-top") ?? "10";
+    searchArgv = ["query", query, "--top", top];
+  }
+  const code = await runSearch(searchArgv, { python: py, roots });
+  process.exit(code ?? 0);
 }
 
 // Armed before anything is read, and at MODULE scope on purpose: a tripwire
