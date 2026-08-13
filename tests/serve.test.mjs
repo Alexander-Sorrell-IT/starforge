@@ -5,7 +5,7 @@
 // pass on any machine regardless of what services are running.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -345,8 +345,7 @@ test("POST /submit with valid payload returns 200 and writes folder", async () =
   assert.equal(body.grandTotal, 0);
 
   // Folder was actually written on disk
-  const { existsSync: exists } = await import("node:fs");
-  assert.ok(exists(join(dir, "test-machine", "machine-readable", "totals.json")));
+  assert.ok(existsSync(join(dir, "test-machine", "machine-readable", "totals.json")));
 
   rmSync(dir, { recursive: true, force: true });
 });

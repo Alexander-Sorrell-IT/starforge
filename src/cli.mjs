@@ -620,6 +620,16 @@ async function main() {
   if (!flag("--no-snapshot") && timeline.length)
     starFiles = writeSnapshotStars(timeline, { audit });
 
+  // ---- fleet aggregates (needed by star-only modes AND the default run) -----
+  // Computed once here, silently. The full fleet summary (per-machine table,
+  // floor totals) is printed only in the default run below. Star-only modes
+  // just need the levels; they exit before the summary ever prints.
+  const fleetDir = opt("fleet");
+  let fleetStars = null;
+  if (fleetDir) {
+    try { fleetStars = fleetAggregates(fleetDir); } catch {}
+  }
+
   // ---- star-only modes -------------------------------------------------------
   //
   // The default run is the whole thing — cards, summary, QR, menu — and there
@@ -629,6 +639,7 @@ async function main() {
   //
   //   --star   the lifetime star, alone
   //   --dual   this month's star and the lifetime star, alone
+  //   --fleet  adds fleet star(s) after the corpus ones in either mode
   //
   // They exit before the summary rather than suppressing pieces one by one,
   // because "just the star" is a promise that a later addition somewhere else
@@ -657,6 +668,24 @@ async function main() {
         starHeading("lifetime", `${life.months} months of snapshots`);
         star(life.levels, `lifetime · ${life.months} month(s)`);
       }
+      // Fleet star — appended after corpus stars when --fleet=DIR is passed.
+      // Labelled clearly: it is a FLOOR (token-usage knows days/projects/models
+      // but not languages, tool calls or night hours).
+      if (fleetStars?.lifetime) {
+        const flife = fleetStars.lifetime;
+        const fleetLevels = (agg, avail) => {
+          const rows = explainLevels(agg, { available: avail });
+          return rows.map((r) => r.level);
+        };
+        const nFleetMonths = fleetStars.months.length;
+        starHeading("fleet lifetime", `${nFleetMonths} months · floor — no languages or tool calls`);
+        star(fleetLevels(flife, FLEET_MEASURES), `fleet · ${nFleetMonths} month(s) · floor`);
+        if (nFleetMonths) {
+          const fm = fleetStars.months[nFleetMonths - 1];
+          starHeading("fleet this month", `${fm.month ?? ""} · floor`);
+          star(fleetLevels(fm, FLEET_MEASURES_MONTH), `fleet · this month · floor`);
+        }
+      }
     } else {
       // Prefer the accumulated lifetime over this scan. They are not the same
       // thing: the logs are retained for about a month, so the scan alone is
@@ -665,6 +694,14 @@ async function main() {
       const life = timeline.length ? lifetimeFromTimeline(timeline) : null;
       if (life) star(life.levels, `lifetime · ${life.months} month(s)`);
       else star(levels, "this scan · no snapshot history yet");
+      // Fleet star — appended when --fleet=DIR is passed.
+      if (fleetStars?.lifetime) {
+        const flife = fleetStars.lifetime;
+        const nFleetMonths = fleetStars.months.length;
+        const fleetLevels = (agg, avail) => explainLevels(agg, { available: avail }).map((r) => r.level);
+        starHeading("fleet lifetime", `${nFleetMonths} months · floor — no languages or tool calls`);
+        star(fleetLevels(flife, FLEET_MEASURES), `fleet · ${nFleetMonths} month(s) · floor`);
+      }
     }
     console.log("");
     finishAudit(audit);
@@ -777,10 +814,9 @@ async function main() {
     );
   }
 
-  // ---- fleet read ----------------------------------------------------------
-  const fleetDir = opt("fleet");
+  // ---- fleet read (summary + fleetView for --page / --json) -----------------
+  // fleetDir and fleetStars are already computed above for --star/--dual.
   let fleetView = null;
-  let fleetStars = null;
   if (fleetDir) {
     try {
       fleetView = readFleet(fleetDir);
@@ -792,12 +828,9 @@ async function main() {
         console.log(`${(m.label ?? m.folder).padEnd(28)} ${status}`);
       }
       console.log(`${"FLEET".padEnd(28)} on disk ${fmt(g(fleetView.fleetTotals.onDisk))}  floor ${fmt(g(fleetView.fleetTotals.floor))}`);
-      // Fold it into star-readable aggregates. Kept SEPARATE from agg on
-      // purpose: the fleet knows projects, models and days but not languages,
-      // tool calls or night hours, and a star with some arms from each source
-      // is a number nobody can check.
-      fleetStars = fleetAggregates(fleetDir);
-      if (fleetStars.lifetime)
+      // fleetStars already computed above (for --star/--dual). Just print
+      // the summary here — the data is the same object.
+      if (fleetStars?.lifetime)
         console.log(
           `${DIM}fleet star: ${fleetStars.lifetime.active_days} active days, ` +
             `${fleetStars.lifetime.projects_count} projects, ${fleetStars.months.length} months — ` +
