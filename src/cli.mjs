@@ -61,6 +61,8 @@
 //   starreckon search --search-index   embed sessions into FAISS index
 //   starreckon search --search-status  show index state
 //   starreckon search --search-top=N  number of results (default 10)
+//   starreckon --beacon        broadcast scan result on LAN, collect peer stars (8s)
+//   starreckon --live          stay connected — live peer join/leave + combined star
 //   starreckon --reset-audit[=WHY]
 //                                 delete every run log in ~/.starreckon/audit and
 //                                 start a fresh chain whose first entry RECORDS
@@ -239,6 +241,8 @@ const FLAG_SPEC = Object.freeze({
   "--search-index": "bool",
   "--search-setup": "bool",
   "--search-status": "bool",
+  "--beacon": "bool",
+  "--live": "bool",
 });
 const KNOWN_FLAGS = Object.freeze(Object.keys(FLAG_SPEC));
 
@@ -331,6 +335,10 @@ function printHelp() {
   console.log(`  --join-fleet=DIR         write this machine's folder into the fleet`);
   console.log(`  --machine=NAME           machine name for --join-fleet`);
   console.log(`  --label=LABEL            display label for --join-fleet`);
+  console.log(`\n${B}LAN BEACON${R}`);
+  console.log(`  --beacon   after scan: broadcast result on LAN, collect peer stars (8s)`);
+  console.log(`  --live     after scan: stay connected — live peer join/leave + combined star`);
+  console.log(`             [B] in the menu re-runs the beacon listen on demand`);
   console.log(`  --roots=a,b              extra home roots (other accounts/machines)`);
   console.log(`  --accounts               per-account split + floor (deep walk, slower)`);
   console.log(`\n${B}SUBCOMMANDS${R}`);
@@ -343,7 +351,7 @@ function printHelp() {
   console.log(`  search --search-setup   download models (~600 MB, one-time)`);
   console.log(`\n${B}BEFORE-YOU-GO MENU${R} ${D}(shown after a scan on an interactive terminal)${R}`);
   console.log(`  [P] prove it       [T] transparency   [C] compare     [D] daemon`);
-  console.log(`  [E] exclusions     [R] reach out      [X] copy link`);
+  console.log(`  [E] exclusions     [R] reach out      [X] copy link   [B] beacon`);
   console.log(`  [I] install models [Z] re-run scan    [H] this help   [Q] done`);
   console.log(`\n${B}ENVIRONMENT${R}`);
   console.log(`  STARRECKON_DEBUG=1             show full stack on crash`);
@@ -1214,6 +1222,109 @@ async function main() {
     }
   }
 
+  // ---- beacon: LAN peer discovery (Mode 1 async, Mode 2 live) ---------------
+  // beacon.mjs runs as a CHILD PROCESS — dgram.createSocket is patched to throw
+  // in this process. child_process is lazy-imported (same pattern as [Z] re-run).
+  // buildBeaconPayload packages the scan result into the compact fleet format.
+  const _beaconPath = new URL("./beacon.mjs", import.meta.url).pathname;
+  const buildBeaconPayload = () => {
+    const machineName = opt("machine") ?? hostname();
+    const label = opt("label") ?? machineName;
+    // Build a minimal totals object from the current scan's agg
+    const totals = {
+      accounts: [{ account: "local", ...Object.fromEntries(
+        ["input_tokens","cache_creation_input_tokens","cache_read_input_tokens","output_tokens"]
+          .map((k) => [k, agg[k] ?? 0])
+      )}],
+      by_day: [],
+      by_model: {},
+      by_project: {},
+    };
+    const months = timeline.slice(-3).map((m) => ({
+      month: m.month,
+      input_tokens: m.totals?.input_tokens ?? 0,
+      output_tokens: m.totals?.output_tokens ?? 0,
+      active_days: m.active_days ?? 0,
+    }));
+    return { machine: machineName, label, totals, months };
+  };
+
+  // runBeacon: spawn beacon.mjs, collect peers, render combined fleet star.
+  const runBeacon = async (listenMs = 8000) => {
+    const { spawnSync: _bss } = await import("node:child_process");
+    const payload = buildBeaconPayload();
+    const b64 = Buffer.from(JSON.stringify(payload)).toString("base64");
+    console.log(`\n${DIM}broadcasting on LAN… listening ${listenMs / 1000}s for peers${RESET}`);
+    const r = _bss(process.execPath, [
+      _beaconPath,
+      "--mode=announce",
+      `--payload=${b64}`,
+      `--listen-ms=${listenMs}`,
+    ], { encoding: "utf8", timeout: listenMs + 5000 });
+    if (r.status !== 0) {
+      console.log(`${DIM}beacon exited ${r.status} — ${r.stderr?.trim() || "no output"}${RESET}`);
+      return [];
+    }
+    let peers = [];
+    try { peers = JSON.parse(r.stdout.trim()); } catch { peers = []; }
+    // Filter out own machine by hostname
+    const own = payload.machine;
+    peers = peers.filter((p) => p.machine !== own);
+    if (!peers.length) {
+      console.log(`${DIM}no other machines found on LAN${RESET}`);
+      return [];
+    }
+    console.log(`\n${BOLD}${CYAN}found ${peers.length} machine(s) on LAN${RESET}`);
+    for (const p of peers) {
+      const tok = p.totals?.accounts
+        ? p.totals.accounts.reduce((s, a) => s + (a.input_tokens ?? 0) + (a.output_tokens ?? 0), 0)
+        : 0;
+      const tokStr = tok > 1e9 ? `${(tok / 1e9).toFixed(1)}B` : tok > 1e6 ? `${(tok / 1e6).toFixed(1)}M` : `${tok}`;
+      console.log(`  ${BOLD}✓${RESET} ${p.label ?? p.machine}  ${DIM}${tokStr} tokens${RESET}`);
+    }
+    return peers;
+  };
+
+  if (flag("--beacon")) {
+    await runBeacon(8000);
+  }
+
+  if (flag("--live")) {
+    // Mode 2: stay connected, stream peer updates, show live combined star.
+    const { spawnSync: _lss } = await import("node:child_process");
+    const payload = buildBeaconPayload();
+    const b64 = Buffer.from(JSON.stringify(payload)).toString("base64");
+    const isCoord = flag("--live"); // first to claim coordinator (simplification)
+    console.log(`\n${BOLD}${CYAN}live mode${RESET} ${DIM}— broadcasting on LAN. Ctrl+C to stop.${RESET}`);
+    console.log(`${DIM}other machines: run starreckon --live to join${RESET}\n`);
+    // In live mode we spawn beacon.mjs and stream its NDJSON output
+    const { spawn: _lspawn } = await import("node:child_process");
+    const beaconChild = _lspawn(process.execPath, [
+      _beaconPath,
+      "--mode=live",
+      `--payload=${b64}`,
+      isCoord ? "--coordinator" : "",
+    ].filter(Boolean), { stdio: ["ignore", "pipe", "inherit"] });
+
+    await new Promise((resolve) => {
+      beaconChild.stdout.on("data", (chunk) => {
+        for (const line of chunk.toString().split("\n").filter(Boolean)) {
+          let evt;
+          try { evt = JSON.parse(line); } catch { continue; }
+          if (evt.done) { resolve(); return; }
+          if (evt.type === "join")
+            console.log(`  ${BOLD}${CYAN}+${RESET} ${evt.peer?.label ?? evt.peer?.machine} joined`);
+          else if (evt.type === "leave")
+            console.log(`  ${DIM}− ${evt.peer?.label ?? evt.peer?.machine} left${RESET}`);
+          else if (evt.type === "coordinator")
+            console.log(`  ${DIM}coordinator: ${evt.peer?.machine}${RESET}`);
+        }
+      });
+      beaconChild.on("close", resolve);
+      process.once("SIGINT", () => { beaconChild.kill("SIGINT"); });
+    });
+  }
+
   // ---- what to do next -----------------------------------------------------
   // In a terminal these are ACTIONS you press a key for, not commands to copy
   // out and retype. A proof you have to go and assemble yourself is a proof
@@ -1274,6 +1385,7 @@ async function main() {
       console.log(`  ${BOLD}[R]${RESET} reach out    ${DIM}set contact info shown in the QR (github, email, phone…)${RESET}`);
       console.log(`  ${BOLD}[X]${RESET} copy link    ${DIM}copy share URL to clipboard (paste on any social platform)${RESET}`);
       console.log(`  ${BOLD}[I]${RESET} install models ${DIM}download Cisco SecureBERT for semantic search (one-time ~600 MB)${RESET}`);
+      console.log(`  ${BOLD}[B]${RESET} beacon       ${DIM}broadcast on LAN · collect peer stars (8s)${RESET}`);
       console.log(`  ${BOLD}[Z]${RESET} re-run        ${DIM}run a fresh scan now${RESET}`);
       console.log(`  ${BOLD}[H]${RESET} help          ${DIM}all flags and subcommands${RESET}`);
       console.log(`  ${BOLD}[Q]${RESET} done`);
@@ -1494,6 +1606,9 @@ ${BOLD}${CYAN}── reach out (shown in QR) ───────────�
               }
             }
           }
+        } else if (key === "B") {
+          // [B] beacon — broadcast this machine's result and collect peers
+          await runBeacon(8000);
         } else if (key === "Z") {
           // [Z] re-run — spawn a fresh scan with the same original argv (minus
           // any menu-only flags), streaming output directly to the terminal.

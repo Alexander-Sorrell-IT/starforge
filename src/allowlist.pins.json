@@ -6,6 +6,7 @@
     "confine.mjs": "d87b7c2524b972d5e8e47828ad98eb59fc23c8def5bb8a26f6902df9b3659efb",
     "serve.mjs": "a2377a6c6f9bde67330f1dbc32ee0a9728af5a06d505aac2bd1e29701b4a2327",
     "search.mjs": "eaa6122f011ece99bd3908df829bfa2062deaaf657f23d2b672fb0685bef090a",
-    "cli.mjs": "3c64801a05cf109c516a194cf4cc433f00e740bb42f67616c60b054c308726b2"
+    "beacon.mjs": "954d430a80775bd6b4d92a93bfd2827973de26245ee62f412d4aa9bcce1a22f8",
+    "cli.mjs": "7de1f2fd4d878268a07230a8fcc2eef2d882a854ddf27fe32fd7ae2c13350bd4"
   }
 }

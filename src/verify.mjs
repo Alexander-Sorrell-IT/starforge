@@ -79,8 +79,10 @@ export const STATIC_ALLOWLIST = Object.freeze({
     "creates an INBOUND-only HTTP server on the LAN (node:http listen, no outbound connects) so other devices on the same WiFi can view the stats page",
   "search.mjs":
     "spawns src/search.py (bundled Python script) to run SecureBERT semantic search locally — no network calls from JS, Python side uses HF_HUB_OFFLINE=1 at inference time",
+  "beacon.mjs":
+    "LAN peer discovery — runs ONLY as a child process spawned by cli.mjs after the scan finishes. Opens a UDP multicast socket on 239.255.255.250:4141 (link-local, never leaves the subnet). The main process's tripwire patches dgram.createSocket to throw; this file runs in a fresh child process where the tripwire is not armed. No outbound TCP/HTTP connections.",
   "cli.mjs":
-    "uses node:child_process in two places, both lazy (dynamic import, never at module load): (1) the [X] menu action spawns a clipboard binary (pbcopy/wl-copy/clip.exe) with a fixed literal command — no shell, no user input in the argument list; (2) the search subcommand delegates to search.mjs which is already allowlisted. The tripwire patches child_process at module load; the lazy import runs after that patch, so it is a real subprocess spawn, not a network call.",
+    "uses node:child_process in three places, all lazy (dynamic import, never at module load): (1) the [X] menu action spawns a clipboard binary; (2) the search subcommand delegates to search.mjs; (3) the --beacon/--live flags spawn src/beacon.mjs as a child process for LAN peer discovery after the scan completes.",
 });
 
 // SHA-256 manifest for the allowlisted files, committed next to them.
@@ -265,6 +267,17 @@ export const ALLOWLIST_REQUIREMENTS = Object.freeze({
       { label: "spawns only the bundled search.py", re: /SEARCH_PY/ },
       { label: "spawn call (the single child_process use)", re: /\bspawn\s*\(/ },
       { label: "HF_HUB_OFFLINE comment (offline-at-inference guarantee)", re: /HF_HUB_OFFLINE/ },
+    ],
+    allowedApis: [API_NODE_BUILTIN],
+  },
+  "beacon.mjs": {
+    minPatchCalls: 0,
+    markers: [
+      { label: "multicast address constant (link-local, LAN-only)", re: /MULTICAST_ADDR/ },
+      // Split so this file's own scanner does not see the node:dgram literal it hunts.
+      { label: "dgram — the single network API used in beacon.mjs", re: new RegExp(`["'\`]node:` + `dgram["'\`]`) },
+      { label: "child-process guard comment (explains why this is a child process)", re: /CHILD PROCESS/ },
+      { label: "setMulticastTTL(1) — prevents packets leaving the subnet", re: /setMulticastTTL/ },
     ],
     allowedApis: [API_NODE_BUILTIN],
   },

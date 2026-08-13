@@ -106,6 +106,17 @@ const SEARCH_FIXTURE = [
 ].join("\n");
 
 
+const BEACON_FIXTURE = [
+  '// THIS FILE RUNS AS A CHILD PROCESS — never imported in the main scan process.',
+  'import dgram from "node:dgram";',
+  'export const MULTICAST_ADDR = "239.255.255.250";',
+  'export function encodePacket(kind, data) {',
+  '  const sock = { setMulticastTTL(n) {} };',
+  '  return Buffer.from(JSON.stringify({ v: 1, kind, ...data }));',
+  '}',
+  "",
+].join("\n");
+
 const CLI_FIXTURE = [
   '// node:child_process, which the tripwire patches at module load in scan runs.',
   '// xdotool is excluded — it types into the focused window, not the clipboard.',
@@ -134,6 +145,7 @@ function writeAllowlisted(dir, { pins = true, pkg = { name: "fixture", version: 
   writeFileSync(join(dir, "confine.mjs"), CONFINE_FIXTURE);
   writeFileSync(join(dir, "serve.mjs"), SERVE_FIXTURE);
   writeFileSync(join(dir, "search.mjs"), SEARCH_FIXTURE);
+  writeFileSync(join(dir, "beacon.mjs"), BEACON_FIXTURE);
   writeFileSync(join(dir, "cli.mjs"), CLI_FIXTURE);
   if (pkg) writeFileSync(join(dir, "package.json"), JSON.stringify(pkg, null, 2));
   if (pins) updatePins(dir);
@@ -154,11 +166,13 @@ test("staticScan passes on a clean tree with intact, pinned allowlisted files", 
   assert.ok(res.allowlist["confine.mjs"].hits > 0);
   assert.ok(res.allowlist["serve.mjs"].hits > 0);
   assert.ok(res.allowlist["search.mjs"].hits > 0);
+  assert.ok(res.allowlist["beacon.mjs"].hits > 0);
   assert.ok(res.allowlist["cli.mjs"].hits > 0);
   assert.strictEqual(res.allowlist["tripwire.mjs"].pin, "ok");
   assert.strictEqual(res.allowlist["confine.mjs"].pin, "ok");
   assert.strictEqual(res.allowlist["serve.mjs"].pin, "ok");
   assert.strictEqual(res.allowlist["search.mjs"].pin, "ok");
+  assert.strictEqual(res.allowlist["beacon.mjs"].pin, "ok");
   assert.strictEqual(res.allowlist["cli.mjs"].pin, "ok");
   assert.ok(res.limits.length >= 3);
   assert.ok(res.inspected > 0, "a scan that read files must report what it read");
