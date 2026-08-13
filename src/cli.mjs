@@ -1290,39 +1290,88 @@ async function main() {
   }
 
   if (flag("--live")) {
-    // Mode 2: stay connected, stream peer updates, show live combined star.
-    const { spawnSync: _lss } = await import("node:child_process");
+    // Mode 2: stay connected, stream peer events as NDJSON, render combined
+    // fleet star when Ctrl+C is pressed. Only the first machine to run claims
+    // coordinator — subsequent machines are peers.
     const payload = buildBeaconPayload();
     const b64 = Buffer.from(JSON.stringify(payload)).toString("base64");
-    const isCoord = flag("--live"); // first to claim coordinator (simplification)
-    console.log(`\n${BOLD}${CYAN}live mode${RESET} ${DIM}— broadcasting on LAN. Ctrl+C to stop.${RESET}`);
-    console.log(`${DIM}other machines: run starreckon --live to join${RESET}\n`);
-    // In live mode we spawn beacon.mjs and stream its NDJSON output
+    console.log(`\n${BOLD}${CYAN}live mode${RESET} ${DIM}— broadcasting on LAN. Ctrl+C to stop and see combined star.${RESET}`);
+    console.log(`${DIM}other machines: npx starreckon --live${RESET}\n`);
+
     const { spawn: _lspawn } = await import("node:child_process");
+    const livePeers = new Map(); // machine -> pkt
+    let liveCoord = null;
+    let ndjsonBuf = "";
+
     const beaconChild = _lspawn(process.execPath, [
-      _beaconPath,
-      "--mode=live",
-      `--payload=${b64}`,
-      isCoord ? "--coordinator" : "",
-    ].filter(Boolean), { stdio: ["ignore", "pipe", "inherit"] });
+      _beaconPath, "--mode=live", `--payload=${b64}`, "--coordinator",
+    ], { stdio: ["ignore", "pipe", "inherit"] });
 
     await new Promise((resolve) => {
       beaconChild.stdout.on("data", (chunk) => {
-        for (const line of chunk.toString().split("\n").filter(Boolean)) {
+        ndjsonBuf += chunk.toString();
+        const lines = ndjsonBuf.split("\n");
+        ndjsonBuf = lines.pop() ?? ""; // keep partial last line
+        for (const line of lines.filter(Boolean)) {
           let evt;
           try { evt = JSON.parse(line); } catch { continue; }
-          if (evt.done) { resolve(); return; }
-          if (evt.type === "join")
-            console.log(`  ${BOLD}${CYAN}+${RESET} ${evt.peer?.label ?? evt.peer?.machine} joined`);
-          else if (evt.type === "leave")
-            console.log(`  ${DIM}− ${evt.peer?.label ?? evt.peer?.machine} left${RESET}`);
-          else if (evt.type === "coordinator")
-            console.log(`  ${DIM}coordinator: ${evt.peer?.machine}${RESET}`);
+          if (evt.done) {
+            // beacon child exited — collect final peer list from done packet
+            if (Array.isArray(evt.peers))
+              for (const p of evt.peers) livePeers.set(p.machine, p);
+            resolve(); return;
+          }
+          if (evt.type === "join") {
+            livePeers.set(evt.peer.machine, evt.peer);
+            console.log(`  ${BOLD}${CYAN}+${RESET} ${evt.peer.label ?? evt.peer.machine} joined  ${DIM}(${livePeers.size} total)${RESET}`);
+          } else if (evt.type === "leave") {
+            livePeers.delete(evt.peer.machine);
+            console.log(`  ${DIM}− ${evt.peer.label ?? evt.peer.machine} left  (${livePeers.size} remaining)${RESET}`);
+          } else if (evt.type === "coordinator") {
+            liveCoord = evt.peer.machine;
+            console.log(`  ${DIM}coordinator: ${liveCoord}${RESET}`);
+          }
         }
       });
       beaconChild.on("close", resolve);
-      process.once("SIGINT", () => { beaconChild.kill("SIGINT"); });
+      process.once("SIGINT", () => beaconChild.kill("SIGINT"));
     });
+
+    // Render combined fleet star from all peers + this machine
+    const allPeers = [...livePeers.values()].filter((p) => p.machine !== payload.machine);
+    if (allPeers.length) {
+      // Build a combined agg from all peer totals + this machine's agg
+      const allMachines = [payload, ...allPeers];
+      let inTok = 0, outTok = 0, activeDays = 0, months = 0;
+      for (const m of allMachines) {
+        const accts = m.totals?.accounts ?? [];
+        for (const a of accts) {
+          inTok += Number(a.input_tokens) || 0;
+          outTok += Number(a.output_tokens) || 0;
+        }
+        activeDays += Number(m.totals?.active_days) || 0;
+        months = Math.max(months, (m.months?.length ?? 0));
+      }
+      const combinedAgg = {
+        total_input_tokens: inTok,
+        total_output_tokens: outTok,
+        total_cache_read_tokens: 0,
+        total_cache_write_tokens: 0,
+        active_days: activeDays,
+        longest_streak_days: 0,
+        projects_count: 0,
+        models: {},
+        months,
+      };
+      const combinedLevels = computeLevels(combinedAgg);
+      starHeading(`live fleet — ${allMachines.length} machines`, `floor · tokens + days only`);
+      console.log(renderStar(combinedLevels, {
+        color: !process.env.NO_COLOR,
+        status: `${allMachines.length} machines · combined floor`,
+      }));
+    } else {
+      console.log(`${DIM}\nno other machines were seen during this session${RESET}`);
+    }
   }
 
   // ---- what to do next -----------------------------------------------------
