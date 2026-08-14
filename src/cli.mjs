@@ -944,6 +944,21 @@ async function main() {
     );
   }
 
+  // ---- daemon nudge -----------------------------------------------------------
+  // Shown when: daemon not installed AND user has ≤1 month of snapshot history.
+  // The ≤1 threshold means new users (who most need it) always see it. Users
+  // with a growing history already have the daemon or know what they're doing.
+  // One line only — no lecture. The [D] menu key and `daemon on` give the full
+  // explanation when they want it.
+  {
+    const dst = daemonStatus();
+    if (dst.supported && !dst.installed && timeline.length <= 1) {
+      console.log(
+        `\n${DIM}this star covers ~30 days of logs — run ${RESET}${CYAN}starreckon daemon on${RESET}${DIM} once to keep it growing month by month${RESET}`
+      );
+    }
+  }
+
   // ---- fleet read (summary + fleetView for --page / --json) -----------------
   // fleetDir and fleetStars are already computed above for --star/--dual.
   let fleetView = null;
