@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Semantic search over the AI-coding sessions starforge has scanned.
+"""Semantic search over the AI-coding sessions starreckon has scanned.
 
-Called by starforge-cli as a subprocess — not meant to be run directly,
+Called by starreckon as a subprocess — not meant to be run directly,
 but every command works standalone too:
 
-    python3 src/search.py index           # embed sessions → ~/.starforge/search-index/
+    python3 src/search.py index           # embed sessions → ~/.starreckon/search-index/
     python3 src/search.py query "auth"    # retrieve + rerank
     python3 src/search.py query "SQL injection" --top 20
     python3 src/search.py status          # show what is indexed
@@ -20,15 +20,15 @@ then re-reads the top-k (query, passage) pairs and rescores them with full
 attention — slower but orders of magnitude more accurate on security-domain
 content, which is what SecureBERT was trained for.
 
-Both models are pre-downloaded by `starforge-cli search --setup` (which runs
-`python3 src/search.py setup`) into ~/.starforge/.venv-search/.
+Both models are pre-downloaded by `starreckon search --setup` (which runs
+`python3 src/search.py setup`) into ~/.starreckon/.venv-search/.
 
 DATA SOURCES
 
-Sessions come from the same sources starforge scans:
+Sessions come from the same sources starreckon scans:
   ~/.claude/projects/       Claude Code transcripts
   ~/.codex/sessions/        Codex sessions
-  ~/.gemini/, ~/.continue/  other CLIs starforge knows about
+  ~/.gemini/, ~/.continue/  other CLIs starreckon knows about
 
 One document per session:
   - project label (redacted path last segment)
@@ -39,7 +39,7 @@ One document per session:
 
 WHERE THE INDEX LIVES
 
-  ~/.starforge/search-index/
+  ~/.starreckon/search-index/
       index.faiss   FAISS flat L2 index (one vector per session)
       docs.json     metadata: session_id, project, start, model, cli, snippet
 """
@@ -52,9 +52,9 @@ import re
 import sys
 
 HOME        = pathlib.Path.home()
-STARFORGE   = HOME / ".starforge"
-INDEX_DIR   = STARFORGE / "search-index"
-VENV        = STARFORGE / ".venv-search"
+STARRECKON  = HOME / ".starreckon"
+INDEX_DIR   = STARRECKON / "search-index"
+VENV        = STARRECKON / ".venv-search"
 VENV_PY     = VENV / "bin" / "python"
 
 BIENCODER    = "cisco-ai/SecureBERT2.0-biencoder"
@@ -69,9 +69,9 @@ def _require_venv():
     if not VENV_PY.is_file():
         print("  search environment is not set up yet.")
         print()
-        print("  Run:  starforge-cli search --setup")
-        print("  That creates ~/.starforge/.venv-search and downloads")
-        print("  both SecureBERT models (~600 MB) into ~/.starforge/.venv-search/.")
+        print("  Run:  starreckon search --setup")
+        print("  That creates ~/.starreckon/.venv-search and downloads")
+        print("  both SecureBERT models (~600 MB) into ~/.starreckon/.venv-search/.")
         sys.exit(1)
 
 # ── Model loading ─────────────────────────────────────────────────────────────
@@ -83,14 +83,14 @@ def _load_models():
     sys.path.insert(0, str(site[0]))
 
     os.environ.setdefault(
-        "HF_HOME", str(STARFORGE / ".venv-search" / "models"))
+        "HF_HOME", str(STARRECKON / ".venv-search" / "models"))
     os.environ["HF_HUB_OFFLINE"] = "1"   # never hit the network at inference
 
     try:
         from sentence_transformers import SentenceTransformer, CrossEncoder
     except ImportError:
         print("  sentence-transformers not importable from the venv.")
-        print("  Re-run:  starforge-cli search --setup")
+        print("  Re-run:  starreckon search --setup")
         sys.exit(1)
 
     try:
@@ -98,12 +98,12 @@ def _load_models():
         cross = CrossEncoder(CROSSENCODER)
     except Exception as e:
         print(f"  Could not load models: {e}")
-        print("  Re-run:  starforge-cli search --setup")
+        print("  Re-run:  starreckon search --setup")
         sys.exit(1)
 
     return bi, cross
 
-# ── Session discovery — same sources starforge scans ─────────────────────────
+# ── Session discovery — same sources starreckon scans ────────────────────────
 
 def _first_human_turn(transcript_path, max_chars=1024):
     p = pathlib.Path(transcript_path)
@@ -208,13 +208,13 @@ def cmd_index(args):
         import numpy as np
     except ImportError:
         print("  faiss not available.")
-        print("  Run:  starforge-cli search --setup")
+        print("  Run:  starreckon search --setup")
         sys.exit(1)
 
     roots = args.roots if args.roots else [str(HOME)]
     sources = list(_discover_sources(roots))
     if not sources:
-        print("  no session files found — run starforge-cli first to scan")
+        print("  no session files found — run starreckon first to scan")
         sys.exit(0)
 
     print(f"  indexing {len(sources)} session file(s)...", end="", flush=True)
@@ -257,7 +257,7 @@ def cmd_query(args):
     idx_path = INDEX_DIR / "index.faiss"
     doc_path = INDEX_DIR / "docs.json"
     if not idx_path.is_file():
-        print("  no index found. Run:  starforge-cli search --index")
+        print("  no index found. Run:  starreckon search --index")
         sys.exit(1)
 
     bi, cross = _load_models()
@@ -266,7 +266,7 @@ def cmd_query(args):
         import faiss
         import numpy as np
     except ImportError:
-        print("  faiss not available. Run:  starforge-cli search --setup")
+        print("  faiss not available. Run:  starreckon search --setup")
         sys.exit(1)
 
     index = faiss.read_index(str(idx_path))
@@ -325,9 +325,9 @@ def cmd_status(args):
     print(f"  venv:   {'yes — ' + str(VENV) if venv_ok else 'NOT SET UP'}")
     print(f"  index:  {'yes — ' + str(INDEX_DIR) + ' (' + str(n_idx) + ' sessions)' if idx_ok else 'NOT BUILT'}")
     if not venv_ok:
-        print("\n  Run:  starforge-cli search --setup")
+        print("\n  Run:  starreckon search --setup")
     elif not idx_ok:
-        print("\n  Run:  starforge-cli search --index")
+        print("\n  Run:  starreckon search --index")
 
 # ── setup command ─────────────────────────────────────────────────────────────
 
@@ -378,12 +378,12 @@ def cmd_setup(args):
         print("  check your internet connection and try again")
         sys.exit(1)
 
-    print(f"\n  setup complete. Run:  starforge-cli search --index")
+    print(f"\n  setup complete. Run:  starreckon search --index")
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    ap = argparse.ArgumentParser(description="Semantic search over starforge sessions")
+    ap = argparse.ArgumentParser(description="Semantic search over starreckon sessions")
     ap.add_argument("--roots", nargs="*", help="extra home roots to scan")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

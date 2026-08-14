@@ -17,6 +17,9 @@
 //   starreckon --dual          print ONLY this month beside lifetime
 //                                 (--star/--dual suppress the summary, cards,
 //                                 QR and menu — the default run shows them all)
+//   starreckon --ledger        record sessions in the token ledger so
+//                                 transcript deletion cannot lower the lifetime
+//                                 total. the daemon scan passes this by default.
 //   starreckon --roots=a,b     extra home roots (other accounts/machines)
 //   starreckon --json          write baseline + expanded JSON reports
 //   starreckon --card          write the Porter-Grade SVG card
@@ -77,10 +80,16 @@
 //                                 you, read from the files themselves (--json
 //                                 for the machine-readable pack)
 //   starreckon daemon on|off|status
-//                                 optional scheduled re-scan so snapshots keep
-//                                 building past the ~30-day log retention. Writes
-//                                 a schedule file and prints the command that
-//                                 loads it — it never loads it for you.
+//                                 two scheduled jobs: (1) monthly scan so
+//                                 snapshots outlive the ~30-day log retention,
+//                                 and (2) 6-hour protect tick (optional, but
+//                                 without it numbers degrade as transcripts age).
+//                                 Writes schedule files and prints the command
+//                                 that loads them — never loads them for you.
+//   starreckon protect            one tick of the protection layer: raises
+//                                 cleanupPeriodDays in every Claude profile and
+//                                 hard-link-archives all CLI session files so
+//                                 transcript deletion cannot erase the record.
 //
 // BEFORE-YOU-GO MENU (shown after a scan on an interactive terminal):
 //   [P] prove it    [T] transparency  [C] compare   [D] daemon
@@ -101,7 +110,6 @@ import {
   parseClaudeFile,
   parseCodexFile,
   finalize,
-  defaultRoots,
 } from "./scan.mjs";
 import { LiveStar, computeLevels, explainLevels, renderCompare, renderStar, AXES } from "./star.mjs";
 import {
@@ -116,14 +124,17 @@ import {
 import { maskPath, maskText, maskIdentities, maskProjects } from "./redact.mjs";
 import { renderCard } from "./card.mjs";
 import { buildCardsSafe, renderAll, box, shareQrLines } from "./wrapped.mjs";
-import { writeSchedule, removeSchedule, daemonStatus, describeSchedule } from "./daemon.mjs";
+import { writeSchedule, removeSchedule, daemonStatus, describeSchedule, PROTECT_LABEL } from "./daemon.mjs";
 import { buildReceipt, renderReceipt } from "./receipt.mjs";
-import { scanAllProviders } from "./scanners.mjs";
+import { scanAllProviders, scannerVersion } from "./scanners.mjs";
 import { discoverAccounts, floorTotals } from "./accounts.mjs";
 import { readContact, writeContact, FIELDS as CONTACT_FIELDS, KEYS as CONTACT_KEYS, LABELS as CONTACT_LABELS } from "./contact.mjs";
 import { readExclusions, addExclusion, removeExclusion, EXCLUDE_FILE } from "./exclude.mjs";
 import { buildShareUrl, PAGES_BASE } from "./shareurl.mjs";
 import { readFleet, writeMachineFolder } from "./fleet.mjs";
+import { tick as protectTick, needsProtection } from "./protect.mjs";
+import { record as ledgerRecord } from "./ledger.mjs";
+import { effectiveRoots } from "./config.mjs";
 import { startServe } from "./serve.mjs";
 import { fleetAggregates, FLEET_MEASURES, FLEET_MEASURES_MONTH } from "./fleetstar.mjs";
 import { ARMS, MAX_LEVEL } from "./starsvg.mjs";
@@ -185,7 +196,7 @@ import { clipboardCmds } from "./clipboard.mjs";
 // Subcommands are explicit. An unknown positional argument EXITS NON-ZERO
 // rather than falling through to a scan — a proof command that silently runs
 // something else and prints success would be worse than having none.
-const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove", "daemon", "receipt", "serve", "search"]);
+const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove", "daemon", "protect", "receipt", "serve", "search"]);
 const positional = args.filter((a) => !a.startsWith("-"));
 const subcommand = positional[0] ?? "scan";
 if (!KNOWN_SUBCOMMANDS.has(subcommand)) {
@@ -243,6 +254,7 @@ const FLAG_SPEC = Object.freeze({
   "--search-status": "bool",
   "--beacon": "bool",
   "--live": "bool",
+  "--ledger": "bool",
 });
 const KNOWN_FLAGS = Object.freeze(Object.keys(FLAG_SPEC));
 
@@ -299,7 +311,7 @@ for (const a of args) {
   // subcommand would be the same silent-ignore this block exists to end — just
   // with a flag that happens to be spelled correctly. The one exception is
   // declared, not inferred: `receipt --json` emits the machine-readable pack.
-  const SUBCOMMAND_FLAGS = { receipt: new Set(["--json"]), serve: new Set(["--serve-port", "--serve-timeout", "--serve-visits", "--serve-collect"]), search: new Set(["--search-top", "--search-index", "--search-setup", "--search-status", "--roots"]) };
+  const SUBCOMMAND_FLAGS = { receipt: new Set(["--json"]), serve: new Set(["--serve-port", "--serve-timeout", "--serve-visits", "--serve-collect"]), search: new Set(["--search-top", "--search-index", "--search-setup", "--search-status", "--roots"]), protect: new Set() };
   if (subcommand !== "scan" && !SUBCOMMAND_FLAGS[subcommand]?.has(base))
     flagError(
       `\`${subcommand}\` takes no flags, and ${base} would have been ignored. Run \`starreckon ${subcommand}\` on its own (to re-pin the allowlist manifest: node src/verify.mjs --update-pins).`
@@ -344,7 +356,8 @@ function printHelp() {
   console.log(`\n${B}SUBCOMMANDS${R}`);
   console.log(`  verify          adversarial self-check, limits printed`);
   console.log(`  prove           print the OS-confinement proof command`);
-  console.log(`  daemon on|off|status  scheduled re-scan (snapshots outlive ~30-day logs)`);
+  console.log(`  daemon on|off|status  two scheduled jobs: monthly scan + 6h protect tick`);
+  console.log(`  protect         raise transcript retention + hard-link-archive all CLI session files`);
   console.log(`  receipt         every field starreckon has kept, read from disk`);
   console.log(`  serve           LAN HTTP server to share your stats page`);
   console.log(`  search QUERY    semantic search over sessions (SecureBERT)`);
@@ -375,6 +388,16 @@ if (flag("-h") || flag("--help")) {
 // which made a broken warden indistinguishable from a failing check.)
 if (subcommand === "verify") {
   verifyCli();
+}
+
+// `starreckon protect` — one tick of the transcript protection + ledger layer.
+// Raises cleanupPeriodDays in every Claude profile and hard-link-archives ALL
+// CLI session files into ~/.ai-logs-archive so transcript deletion cannot erase
+// the ledger record. Same logic as the 6-hour daemon job, run on demand.
+if (subcommand === "protect") {
+  const summary = protectTick();
+  console.log(summary);
+  process.exit(0);
 }
 
 // `starreckon receipt` — the OTHER half of the proof. The kernel proof shows
@@ -408,14 +431,15 @@ if (subcommand === "daemon") {
   }
 
   if (action === "status") {
-    console.log(`${BOLD}${CYAN}starreckon daemon${RESET} — scheduled local re-scan\n`);
+    console.log(`${BOLD}${CYAN}starreckon daemon${RESET} — scheduled local re-scan + protect\n`);
     console.log(`platform:  ${st.platform}`);
-    console.log(`schedule:  ${st.installed ? `${maskPath(st.file)} (written)` : "not written"}`);
-    if (st.installed) {
-      console.log(`\n${DIM}whether it is LOADED is the scheduler's business, not this tool's.${RESET}`);
-      console.log(`${DIM}check: ${st.platform === "darwin" ? `launchctl list | grep starreckon` : "systemctl --user list-timers starreckon-scan.timer"}${RESET}`);
+    console.log(`scan job:    ${st.installed ? `${maskPath(st.file)} (written)` : "not written"}`);
+    console.log(`protect job: ${st.protectInstalled ? `${maskPath(st.protectFile)} (written)` : "not written — numbers will degrade as transcripts age"}`);
+    if (st.installed || st.protectInstalled) {
+      console.log(`\n${DIM}whether jobs are LOADED is the scheduler's business, not this tool's.${RESET}`);
+      console.log(`${DIM}check: ${st.platform === "darwin" ? `launchctl list | grep starreckon` : "systemctl --user list-timers"}${RESET}`);
       const body = describeSchedule();
-      if (body) console.log(`\n${BOLD}what it will run${RESET}\n${DIM}${body.trim()}${RESET}`);
+      if (body) console.log(`\n${BOLD}what the scan job will run${RESET}\n${DIM}${body.trim()}${RESET}`);
     }
     process.exit(0);
   }
@@ -433,12 +457,17 @@ if (subcommand === "daemon") {
   console.log("Why you might want this: AI-coding logs age off disk after about");
   console.log("30 days. A scan you run once can only ever show one month. The");
   console.log("monthly snapshots outlive the logs — but only if something takes");
-  console.log("them regularly. That is all this schedules.\n");
+  console.log("them regularly. That is what this schedules.\n");
   for (const f of files) console.log(`wrote ${maskPath(f)}`);
   console.log(`\n${BOLD}read it, then load it yourself${RESET}\n  ${activate}`);
-  console.log(`\n${DIM}the scheduled run is the same local scan (--yes --no-wrapped --no-pace).${RESET}`);
-  console.log(`${DIM}it makes no network calls, and writes under ~/.starreckon exactly as${RESET}`);
-  console.log(`${DIM}an interactive run does. turn it off with: starreckon daemon off${RESET}`);
+  console.log(`\n${DIM}two jobs are installed:${RESET}`);
+  console.log(`${DIM}  1. monthly scan (work.starreckon.scan) — same local scan (--yes --no-wrapped --no-pace --ledger).${RESET}`);
+  console.log(`${DIM}     records each session in the ledger so deletions don't lower the lifetime total.${RESET}`);
+  console.log(`${DIM}  2. 6-hour protect tick (work.starreckon.protect) — optional, but without it numbers${RESET}`);
+  console.log(`${DIM}     degrade as transcripts age off. raises cleanupPeriodDays and hard-link-archives${RESET}`);
+  console.log(`${DIM}     ALL CLI session files so deletion cannot erase what the ledger recorded.${RESET}`);
+  console.log(`${DIM}both make no network calls and write only under ~/.starreckon and ~/.ai-logs-archive.${RESET}`);
+  console.log(`${DIM}turn off with: starreckon daemon off${RESET}`);
   process.exit(0);
 }
 
@@ -581,7 +610,7 @@ async function main() {
   // Contact info — read once, used by the QR and the [C] menu.
   const contact = readContact();
 
-  const roots = [...defaultRoots(), ...(opt("roots")?.split(",").filter(Boolean) ?? [])];
+  const roots = effectiveRoots(opt("roots")?.split(",").filter(Boolean) ?? []);
   const sources = discoverSources(roots);
   if (sources.length === 0) {
     // Having nothing to scan is NOT an error, and this path exits 0.
@@ -704,6 +733,47 @@ async function main() {
     } catch {}
   }
 
+  // ---- ledger: record sessions so deletions don't lower the lifetime total --
+  // Only runs when --ledger is passed (the daemon scan adds it automatically).
+  // Records provider sessions (Gemini, Copilot, etc.). If --accounts ran, also
+  // records Claude sessions from the transcript scan. Silent — any write error
+  // should not abort the scan.
+  if (flag("--ledger") && providers) {
+    try {
+      const ver = scannerVersion();
+      // Map provider perSession to ledger shape.
+      const provSessions = (providers.perSession ?? []).map((s) => ({
+        cli: s.provider,
+        session_id: s.session_id,
+        total: (s.input ?? 0) + (s.output ?? 0) + (s.cacheRead ?? 0) + (s.cacheWrite ?? 0),
+        tokens: {
+          input_tokens: s.input ?? 0,
+          cache_creation_input_tokens: s.cacheWrite ?? 0,
+          cache_read_input_tokens: s.cacheRead ?? 0,
+          output_tokens: s.output ?? 0,
+        },
+        start: s.month ? s.month + "-01" : null,
+        model: s.model ?? "unknown",
+      }));
+      ledgerRecord(provSessions, ver);
+    } catch {}
+  }
+
+  // ---- protect warning: shown post-scan when protection is off ---------------
+  // Conditions: any Claude profile has cleanupPeriodDays < 36500 AND the
+  // protect daemon is not installed. One line only. Skipped in star-only modes
+  // where the star IS the whole output.
+  if (!starOnly) {
+    try {
+      const pst = daemonStatus();
+      if (pst.supported && needsProtection() && !pst.protectInstalled) {
+        console.log(
+          `\n${DIM}⚠ transcripts are set to auto-delete — run ${RESET}${CYAN}starreckon protect${RESET}${DIM} once, or enable the daemon to archive them automatically${RESET}`
+        );
+      }
+    } catch {}
+  }
+
   // ---- per-account split + floor (opt-in, deep walk) -----------------------
   // Identity policy (see src/accounts.mjs displayAccount + src/redact.mjs):
   // the account identity is an OAuth EMAIL ADDRESS — the user's real-world
@@ -734,6 +804,29 @@ async function main() {
     } catch (e) {
       console.log(`account scan failed: ${maskText(e.message)}`);
     }
+  }
+
+  // ---- ledger: also record Claude sessions when --accounts ran ---------------
+  if (flag("--ledger") && fleetJoin?.fleetSessions?.length) {
+    try {
+      const ver = scannerVersion();
+      // fleetSessions already have cli:"claude", session_id, tokens:{...}, start, model
+      const claudeSessions = fleetJoin.fleetSessions.map((s) => ({
+        cli: s.cli,
+        session_id: s.session_id,
+        total: (s.tokens?.input_tokens ?? 0) + (s.tokens?.output_tokens ?? 0) +
+               (s.tokens?.cache_creation_input_tokens ?? 0) + (s.tokens?.cache_read_input_tokens ?? 0),
+        tokens: {
+          input_tokens: s.tokens?.input_tokens ?? 0,
+          cache_creation_input_tokens: s.tokens?.cache_creation_input_tokens ?? 0,
+          cache_read_input_tokens: s.tokens?.cache_read_input_tokens ?? 0,
+          output_tokens: s.tokens?.output_tokens ?? 0,
+        },
+        start: s.start ? String(s.start).slice(0, 10) : null,
+        model: s.model ?? "unknown",
+      }));
+      ledgerRecord(claudeSessions, ver);
+    } catch {}
   }
 
   // ---- snapshots + velocity ------------------------------------------------

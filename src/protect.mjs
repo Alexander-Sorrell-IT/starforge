@@ -1,0 +1,505 @@
+// Protection layer for AI-coding session files.
+//
+// Two layers, neither destructive — ported from deadreckon-count/retention_guard.py:
+//
+// LAYER 1 — raise cleanupPeriodDays (Claude only)
+//   Claude Code deletes transcripts older than cleanupPeriodDays AT STARTUP.
+//   Default is 30. This raises it to 36500 (100 years) in every discovered
+//   profile's settings.json. Cleanup still runs; it simply never matches.
+//   Never lowers the value. Backs up settings.json once before first edit.
+//   Atomic write (tmp + rename) so a crash mid-write cannot corrupt the config.
+//
+// LAYER 2 — hard-link archive (all CLI stores)
+//   Every session file from every CLI gets a hard link under
+//   ~/.ai-logs-archive/<store>/<same relative path>. A hard link is a second
+//   NAME for the same inode: when a tool deletes its own copy the bytes live on
+//   under this name. Costs zero extra disk space (same blocks). Only .jsonl,
+//   .json, .db, .db-wal session files — never credentials, OAuth tokens, or
+//   config files.
+//
+// Claude is the only CLI that auto-deletes. The archive is for all CLIs because
+// any of them COULD delete tomorrow, and the archive costs nothing.
+//
+// NEVER lowers cleanupPeriodDays. NEVER archives credential files. NEVER
+// crosses filesystem boundaries (hard links cannot). NEVER modifies any tool's
+// own data — read-only on the source side; only creates links in the archive.
+
+import {
+  existsSync, mkdirSync, readdirSync, readFileSync, renameSync,
+  statSync, writeFileSync, linkSync, lstatSync, unlinkSync,
+} from "node:fs";
+import { homedir, platform } from "node:os";
+import { basename, dirname, join, sep } from "node:path";
+
+const TARGET_DAYS = 36500; // 100 years — cleanup runs, never matches
+
+// Directories never worth walking when looking for a profile.
+const SKIP_WALK = new Set([
+  ".cache", ".npm", ".gradle", ".wine", ".git", "node_modules",
+  "__pycache__", ".venv", "venv", "site-packages", ".rustup",
+  ".cargo", ".mozilla", ".thunderbird", ".ai-logs-archive",
+  "Library", "AppData", "corpus", "merged", "archive",
+  "snap", ".Trash", "Trash",
+]);
+
+// Directories whose name signals credentials — never link anything inside.
+const SECRET_DIRS = new Set([
+  "mcp-secrets", "credentials", ".credentials", "secrets", "tokens",
+  "auth", "oauth", ".ssh", "keychain",
+]);
+
+// File names that are credentials, never session records.
+const SECRET_NAMES = new Set([
+  ".credentials.json", "credentials.json", "oauth_creds.json",
+  "google_accounts.json", "installation_id", "token", "session-id",
+  ".env", "config.json", "auth.json",
+]);
+
+// Extensions we archive. Everything else is ignored.
+const ARCHIVE_EXTS = new Set([".jsonl", ".json", ".db", ".db-wal", ".ndjson"]);
+
+// ---- filesystem helpers ----------------------------------------------------
+
+function isDir(p) {
+  try { return statSync(p).isDirectory(); } catch { return false; }
+}
+function isFile(p) {
+  try { return statSync(p).isFile(); } catch { return false; }
+}
+function devIno(p) {
+  // (dev, ino) pair to detect same inode. Returns null on error.
+  try {
+    const s = lstatSync(p);
+    return s.ino !== 0 ? `${s.dev}:${s.ino}` : null;
+  } catch { return null; }
+}
+function sameFile(a, b) {
+  const ka = devIno(a), kb = devIno(b);
+  return ka !== null && ka === kb;
+}
+function sameDev(a, b) {
+  // Hard links require same filesystem. Check device numbers.
+  try {
+    const sa = statSync(a), sb = statSync(b);
+    return sa.dev === sb.dev;
+  } catch { return false; }
+}
+function readJsonSafe(p) {
+  try { return JSON.parse(readFileSync(p, "utf-8")); } catch { return null; }
+}
+
+// ---- credential guard ------------------------------------------------------
+
+function isSecretName(name) {
+  return SECRET_NAMES.has(name.toLowerCase());
+}
+function hasSecretAncestor(rel) {
+  // rel is relative to the store root — check each component.
+  for (const part of rel.split(sep)) {
+    if (SECRET_DIRS.has(part.toLowerCase())) return true;
+  }
+  return false;
+}
+function isArchivable(fullPath, relToStore) {
+  const name = basename(fullPath).toLowerCase();
+  if (isSecretName(name)) return false;
+  if (hasSecretAncestor(relToStore)) return false;
+  const ext = name.slice(name.lastIndexOf("."));
+  if (!ARCHIVE_EXTS.has(ext)) return false;
+  return true;
+}
+
+// ---- Claude profile discovery (by SHAPE, not by name) ----------------------
+// Port of analyze_tokens.find_config_dirs + retention_guard.find_profiles.
+// A Claude profile is any directory containing projects/ with at least one
+// .jsonl beneath it. Walked to depth 4 from home.
+
+function looksLikeClaudeProfile(p) {
+  const proj = join(p, "projects");
+  if (!isDir(proj)) return false;
+  // At least one .jsonl anywhere beneath projects/
+  const check = (dir, depth) => {
+    if (depth < 0) return false;
+    let entries;
+    try { entries = readdirSync(dir); } catch { return false; }
+    for (const e of entries) {
+      if (e.endsWith(".jsonl")) return true;
+      const full = join(dir, e);
+      if (isDir(full) && check(full, depth - 1)) return true;
+    }
+    return false;
+  };
+  return check(proj, 4);
+}
+
+export function findClaudeProfiles(home) {
+  home = home ?? homedir();
+  const seen = new Set();
+  const out = [];
+
+  const add = (p) => {
+    let key;
+    try {
+      const s = statSync(p);
+      key = s.ino !== 0 ? `${s.dev}:${s.ino}` : p;
+    } catch { return; }
+    if (seen.has(key)) return;
+    if (!looksLikeClaudeProfile(p)) return;
+    seen.add(key);
+    out.push(p);
+  };
+
+  // Fast path: ~/.claude* (common case)
+  let top;
+  try { top = readdirSync(home); } catch { return out; }
+  for (const e of top) {
+    if (e.startsWith(".claude")) {
+      const full = join(home, e);
+      if (isDir(full)) add(full);
+    }
+  }
+
+  // $CLAUDE_CONFIG_DIR may point anywhere
+  const env = process.env.CLAUDE_CONFIG_DIR;
+  if (env) add(env);
+
+  // Deep walk for copies/alternate profiles
+  const walk = (dir, depth) => {
+    if (depth < 0) return;
+    let entries;
+    try { entries = readdirSync(dir); } catch { return; }
+    for (const e of entries) {
+      if (SKIP_WALK.has(e)) continue;
+      const full = join(dir, e);
+      let isD;
+      try { isD = statSync(full).isDirectory(); } catch { continue; }
+      if (!isD) continue;
+      // Skip the archive itself — it holds copies, not live profiles
+      if (full === join(home, ".ai-logs-archive")) continue;
+      if (isDir(join(full, "projects"))) add(full);
+      walk(full, depth - 1);
+    }
+  };
+  walk(home, 4);
+  return out;
+}
+
+// ---- Layer 1: raise cleanupPeriodDays --------------------------------------
+
+function settingsPath(profile) {
+  return join(profile, "settings.json");
+}
+
+function currentPeriod(profile) {
+  const p = settingsPath(profile);
+  if (!isFile(p)) return 30; // Claude's default
+  const d = readJsonSafe(p);
+  const v = d?.cleanupPeriodDays;
+  return typeof v === "number" && Number.isFinite(v) ? v : 30;
+}
+
+/**
+ * Raise cleanupPeriodDays to TARGET_DAYS in one profile.
+ * Returns { changed, message }.
+ * dry=true: report what would happen, change nothing.
+ */
+export function raisePeriod(profile, { dry = false } = {}) {
+  const p = settingsPath(profile);
+  if (!isFile(p)) {
+    // No settings.json — create one with just cleanupPeriodDays
+    if (dry) return { changed: true, message: `no settings.json → would create with ${TARGET_DAYS}` };
+    try {
+      writeFileSync(p, JSON.stringify({ cleanupPeriodDays: TARGET_DAYS }, null, 2) + "\n", "utf-8");
+      return { changed: true, message: `created settings.json with cleanupPeriodDays=${TARGET_DAYS}` };
+    } catch (e) {
+      return { changed: false, message: `could not create settings.json: ${e.message}` };
+    }
+  }
+  const cur = currentPeriod(profile);
+  if (cur >= TARGET_DAYS) {
+    return { changed: false, message: `already ${cur}` };
+  }
+  if (dry) {
+    return { changed: true, message: `${cur} → ${TARGET_DAYS} (dry run, not applied)` };
+  }
+  let doc = readJsonSafe(p) ?? {};
+  // Back up once before the first edit
+  const bak = p + ".before-starreckon";
+  if (!existsSync(bak)) {
+    try { writeFileSync(bak, readFileSync(p)); } catch { /* best-effort */ }
+  }
+  doc.cleanupPeriodDays = TARGET_DAYS;
+  const tmp = p + ".tmp";
+  try {
+    writeFileSync(tmp, JSON.stringify(doc, null, 2) + "\n", "utf-8");
+    renameSync(tmp, p); // atomic: crash mid-write cannot leave a truncated config
+    return { changed: true, message: `${cur} → ${TARGET_DAYS}` };
+  } catch (e) {
+    try { unlinkSync(tmp); } catch { /* ignore */ }
+    return { changed: false, message: `write failed: ${e.message}` };
+  }
+}
+
+// ---- Layer 2: hard-link archive --------------------------------------------
+
+const archiveRoot = (home) => join(home ?? homedir(), ".ai-logs-archive");
+
+/**
+ * Hard-link all session files under `src` into ARCHIVE/label/.
+ * Returns { linked, skipped, failed, barrier }.
+ *
+ * barrier is set when linking is impossible (different filesystem, unwritable
+ * archive). In that case linked=skipped=failed=0 and nothing was attempted.
+ */
+export function linkTree(src, label, { home = null, dry = false } = {}) {
+  const archive = archiveRoot(home);
+  const destRoot = join(archive, label);
+
+  if (!isDir(src) && !isFile(src)) {
+    return { linked: 0, skipped: 0, failed: 0, status: "absent" };
+  }
+
+  // Filesystem check BEFORE creating destination directory.
+  // Hard links cannot cross filesystems.
+  const srcDev = (() => { try { return statSync(src).dev; } catch { return null; } })();
+  if (srcDev === null) return { linked: 0, skipped: 0, failed: 0, status: "unreadable" };
+
+  // Check if archive is on same filesystem (create parent if needed to check)
+  try { mkdirSync(archive, { recursive: true }); } catch { /* ignore */ }
+  const archiveDev = (() => { try { return statSync(archive).dev; } catch { return null; } })();
+  if (archiveDev !== null && srcDev !== archiveDev) {
+    return { linked: 0, skipped: 0, failed: 0,
+      barrier: "DIFFERENT FILESYSTEM — hard links impossible here" };
+  }
+
+  if (!dry) {
+    try { mkdirSync(destRoot, { recursive: true }); } catch (e) {
+      return { linked: 0, skipped: 0, failed: 0,
+        barrier: `archive not writable: ${e.message}` };
+    }
+  }
+
+  let linked = 0, skipped = 0, failed = 0;
+  const errors = [];
+
+  const walk = (dir, relBase) => {
+    let entries;
+    try { entries = readdirSync(dir); } catch { return; }
+    for (const e of entries.sort()) {
+      const full = join(dir, e);
+      const rel = relBase ? relBase + sep + e : e;
+      let st;
+      try { st = lstatSync(full); } catch { continue; }
+      if (st.isDirectory()) {
+        walk(full, rel);
+        continue;
+      }
+      if (!st.isFile()) continue;
+      if (!isArchivable(full, rel)) continue;
+
+      // Where this inode belongs in the archive.
+      // If destination exists but is a DIFFERENT inode (file was rewritten),
+      // archive alongside it using inode number in the name.
+      const dest = join(destRoot, rel);
+      const destDir = dirname(dest);
+
+      let targetDest = dest;
+      if (existsSync(dest)) {
+        if (sameFile(full, dest)) {
+          skipped += 1;
+          continue; // already archived at this inode
+        }
+        // Different inode — file was rewritten. Archive new inode alongside old.
+        const ino = st.ino;
+        const dot = e.lastIndexOf(".");
+        const newName = dot > 0
+          ? e.slice(0, dot) + `.ino${ino}` + e.slice(dot)
+          : e + `.ino${ino}`;
+        targetDest = join(destDir, newName);
+        if (existsSync(targetDest) && sameFile(full, targetDest)) {
+          skipped += 1;
+          continue;
+        }
+      }
+
+      if (dry) {
+        linked += 1;
+        continue;
+      }
+
+      try {
+        mkdirSync(destDir, { recursive: true });
+        linkSync(full, targetDest);
+        linked += 1;
+      } catch (e) {
+        failed += 1;
+        errors.push(`${rel}: ${e.message}`);
+      }
+    }
+  };
+
+  if (isFile(src)) {
+    // Store path names a single file (e.g. .ollama/history)
+    const e = basename(src);
+    const rel = e;
+    if (isArchivable(src, rel)) {
+      const dest = join(destRoot, e);
+      if (existsSync(dest) && sameFile(src, dest)) {
+        skipped += 1;
+      } else if (!dry) {
+        try {
+          mkdirSync(destRoot, { recursive: true });
+          linkSync(src, dest);
+          linked += 1;
+        } catch (err) {
+          failed += 1;
+          errors.push(`${e}: ${err.message}`);
+        }
+      } else {
+        linked += 1;
+      }
+    }
+  } else {
+    walk(src, "");
+  }
+
+  const status = errors.length > 0
+    ? `${errors.length} FAILED (${errors.slice(0, 3).join("; ")})`
+    : "ok";
+  return { linked, skipped, failed, status };
+}
+
+// ---- CLI store map ---------------------------------------------------------
+// Where every CLI keeps its sessions. Ported from deadreckon stores.py.
+// Used by the archive tick to know what to protect.
+
+function vscodeBase(home) {
+  const bases = [];
+  if (platform() === "darwin") bases.push(join(home, "Library", "Application Support"));
+  else if (platform() === "win32") bases.push(process.env.APPDATA || join(home, "AppData", "Roaming"));
+  bases.push(join(home, ".config"));
+  const out = [];
+  for (const b of bases) {
+    for (const ch of ["Code", "Code - Insiders", "VSCodium", "Code - OSS"]) {
+      const d = join(b, ch);
+      if (isDir(d)) out.push([ch, d]);
+    }
+  }
+  return out;
+}
+
+export function allStores(home) {
+  home = home ?? homedir();
+  const stores = [];
+  const add = (label, path) => stores.push({ label, path: join(home, path) });
+
+  // Claude — glob .*claude*/projects
+  let topEntries;
+  try { topEntries = readdirSync(home); } catch { topEntries = []; }
+  for (const e of topEntries) {
+    if (e.startsWith(".claude") || e.startsWith(".my-claude") || e.startsWith(".proteus")) {
+      const proj = join(home, e, "projects");
+      if (isDir(proj)) stores.push({ label: `claude/${e}`, path: proj });
+    }
+  }
+
+  add("gemini", ".gemini/tmp");
+  add("gemini-antigravity", ".gemini/antigravity-cli/conversations");
+  add("copilot", ".copilot/session-state");
+  add("codex", ".codex/sessions");
+  add("codex-archived", ".codex/archived_sessions");
+  add("lmstudio", ".lmstudio/conversations");
+  add("grok", ".grok/sessions");
+  add("grok-archived", ".grok/archived_sessions");
+  add("deepseek", ".deepseek/sessions");
+  add("cursor", ".cursor/chats");
+  add("aider", ".aider");
+  add("continue", ".continue/sessions");
+  add("opencode", ".opencode/sessions");
+  add("goose", ".config/goose/sessions");
+  add("openhands", ".openhands/sessions");
+  add("qwen", ".qwen/tmp");
+  add("amp", ".amp/threads");
+  stores.push({ label: "ollama", path: join(home, ".ollama", "history") });
+  stores.push({ label: "bob", path: join(home, ".bob", "db") });
+
+  for (const [ch, vsRoot] of vscodeBase(home)) {
+    const gs = join(vsRoot, "User", "globalStorage");
+    stores.push({ label: `kilocode/${ch}`, path: join(gs, "kilocode.kilo-code", "tasks") });
+    stores.push({ label: `cline/${ch}`, path: join(gs, "saoudrizwan.claude-dev", "tasks") });
+    stores.push({ label: `roo/${ch}`, path: join(gs, "rooveterinaryinc.roo-cline", "tasks") });
+    stores.push({ label: `copilot-chat/${ch}`, path: join(vsRoot, "User", "workspaceStorage") });
+  }
+
+  return stores.filter(s => isDir(s.path) || isFile(s.path));
+}
+
+// ---- Public API ------------------------------------------------------------
+
+/**
+ * check() — report exposure, change nothing.
+ * apply() — apply both layers.
+ * tick()  — apply + return a one-line summary string (for daemon log).
+ */
+
+export function check(home) {
+  home = home ?? homedir();
+  const profiles = findClaudeProfiles(home);
+  const stores = allStores(home);
+
+  const profileResults = profiles.map(p => ({
+    path: p,
+    cleanupDays: currentPeriod(p),
+    atRisk: currentPeriod(p) < TARGET_DAYS,
+    wouldChange: raisePeriod(p, { dry: true }).changed,
+  }));
+
+  const storeResults = stores.map(s => ({
+    label: s.label,
+    path: s.path,
+    result: linkTree(s.path, s.label, { home, dry: true }),
+  }));
+
+  return { profiles: profileResults, stores: storeResults, dry: true };
+}
+
+export function apply(home) {
+  home = home ?? homedir();
+  const profiles = findClaudeProfiles(home);
+  const stores = allStores(home);
+
+  const profileResults = profiles.map(p => ({
+    path: p,
+    ...raisePeriod(p),
+  }));
+
+  const storeResults = stores.map(s => ({
+    label: s.label,
+    path: s.path,
+    result: linkTree(s.path, s.label, { home }),
+  }));
+
+  return { profiles: profileResults, stores: storeResults };
+}
+
+export function tick(home) {
+  const result = apply(home);
+  const atRisk = result.profiles.filter(p => p.changed).length;
+  const totalLinked = result.stores.reduce((a, s) => a + (s.result.linked ?? 0), 0);
+  const totalFailed = result.stores.reduce((a, s) => a + (s.result.failed ?? 0), 0);
+  const parts = [];
+  if (atRisk > 0) parts.push(`raised period on ${atRisk} profile(s)`);
+  if (totalLinked > 0) parts.push(`${totalLinked} file(s) archived`);
+  if (totalFailed > 0) parts.push(`${totalFailed} FAILED`);
+  return parts.length ? `protect: ${parts.join(", ")}` : "protect: ok (nothing new)";
+}
+
+/**
+ * Whether any Claude profile still has cleanupPeriodDays below TARGET_DAYS
+ * and the 6h daemon is not installed. Used by cli.mjs to print the warning.
+ */
+export function needsProtection(home) {
+  home = home ?? homedir();
+  const profiles = findClaudeProfiles(home);
+  return profiles.some(p => currentPeriod(p) < TARGET_DAYS);
+}
