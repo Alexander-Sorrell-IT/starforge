@@ -145,6 +145,13 @@ WantedBy=timers.target
   };
 }
 
+/**
+ * The systemd units for the 6-hour protect+ledger job.
+ * OnCalendar must be `0/6:00:00` (H/6:M:S). `*:0/6:00` normalizes to
+ * `*-*-* *:00/6:00` — every 6 MINUTES, 240 ticks/day against the launchd
+ * sibling's 4, and each tick is a depth-4 $HOME walk plus a recursive walk of
+ * every CLI store. Check with: systemd-analyze calendar '0/6:00:00'
+ */
 export function systemdProtectUnits({ node = process.execPath, entry = cliEntry() } = {}) {
   return {
     service: `[Unit]
@@ -158,7 +165,7 @@ ExecStart=${node} ${entry} protect
 Description=Raise transcript retention and hard-link-archive AI session files every 6h
 
 [Timer]
-OnCalendar=*:0/6:00
+OnCalendar=0/6:00:00
 Persistent=true
 
 [Install]

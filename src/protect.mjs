@@ -55,7 +55,8 @@ const SECRET_NAMES = new Set([
   ".env", "config.json", "auth.json",
 ]);
 
-// Extensions we archive. Everything else is ignored.
+// Extensions we archive. Everything else is ignored. Extensionless records
+// (~/.ollama/history) are archived too — see isArchivable.
 const ARCHIVE_EXTS = new Set([".jsonl", ".json", ".db", ".db-wal", ".ndjson"]);
 
 // ---- filesystem helpers ----------------------------------------------------
@@ -104,7 +105,14 @@ function isArchivable(fullPath, relToStore) {
   const name = basename(fullPath).toLowerCase();
   if (isSecretName(name)) return false;
   if (hasSecretAncestor(relToStore)) return false;
-  const ext = name.slice(name.lastIndexOf("."));
+  // An extensionless record is still a record. `"history".lastIndexOf(".")` is
+  // -1 and slice(-1) returned "y", so ~/.ollama/history (4,422 bytes) failed
+  // the ARCHIVE_EXTS test and was never linked. Names with no dot are
+  // archivable; the credential guards above already reject the extensionless
+  // secrets (installation_id, token, session-id).
+  const dot = name.lastIndexOf(".");
+  if (dot === -1) return true;
+  const ext = name.slice(dot);
   if (!ARCHIVE_EXTS.has(ext)) return false;
   return true;
 }
@@ -200,7 +208,8 @@ function currentPeriod(profile) {
 
 /**
  * Raise cleanupPeriodDays to TARGET_DAYS in one profile.
- * Returns { changed, message }.
+ * Returns { changed, message } — plus failed:true on the two write-error paths,
+ * because `changed:false` alone also means "already 36500, nothing to do".
  * dry=true: report what would happen, change nothing.
  */
 export function raisePeriod(profile, { dry = false } = {}) {
@@ -212,7 +221,9 @@ export function raisePeriod(profile, { dry = false } = {}) {
       writeFileSync(p, JSON.stringify({ cleanupPeriodDays: TARGET_DAYS }, null, 2) + "\n", "utf-8");
       return { changed: true, message: `created settings.json with cleanupPeriodDays=${TARGET_DAYS}` };
     } catch (e) {
-      return { changed: false, message: `could not create settings.json: ${e.message}` };
+      // failed:true is what separates this from `{changed:false,"already 36500"}`.
+      // Without it an EACCES profile is indistinguishable from a protected one.
+      return { changed: false, failed: true, message: `could not create settings.json: ${e.message}` };
     }
   }
   const cur = currentPeriod(profile);
@@ -236,7 +247,7 @@ export function raisePeriod(profile, { dry = false } = {}) {
     return { changed: true, message: `${cur} → ${TARGET_DAYS}` };
   } catch (e) {
     try { unlinkSync(tmp); } catch { /* ignore */ }
-    return { changed: false, message: `write failed: ${e.message}` };
+    return { changed: false, failed: true, message: `write failed: ${e.message}` };
   }
 }
 
@@ -358,6 +369,11 @@ export function linkTree(src, label, { home = null, dry = false } = {}) {
       } else {
         linked += 1;
       }
+    } else {
+      // A single-file store that links nothing must not report "ok" with three
+      // zeros — that is exactly how ~/.ollama/history (4,422 bytes) read as
+      // {linked:0, skipped:0, failed:0, status:"ok"} for every tick.
+      return { linked: 0, skipped: 0, failed: 0, status: `not archivable: ${e}` };
     }
   } else {
     walk(src, "");
@@ -487,10 +503,36 @@ export function tick(home) {
   const atRisk = result.profiles.filter(p => p.changed).length;
   const totalLinked = result.stores.reduce((a, s) => a + (s.result.linked ?? 0), 0);
   const totalFailed = result.stores.reduce((a, s) => a + (s.result.failed ?? 0), 0);
+
+  // Three ways this tick can do nothing and still have printed "protect: ok":
+  // a raisePeriod write error, a linkTree barrier (cross-filesystem or
+  // unwritable archive — barrier returns carry NO `status` key at all), and
+  // per-file link errors. All three go in the line, none is a silent zero.
+  const failures = [];
+  for (const p of result.profiles) {
+    if (p.failed) failures.push(`${p.path}: ${p.message}`);
+  }
+  for (const s of result.stores) {
+    if (s.result.barrier) failures.push(`${s.label}: ${s.result.barrier}`);
+  }
+  if (totalFailed > 0) failures.push(`${totalFailed} file(s) failed to link`);
+
   const parts = [];
   if (atRisk > 0) parts.push(`raised period on ${atRisk} profile(s)`);
   if (totalLinked > 0) parts.push(`${totalLinked} file(s) archived`);
-  if (totalFailed > 0) parts.push(`${totalFailed} FAILED`);
+
+  if (failures.length > 0) {
+    // cli.mjs:400 ends `starreckon protect` with an unconditional
+    // process.exit(0), so a plain process.exitCode is discarded. An exit
+    // listener is the last write and wins — verified on node v22.21.0. If
+    // cli.mjs ever stops hard-coding 0, delete the listener, not the line.
+    // It exits the CALLING process: test tick()-with-failures in a subprocess,
+    // or `node --test` reports 1 with every assertion passing.
+    process.exitCode = 1;
+    process.once("exit", () => { process.exitCode = 1; });
+    const did = parts.length ? ` (did: ${parts.join(", ")})` : "";
+    return `protect: ${failures.length} FAILED — ${failures.join("; ")}${did}`;
+  }
   return parts.length ? `protect: ${parts.join(", ")}` : "protect: ok (nothing new)";
 }
 

@@ -363,7 +363,6 @@ export function computeLevels(agg) {
     agg.tool_calls ??
     Object.values(agg.tool_call_counts ?? {}).reduce((a, b) => a + b, 0);
   const models = Object.keys(agg.models ?? {}).length;
-  const buckets = agg.hour_buckets ?? [];
   // Night activity is counted ABSOLUTELY, not as a share of the day. As a ratio
   // it made the axis non-monotonic in the worst way: every daytime event you
   // added SHRANK the arm, so a user watched OUTSIDE THE BOX collapse from 3.5 to
@@ -371,13 +370,22 @@ export function computeLevels(agg) {
   // was really a function of daytime tool volume — another axis's input. That
   // also broke the promise the whole shape rests on, that an arm answers to its
   // own axis and nothing else. Doing more work must never shorten an arm.
-  // Real hours when the scan supplies them; the old per-event sum only as a
-  // fallback for snapshots written before night_hours existed. The mid of 60 is
-  // calibrated in HOURS — 600 night hours is roughly 25 solid nights — and
-  // reading a line count against it made the arm about a hundred times cheaper
-  // than intended, and sensitive to how verbose a tool's logging happens to be.
-  const nightHours =
-    agg.night_hours ?? buckets.slice(0, 6).reduce((a, b) => a + b, 0);
+  // Real hours, or nothing. There used to be a fallback here that summed
+  // hour_buckets[0..5] "for snapshots written before night_hours existed", and
+  // it was not a fallback: no snapshot ever carried the key, so it was the only
+  // path every persisted star took. hour_buckets is a per-EVENT tally, so the
+  // arm was priced in log LINES against a mid of 60 calibrated in HOURS.
+  // Measured on the live corpus: 137.3 real night hours scored as 450,107, a
+  // 3,279x inflation that saturated OUTSIDE THE BOX at 7.0 for the lifetime
+  // star and for three of eight months.
+  //
+  // An aggregate with no night_hours is night-hours UNMEASURED — it scores 0
+  // here and explainLevels marks the term not-measured so a card says so
+  // instead of drawing a short arm. It cannot be recomputed: hour_buckets is
+  // the only night-ish thing a pre-key snapshot stored, and events are not
+  // hours at any exchange rate. A month whose logs are still on disk regains
+  // the key on the next scan.
+  const nightHours = agg.night_hours ?? 0;
 
   // The axes are declared ONCE, as data, and both the score and the explanation
   // are computed from this same list. A card that re-implemented the formula to
@@ -418,7 +426,16 @@ export function explainLevels(agg, opts = {}) {
   // say "not measured" instead of drawing a short arm, which is a different
   // claim about the person.
   const avail = opts.available ?? null;
-  const has = (k) => !avail || avail[k] !== false;
+  // Two ways a term is unmeasured: the SOURCE says so, or the aggregate simply
+  // does not carry it. night_hours is the second — a snapshot written before
+  // the key existed holds no night measurement at all, and printing 0 h there
+  // would say "worked no nights", which is a claim about the person that the
+  // file does not support.
+  const has = (k) => {
+    if (avail && avail[k] === false) return false;
+    if (k === "nightHours") return a.night_hours != null;
+    return true;
+  };
   const levels = computeLevels(a);
   const lg = (v, mid) => 5 * (Math.log1p(Math.max(0, v)) / Math.log1p(mid * 10));
   const tokens =
@@ -430,7 +447,7 @@ export function explainLevels(agg, opts = {}) {
     toolCalls:
       a.tool_calls ?? Object.values(a.tool_call_counts ?? {}).reduce((x, y) => x + y, 0),
     models: Object.keys(a.models ?? {}).length,
-    nightHours: a.night_hours ?? (a.hour_buckets ?? []).slice(0, 6).reduce((x, y) => x + y, 0),
+    nightHours: a.night_hours ?? 0,
     streak: a.longest_streak_days ?? 0,
     activeDays: a.active_days ?? 0,
   };

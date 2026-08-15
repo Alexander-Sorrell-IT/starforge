@@ -15,11 +15,12 @@
 // numbers change and that is fine — but it must be a decision, not a drift.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeLevels } from "../src/star.mjs";
+import { computeLevels, explainLevels } from "../src/star.mjs";
 import { ARMS, MAX_LEVEL } from "../src/starsvg.mjs";
-import { emptyStats, finalize, countLanguage } from "../src/scan.mjs";
+import { emptyStats, finalize, countLanguage, parseClaudeFile } from "../src/scan.mjs";
 import { AXES } from "../src/starsvg.mjs";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 const SRC = join(dirname(dirname(fileURLToPath(import.meta.url))), "src");
@@ -181,11 +182,118 @@ test("a chattier tool loop does not buy a longer arm", () => {
   assert.equal(quiet, chatty, "hour_buckets must not affect the score when night_hours is present");
 });
 
-test("older snapshots without night_hours still score, via the documented fallback", () => {
+test("a snapshot without night_hours is UNMEASURED — never an event count, never a silent 0", () => {
+  // This test used to assert the opposite: that a missing key fell back to
+  // hour_buckets[0..5], "for snapshots written before night_hours existed". No
+  // snapshot ever carried the key, so that fallback was the only path any
+  // persisted star took, and it priced log LINES against a mid calibrated in
+  // HOURS. Measured on the live corpus: 137.3 real night hours read as 450,107,
+  // and OUTSIDE THE BOX saturated at 7.0 for the lifetime star.
+  //
+  // Nothing on disk can rebuild the hours (events are not hours at any exchange
+  // rate), so the term is unmeasured — 0 towards the score, and SAID so.
   const legacy = agg({ models: { a: 1 }, hour_buckets: [100, 50, 0, 0, 0, 0, ...new Array(18).fill(0)] });
   delete legacy.night_hours;
-  const lv = computeLevels(legacy);
-  assert.ok(lv[AX.OUTSIDE] > 0, "a pre-night_hours snapshot must not score zero");
+  const noNight = computeLevels(agg({ models: { a: 1 } }))[AX.OUTSIDE];
+  assert.equal(
+    computeLevels(legacy)[AX.OUTSIDE],
+    noNight,
+    "the 150 night EVENTS in hour_buckets must not reach the score as hours"
+  );
+  const term = explainLevels(legacy)[AX.OUTSIDE].terms.find((t) => t.label === "night hours");
+  assert.equal(term.measured, false, "absent must not be reported as a measured 0 h");
+  assert.equal(term.contribution, 0);
+  assert.equal(
+    explainLevels(agg({ night_hours: 0, models: { a: 1 } }))[AX.OUTSIDE].terms.find(
+      (t) => t.label === "night hours"
+    ).measured,
+    true,
+    "a real, measured zero must still read as measured"
+  );
+});
+
+// ---- the same unit has to survive being written down ------------------------
+//
+// The scan computed real night hours and the star knew what to do with them;
+// the number never reached the star, because the per-month buckets that
+// writeSnapshots persists carried no night_hours and loadTimeline's fixed key
+// list would have dropped it anyway. Every month chip, every SVG on disk, the
+// compare table and the lifetime star all ran on the event-count fallback.
+
+test("a month bucket carries night HOURS, and they sum to the whole scan's", async () => {
+  const home = mkdtempSync(join(tmpdir(), "sf-night-"));
+  const dir = join(home, ".claude", "projects", "-w-a");
+  mkdirSync(dir, { recursive: true });
+  // Local-clock timestamps: the night window is d.getHours() < 6, so building
+  // these from a local Date keeps the test true in every timezone.
+  const at = (day, h, m) => new Date(2026, 6, day, h, m, 0).toISOString();
+  const rows = [];
+  let u = 0;
+  // 400 events, 02:00-02:04 on 15 July: 5 distinct night minutes = 0.1 h.
+  for (let i = 0; i < 400; i++)
+    rows.push({ type: "assistant", timestamp: at(15, 2, i % 5), uuid: `a${u++}`,
+      message: { role: "assistant", id: `m${u}`, model: "claude-opus-5", content: [{ type: "text", text: "x" }] } });
+  // 120 distinct night minutes on 3 August = 2 h, in the NEXT month.
+  for (let i = 0; i < 120; i++)
+    rows.push({ type: "assistant", timestamp: at(34, 3, i), uuid: `b${u++}`,
+      message: { role: "assistant", id: `n${u}`, model: "claude-opus-5", content: [{ type: "text", text: "x" }] } });
+  const file = join(dir, "s.jsonl");
+  writeFileSync(file, rows.map((r) => JSON.stringify(r)).join("\n"));
+
+  const stats = emptyStats();
+  await parseClaudeFile(file, stats, {});
+  const out = finalize(stats);
+  const jul = out.monthly_buckets.find((b) => b.month === "2026-07");
+  const aug = out.monthly_buckets.find((b) => b.month === "2026-08");
+  assert.equal(jul.night_hours, 0.1, "400 events across 5 minutes is 0.1 h, not 400");
+  assert.equal(jul.hour_buckets[2], 400, "the per-event histogram is still the histogram");
+  assert.equal(aug.night_hours, 2, "120 distinct night minutes is 2 h");
+  // A minute belongs to exactly one month, so the parts equal the whole. This
+  // is what makes a month star and the lifetime star comparable at all.
+  assert.equal(
+    +out.monthly_buckets.reduce((s, b) => s + b.night_hours, 0).toFixed(1),
+    out.night_hours,
+    "per-month night hours must sum to the scan's night_hours"
+  );
+});
+
+test("night_hours survives writeSnapshots -> loadTimeline, and absence stays absent", async () => {
+  const home = mkdtempSync(join(tmpdir(), "sf-snap-night-"));
+  const snaps = join(home, ".starreckon", "snapshots");
+  mkdirSync(snaps, { recursive: true });
+  // A pre-key snapshot, exactly as the eight on this machine were written: 39,918
+  // night EVENTS in hour_buckets and no night_hours anywhere.
+  writeFileSync(
+    join(snaps, "2026-06.json"),
+    JSON.stringify({ month: "2026-06", machines: { old: {
+      month: "2026-06", sessions: 1, tool_calls: 10, models: { a: 1 },
+      hour_buckets: [3831, 4580, 3622, 6796, 7786, 13303, ...new Array(18).fill(0)],
+      active_days: 5, longest_streak_days: 2 } } })
+  );
+  const prev = process.env.HOME;
+  process.env.HOME = home;
+  let mod;
+  try {
+    // Imported per-call: SNAP_DIR is resolved from homedir() at module load.
+    mod = await import(`../src/snapshots.mjs?t=${Date.now()}${Math.random()}`);
+    mod.writeSnapshots([{ month: "2026-07", sessions: 2, tool_calls: 10, models: { a: 1 },
+      hour_buckets: new Array(24).fill(9), night_hours: 70.2, active_days: 20,
+      longest_streak_days: 4 }], {}, {});
+    const timeline = mod.loadTimeline();
+    const jul = timeline.find((m) => m.month === "2026-07");
+    const jun = timeline.find((m) => m.month === "2026-06");
+    assert.equal(jul.night_hours, 70.2, "loadTimeline dropped the key it was handed");
+    assert.equal(jun.night_hours, undefined, "an unmeasured month must not gain a fabricated 0");
+    const life = mod.lifetimeFromTimeline(timeline);
+    assert.equal(life.night_hours, 70.2, "lifetime sums the measured months and skips the rest");
+    // 39,918 events would have read as 39,918 h and pinned the arm at MAX_LEVEL.
+    assert.ok(
+      computeLevels(jun)[AX.OUTSIDE] < computeLevels(jul)[AX.OUTSIDE],
+      "an unmeasured month must not outscore a measured one on its event count"
+    );
+  } finally {
+    process.env.HOME = prev;
+  }
 });
 
 // ---- monthly and lifetime must be the same function -------------------------

@@ -1,2 +1,5 @@
 node_modules/
 .DS_Store
+
+# python bytecode from src/search.py
+src/__pycache__/

@@ -11,8 +11,12 @@ import {
 } from "node:fs";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { redactSecrets, maskPath, projectLabel, projectPseudonym } from "./redact.mjs";
+// accounts.mjs imports sanitizeModel from here, so this is a cycle. It is safe
+// in both load orders because neither module CALLS the other at module scope —
+// only function declarations cross the edge.
+import { findConfigDirs } from "./accounts.mjs";
 
 // "Which day was that?" and "what hour was that?" have to be answered on the
 // SAME clock. They were not: hours came from getHours() (local) while day keys
@@ -125,6 +129,7 @@ export function emptyStats() {
     langCounts: new Map(), // accumulated per path as it arrives, so the cap cannot hide a language
     hourCounts: new Array(24).fill(0),
     nightMinutes: new Set(), // distinct minutes in 00:00-05:59, i.e. real hours
+    nightMinutesByMonth: new Map(), // "YYYY-MM" -> the same minutes, per month
 
     activeDays: new Set(),
     weekendEvents: 0,
@@ -143,12 +148,56 @@ export function emptyStats() {
 
 // ---- source discovery ------------------------------------------------------
 
+// Claude Code PROFILE directories under (or at) `root`.
+//
+// discoverSources used to hardcode ONE profile per root, join(root,".claude").
+// Measured on this machine: .claude holds 340 transcripts and four more
+// profiles hold 1,346 the scan could not see — .claude-alt 1,212, .my-claude
+// 130, .claude-it 3, .claude-alt-api 1 — and no flag reached them, because
+// --roots takes HOME directories and the "/.claude" suffix is re-appended, so
+// discoverSources(["/home/me/.claude-alt"]) returned 0 files.
+//
+// findConfigDirs is accounts.mjs's discovery — by SHAPE (a directory whose
+// projects/ holds a .jsonl), name-glob then $CLAUDE_CONFIG_DIR then a depth-4
+// walk — reused rather than reimplemented so the two halves of this tool can
+// never disagree about which profiles exist. It enumerates profiles under a
+// HOME, so a root that IS a profile directory is added here: that is the case
+// --roots could not express.
+//
+// `outside` collects what discovery offered that this root does not CONTAIN.
+// findConfigDirs also honours $CLAUDE_CONFIG_DIR, and its "only for the real
+// home" guard tests homedir() — which follows $HOME. So with $HOME pointed at
+// a fixture, findConfigDirs(<empty temp dir>) returns the live
+// /home/…/.claude-alt and its 1,212 transcripts: 9 tests' fixture totals wrong,
+// and a scan that is not a function of its roots. A scan of a root reads that
+// root; anything else is named out loud below and is reached by putting it in
+// --roots, which takes a profile directory now.
+function claudeProfileDirs(root, outside) {
+  const base = resolve(root);
+  const dirs = [];
+  for (const d of findConfigDirs(root)) {
+    const p = resolve(d);
+    if (p === base || p.startsWith(base + sep)) dirs.push(d);
+    else outside.add(p);
+  }
+  if (existsSync(join(root, "projects"))) dirs.unshift(root);
+  return dirs;
+}
+
 export function discoverSources(roots) {
   const found = [];
+  const outside = new Set();
   for (const root of roots) {
-    const claudeBase = join(root, ".claude", "projects");
-    if (existsSync(claudeBase)) {
-      for (const f of listJsonl(claudeBase, 2))
+    for (const dir of claudeProfileDirs(root, outside)) {
+      // Depth 6, was 2. Claude Code nests sub-agent and workflow transcripts at
+      // projects/<proj>/<session>/subagents/workflows/<wf>/agent.jsonl — five
+      // directories below projects/ — so depth 2 reached 85 of this machine's
+      // 1,686 profile transcripts and left 5,875,900,498 tokens unread.
+      // Deeper enumeration cannot double count: creditUsage() keys on
+      // message.id across the WHOLE scan, and 323 of the 46,723 distinct ids
+      // really do appear in a second file, carrying 32,630,080 tokens that are
+      // therefore credited exactly once.
+      for (const f of listJsonl(join(dir, "projects"), 6))
         found.push({ source: "claude_code", root, path: f });
     }
     const coworkBase = join(
@@ -168,6 +217,16 @@ export function discoverSources(roots) {
         found.push({ source: "codex", root, path: f });
     }
   }
+  // Skipped by ONE root may still be covered by another, so the report is made
+  // against the whole list. A profile that was found and not read must never
+  // read as a profile that does not exist.
+  for (const p of outside)
+    if (roots.some((r) => p === resolve(r) || p.startsWith(resolve(r) + sep)))
+      outside.delete(p);
+  for (const p of outside)
+    process.stderr.write(
+      `note: ${maskPath(p)} is a Claude profile directory but is not under any scanned root — NOT read. Add it to --roots to include it.\n`
+    );
   return dedupeByRealpath(found);
 }
 
@@ -287,7 +346,25 @@ function temporal(stats, ts) {
   // A minute is the unit the session tracker already uses for real elapsed
   // time, and de-duplicating it means a chattier tool loop cannot buy a longer
   // arm than a quieter one doing the same work.
-  if (d.getHours() < 6) stats.nightMinutes.add(Math.floor(ts / 60000));
+  //
+  // Kept per MONTH as well, because a month's star is scored by the same
+  // function as the lifetime star and so has to be handed the same unit. The
+  // monthly buckets carried no night_hours at all, so every one of them fell
+  // through to that per-event fallback: measured on this corpus, 137.3 real
+  // night hours were drawn as 450,107 — the 00:00-05:59 log LINE count — and
+  // OUTSIDE THE BOX saturated at 7.0 for 2026-05, 2026-07, 2026-08 and for the
+  // lifetime star. Keyed by the LOCAL month, the same rule the day sets use: a
+  // 02:00 minute belongs to the month it happened in, whatever month the
+  // session it belongs to started in. Months partition time, so these sets sum
+  // back to nightMinutes exactly.
+  if (d.getHours() < 6) {
+    const minute = Math.floor(ts / 60000);
+    stats.nightMinutes.add(minute);
+    const key = localDayKey(d).slice(0, 7);
+    let perMonth = stats.nightMinutesByMonth.get(key);
+    if (!perMonth) stats.nightMinutesByMonth.set(key, (perMonth = new Set()));
+    perMonth.add(minute);
+  }
   const day = d.getDay();
   if (day === 0 || day === 6) stats.weekendEvents += 1;
   stats.activeDays.add(localDayKey(d));
@@ -318,10 +395,28 @@ function uninformativeCwd(cwd) {
   return String(cwd ?? "").split(/[/\\]/).filter(Boolean).length <= 1;
 }
 
-export function projectFromPath(filePath) {
+// The ENCODED project directory a transcript lives in.
+//
+// .../projects/<dir>/<session>.jsonl -> <dir>, and equally
+// .../projects/<dir>/<session>/subagents/workflows/<wf>/agent.jsonl -> <dir>.
+// The PARENT directory used to be that answer, and it was right only while the
+// walk stopped one level below projects/. It stops five levels below now, and
+// 1,557 of this machine's 1,686 transcripts have a parent directory literally
+// named "subagents" or "wf_<hex>" — reading the parent would have registered
+// those strings as project names and lost the real project for every one.
+//
+// No "projects" component in the path (Cowork's local-agent-mode-sessions
+// layout) falls back to the parent, which is what that layout means.
+export function projectDirOf(filePath) {
   const parts = String(filePath ?? "").split(/[/\\]/).filter(Boolean);
-  // .../projects/<dir>/<session>.jsonl  -> <dir>
-  const dir = parts.length >= 2 ? parts[parts.length - 2] : null;
+  const i = parts.lastIndexOf("projects");
+  // i + 1 must still be a DIRECTORY — at parts.length - 1 it is the file.
+  if (i >= 0 && i + 1 < parts.length - 1) return parts[i + 1];
+  return parts.length >= 2 ? parts[parts.length - 2] : null;
+}
+
+export function projectFromPath(filePath) {
+  const dir = projectDirOf(filePath);
   if (!dir || dir === "projects") return null;
   // Claude Code's encoding: leading dash is the root, inner dashes are
   // separators. Decoding is lossy for names that contain dashes, which is fine
@@ -339,7 +434,7 @@ export async function parseClaudeFile(filePath, stats, opts = {}) {
   // two segments and the dash-decode has already shifted the real parent out of
   // it. Keying by the decoded label loses exactly what decoding lost — ten
   // client repos counted as one project while all ten were still displayed.
-  const dirKey = filePath.split(/[/\\]/).filter(Boolean).slice(-2, -1)[0] ?? null;
+  const dirKey = projectDirOf(filePath);
   if (dirKey && dirProject && !opts.excluded?.(dirProject))
     stats.projectsSeen?.set(dirKey, dirProject);
   // The fallback session id must be unique across the WHOLE scan, so it carries
@@ -699,6 +794,11 @@ export function finalize(stats) {
         projects_count: b.projects.size,
         models: Object.fromEntries([...b.models.entries()].sort((x, y) => y[1] - x[1])),
         hour_buckets: b.hours,
+        // Real hours, from the same distinct-minute set and the same 00:00-05:59
+        // window the top-level night_hours uses — so a month and the lifetime
+        // are scored on one scale. This is the axis input; hour_buckets above it
+        // is the per-EVENT histogram the stats page draws, and is not hours.
+        night_hours: +((stats.nightMinutesByMonth?.get(month)?.size ?? 0) / 60).toFixed(1),
         active_days: b.days.size,
         longest_streak_days: computeStreaks(b.days).longest,
       })),
