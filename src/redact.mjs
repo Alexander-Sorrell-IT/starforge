@@ -229,7 +229,7 @@ export function collectProjectLabels(node, out = new Set(), key = null, depth = 
   if (node && typeof node === "object") {
     for (const [k, v] of Object.entries(node)) {
       // projects: [{ name, ... }] — the name IS the label
-      if (k === "projects" && Array.isArray(v)) {
+      if ((k === "projects" || k === "top_projects") && Array.isArray(v)) {
         for (const item of v)
           if (item && typeof item.name === "string" && !isSentinel(item.name))
             out.add(item.name);

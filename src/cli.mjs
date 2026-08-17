@@ -22,6 +22,8 @@
 //                                 total. the daemon scan passes this by default.
 //   starreckon --roots=a,b     extra home roots (other accounts/machines)
 //   starreckon --json          write baseline + expanded JSON reports
+//   starreckon --report        auto-save full report (stars + compare) to
+//                                 ~/.starreckon/reports/report-<date>.txt
 //   starreckon --card          write the Porter-Grade SVG card
 //   starreckon --wrapped       (default) the paced story, one card at a time
 //   starreckon --no-wrapped    skip the story, print the summary only
@@ -97,6 +99,15 @@
 //   [I] install Cisco models          [Z] re-run scan
 //   [H] help        [Q] done
 //
+// COMPARE SUB-MENU:
+//   [M] mine    this machine month vs lifetime
+//   [F] fleet   fleet month vs fleet lifetime  (only with --fleet=DIR)
+//   ←  back
+//   After viewing: [S] save report (stars + compare bars) to a file
+//
+// QR card (last card in wrapped):
+//   [S] save full report (all stars + cards) to a file
+//
 // Every flag above is registered in FLAG_SPEC below, and every entry in
 // FLAG_SPEC appears above (a test asserts both directions). An unregistered
 // flag EXITS 2 instead of being ignored — see the comment on FLAG_SPEC.
@@ -111,7 +122,7 @@ import {
   parseCodexFile,
   finalize,
 } from "./scan.mjs";
-import { LiveStar, computeLevels, explainLevels, renderCompare, renderStar, AXES } from "./star.mjs";
+import { LiveStar, computeLevels, explainLevels, renderCompare, renderStar, buildCompareReport, AXES } from "./star.mjs";
 import {
   writeSnapshots,
   writeSnapshotStars,
@@ -255,6 +266,7 @@ const FLAG_SPEC = Object.freeze({
   "--beacon": "bool",
   "--live": "bool",
   "--ledger": "bool",
+  "--report": "bool",
 });
 const KNOWN_FLAGS = Object.freeze(Object.keys(FLAG_SPEC));
 
@@ -905,7 +917,7 @@ async function main() {
   // Snapshots go through the audit log too — they are written on every default
   // run, so a log that omitted them would report `writes: []` for the most
   // common invocation of the tool.
-  if (!flag("--no-snapshot")) writeSnapshots(agg.monthly_buckets, {}, { audit });
+  if (!flag("--no-snapshot")) writeSnapshots(forFiles(agg.monthly_buckets), {}, { audit });
   const timeline = loadTimeline();
   const vel = velocity(timeline);
   // Every snapshot gets its own star, drawn only from that month's activity.
@@ -1408,6 +1420,64 @@ async function main() {
     const paced = process.stdout.isTTY && process.stdin.isTTY && !flag("--no-pace");
     console.log("");
     const qr = shareQrLines(levels, agg, "https://github.com/Alexander-Sorrell-IT/starreckon", contact);
+
+    // Shared data for both report helpers below.
+    const _reportMonth = () => timeline.length ? timeline[timeline.length - 1] : null;
+    const _reportLife  = () => timeline.length ? lifetimeFromTimeline(timeline) : null;
+    const _reportFleetMonth = () => fleetStars?.months?.length
+      ? fleetStars.months[fleetStars.months.length - 1] : null;
+    const _reportMine = () => {
+      const m = _reportMonth(), l = _reportLife();
+      return (m && l && timeline.length > 1) ? { month: m, life: l } : l ? { life: l } : null;
+    };
+    const _reportFleet = () => fleetStars?.lifetime
+      ? (_reportFleetMonth()
+          ? { month: _reportFleetMonth(), life: fleetStars.lifetime }
+          : { life: fleetStars.lifetime })
+      : null;
+
+    // Helper: build and save the full report (all stars + compare bars).
+    // Used by both [S] in the paced QR prompt and --report auto-write.
+    const saveFullReport = () => {
+      mkdirSync(outDir, { recursive: true });
+      const p = join(outDir, `report-${stamp}.txt`);
+      const body = buildCompareReport({ mine: _reportMine(), fleet: _reportFleet(), label: opt("name") ?? hostname() });
+      writeFileSync(p, auditWrite(audit, p, body));
+      console.log(`  report saved ${maskPath(p)}`);
+      return p;
+    };
+
+    // Helper: write a dated Desktop snapshot folder.
+    //
+    //   ~/Desktop/starreckon/<YYYY-MM-DD_HH-MM>/        no fleet
+    //   ~/Desktop/starreckon/<YYYY-MM-DD_HH-MM>-fleet/  with --fleet=DIR
+    //
+    // Always written — no flag needed. The Desktop is the browseable history;
+    // ~/.starreckon/reports/ is the audited archive. Both exist for different reasons.
+    // Never throws: a missing Desktop (headless server, container) is not an error.
+    const writeDesktopReport = () => {
+      try {
+        const desktopBase = join(homedir(), "Desktop", "starreckon");
+        const suffix = fleetStars?.lifetime ? "-fleet" : "";
+        const folderName = `${stamp}${suffix}`;
+        const destDir = join(desktopBase, folderName);
+        mkdirSync(destDir, { recursive: true });
+
+        // report.txt — stars + compare bars
+        const body = buildCompareReport({ mine: _reportMine(), fleet: _reportFleet(), label: opt("name") ?? hostname() });
+        writeFileSync(join(destDir, "report.txt"), body);
+
+        // star.svg — SVG card (always, regardless of --card flag)
+        const svg = renderCard(levels, agg, vel, { name: opt("name") ?? "SKILL SCREEN" });
+        writeFileSync(join(destDir, "star.svg"), svg);
+
+        console.log(`  desktop ${maskPath(destDir)}`);
+        return destDir;
+      } catch {
+        // Silent — Desktop may not exist in CI / headless / containers.
+      }
+    };
+
     if (!paced) {
       console.log(renderAll(cards));
       console.log("");
@@ -1419,11 +1489,24 @@ async function main() {
         const last = i === cards.length - 1;
         // The QR belongs with the last card, not buried after the menu.
         if (last) { console.log(""); for (const row of qr) console.log(row); }
-        console.log(`  ${DIM}[${i + 1}/${cards.length}]${RESET}${last ? "" : `                                        ${DIM}[press ↵]${RESET}`}`);
-        if (!last) await rl.question("");
+        if (last) {
+          // [S] save report on the final card — before the menu loop starts.
+          console.log(`  ${DIM}[${i + 1}/${cards.length}]${RESET}   ${BOLD}[S]${RESET}${DIM} save report${RESET}`);
+          const ans = (await rl.question("  > ")).trim().toUpperCase();
+          if (ans === "S") saveFullReport();
+        } else {
+          console.log(`  ${DIM}[${i + 1}/${cards.length}]${RESET}                                        ${DIM}[press ↵]${RESET}`);
+          await rl.question("");
+        }
       }
       rl.close();
     }
+
+    // Always write the Desktop snapshot. Independent of --report.
+    writeDesktopReport();
+
+    // --report: also write to ~/.starreckon/reports/ without prompting.
+    if (flag("--report")) saveFullReport();
   }
 
   // ---- beacon: LAN peer discovery (Mode 1 async, Mode 2 live) ---------------
@@ -1651,7 +1734,7 @@ async function main() {
       console.log(`  ${BOLD}[P]${RESET} prove it      ${DIM}ask the kernel whether anything can leave${RESET}`);
       console.log(`  ${BOLD}[T]${RESET} transparency  ${DIM}every field this tool KEPT, read from the bytes on disk${RESET}`);
       if (timeline.length)
-        console.log(`  ${BOLD}[C]${RESET} compare      ${DIM}local month vs lifetime${fleetStars?.lifetime ? " · or vs fleet" : ""}${RESET}`);
+        console.log(`  ${BOLD}[C]${RESET} compare      ${DIM}[M] mine · ${fleetStars?.lifetime ? "[F] fleet · " : ""}[S] save${RESET}`);
       const dst0 = daemonStatus();
       if (dst0.supported && !dst0.installed)
         console.log(`  ${BOLD}[D]${RESET} daemon       ${DIM}schedule monthly re-scans so history outlives the logs${RESET}`);
@@ -1687,62 +1770,54 @@ async function main() {
         console.log("");
         console.log(renderReceipt(buildReceipt(), { color: !process.env.NO_COLOR }));
       } else if (key === "C" && timeline.length) {
-        // Compare sub-menu: local, fleet, or both
+        // Compare sub-menu: [M] mine · [F] fleet · [S] save
         const thisMonth = timeline[timeline.length - 1];
         const life = lifetimeFromTimeline(timeline);
         const hasFleet = Boolean(fleetStars?.lifetime);
-        console.log(`\n${BOLD}compare${RESET}`);
-        console.log(`  ${BOLD}[L]${RESET}  local   ${DIM}this month vs your corpus lifetime${RESET}`);
-        if (hasFleet) {
-          console.log(`  ${BOLD}[F]${RESET}  fleet   ${DIM}this month vs fleet lifetime${RESET}`);
-          console.log(`  ${BOLD}[B]${RESET}  both    ${DIM}corpus month · corpus lifetime · fleet lifetime${RESET}`);
-        }
-        console.log(`  ${BOLD}[←]${RESET}  back`);
-        const ck = (await ask("  > ")).trim().toUpperCase();
         const color = !process.env.NO_COLOR;
-        let compareBody = null;
-        if (ck === "L" || (!hasFleet && ck !== "")) {
-          console.log("");
-          compareBody = renderCompare(thisMonth, life, { color });
-          console.log(compareBody);
-        } else if (ck === "F" && hasFleet) {
-          // Fleet month (last) vs fleet lifetime
-          const fleetMonth = fleetStars.months.length
-            ? fleetStars.months[fleetStars.months.length - 1] : null;
-          if (fleetMonth) {
+
+        // Helper: save a report file and report the path
+        const saveReport = async (tag, mine, fleet) => {
+          mkdirSync(outDir, { recursive: true });
+          const p = join(outDir, `compare-${stamp}-${tag}.txt`);
+          const body = buildCompareReport({ mine, fleet, label: opt("name") ?? hostname() });
+          writeFileSync(p, auditWrite(audit, p, body));
+          console.log(`  saved ${maskPath(p)}`);
+        };
+
+        let compareDone = false;
+        while (!compareDone) {
+          console.log(`\n${BOLD}compare${RESET}`);
+          console.log(`  ${BOLD}[M]${RESET}  mine    ${DIM}this machine — month vs lifetime${RESET}`);
+          if (hasFleet)
+            console.log(`  ${BOLD}[F]${RESET}  fleet   ${DIM}fleet — month vs fleet lifetime${RESET}`);
+          console.log(`  ${BOLD}[←]${RESET}  back`);
+          const ck = (await ask("  > ")).trim().toUpperCase();
+
+          if (ck === "M" || (!hasFleet && ck !== "" && ck !== "F")) {
+            // Mine: this machine month vs lifetime
             console.log("");
-            compareBody = renderCompare(fleetMonth, fleetStars.lifetime, { color});
-            console.log(compareBody);
+            console.log(renderCompare(thisMonth, life, { color }));
+            console.log(`\n  ${BOLD}[S]${RESET}  save report  ${DIM}stars + compare bars${RESET}    ${BOLD}[←]${RESET}  back`);
+            const act = (await ask("  > ")).trim().toUpperCase();
+            if (act === "S")
+              await saveReport("mine", { month: thisMonth, life }, null);
+          } else if (ck === "F" && hasFleet) {
+            // Fleet: fleet month vs fleet lifetime
+            const fleetMonth = fleetStars.months.length
+              ? fleetStars.months[fleetStars.months.length - 1] : null;
+            if (fleetMonth) {
+              console.log("");
+              console.log(renderCompare(fleetMonth, fleetStars.lifetime, { color }));
+              console.log(`\n  ${BOLD}[S]${RESET}  save report  ${DIM}stars + compare bars${RESET}    ${BOLD}[←]${RESET}  back`);
+              const act = (await ask("  > ")).trim().toUpperCase();
+              if (act === "S")
+                await saveReport("fleet", null, { month: fleetMonth, life: fleetStars.lifetime });
+            } else {
+              console.log(`  ${DIM}fleet has only one month of data — nothing to compare yet${RESET}`);
+            }
           } else {
-            console.log(`  ${DIM}fleet has only one month of data — nothing to compare yet${RESET}`);
-          }
-        } else if (ck === "B" && hasFleet) {
-          console.log("");
-          const localCmp = renderCompare(thisMonth, life, { color});
-          const fleetMonth = fleetStars.months.length
-            ? fleetStars.months[fleetStars.months.length - 1] : null;
-          console.log(localCmp);
-          if (fleetMonth) {
-            console.log("");
-            const fleetCmp = renderCompare(fleetMonth, fleetStars.lifetime, { color});
-            console.log(fleetCmp);
-            compareBody = localCmp + "\n\n" + fleetCmp;
-          } else {
-            compareBody = localCmp;
-          }
-        }
-        // Save offer
-        if (compareBody !== null) {
-          const save = (await ask(`\n  save to a file? ${DIM}[y/N]${RESET} `)).trim().toUpperCase();
-          if (save === "Y") {
-            mkdirSync(outDir, { recursive: true });
-            const p = join(outDir, `compare-${stamp}.txt`);
-            const bodyPlain = compareBody.replace(/\x1b\[[0-9;]*m/g, "");
-            writeFileSync(p, auditWrite(audit, p,
-              bodyPlain + `\n\ngenerated ${new Date().toISOString()} by starreckon\n`));
-            console.log(`  wrote ${maskPath(p)}`);
-          } else {
-            console.log(`  ${DIM}not saved.${RESET}`);
+            compareDone = true;
           }
         }
       } else if (key === "E") {

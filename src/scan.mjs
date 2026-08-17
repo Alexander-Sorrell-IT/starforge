@@ -920,6 +920,15 @@ export function finalize(stats) {
         tool_calls: b.tools,
         languages: langsFromExts(b.exts),
         projects_count: b.projects.size,
+        // Top 5 project labels for this month — stored so cardProjects can render
+        // from a lifetime view after logs age off. Same two-segment masking as the
+        // top-level agg.projects; --no-projects is applied at write time in cli.mjs
+        // via forFiles(), which already masks this field. The count is the star axis
+        // input (projects_count above, uncapped); these names are display only.
+        top_projects: [...b.projects.entries()]
+          .sort((x, y) => y[1] - x[1])
+          .slice(0, 5)
+          .map(([name, sessions]) => ({ name, sessions })),
         models: Object.fromEntries([...b.models.entries()].sort((x, y) => y[1] - x[1])),
         hour_buckets: b.hours,
         // Real hours, from the same distinct-minute set and the same 00:00-05:59

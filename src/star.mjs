@@ -314,6 +314,59 @@ export function renderCompare(monthly, lifetime, opts = {}) {
   return out.join("\n");
 }
 
+// ---------------------------------------------------------------------------
+// Full compare report — two stars (plain text) + compare bars, for saving.
+//
+// `mine`  — { month, life }  — corpus snapshots for this machine
+// `fleet` — { month, life }  — fleet aggregates, or null when no --fleet=DIR
+//
+// Returns a plain-text string (ANSI stripped) suitable for writing to a file.
+// The same string is what [S] saves from the menu and --report writes
+// automatically. color: false so the file is readable in any editor.
+export function buildCompareReport({ mine, fleet, label = null } = {}) {
+  const stamp = new Date().toISOString().replace("T", " ").slice(0, 19);
+  const header = label ? `starreckon compare — ${label}\ngenerated ${stamp}\n` : `starreckon compare\ngenerated ${stamp}\n`;
+  const HR = "─".repeat(62);
+  const parts = [header];
+
+  if (mine?.month && mine?.life) {
+    parts.push(HR);
+    parts.push("THIS MACHINE — this month vs lifetime");
+    parts.push(HR);
+    parts.push(renderStar(mine.month.levels ?? computeLevels(mine.month), { color: false, status: `this month · ${mine.month.month ?? ""}`.trimEnd() }));
+    parts.push("");
+    parts.push(renderStar(mine.life.levels ?? computeLevels(mine.life), { color: false, status: `lifetime · ${mine.life.months ?? "?"} month(s)` }));
+    parts.push("");
+    parts.push(renderCompare(mine.month, mine.life, { color: false }));
+  } else if (mine?.life) {
+    parts.push(HR);
+    parts.push("THIS MACHINE — lifetime");
+    parts.push(HR);
+    parts.push(renderStar(mine.life.levels ?? computeLevels(mine.life), { color: false, status: `lifetime · ${mine.life.months ?? "?"} month(s)` }));
+  }
+
+  if (fleet?.month && fleet?.life) {
+    parts.push("");
+    parts.push(HR);
+    parts.push("FLEET — this month vs lifetime");
+    parts.push(HR);
+    parts.push(renderStar(fleet.month.levels ?? [], { color: false, status: `fleet this month · ${fleet.month.month ?? ""}`.trimEnd() }));
+    parts.push("");
+    parts.push(renderStar(fleet.life.levels ?? [], { color: false, status: `fleet lifetime · ${fleet.life.months ?? "?"} month(s)` }));
+    parts.push("");
+    parts.push(renderCompare(fleet.month, fleet.life, { color: false }));
+  } else if (fleet?.life) {
+    parts.push("");
+    parts.push(HR);
+    parts.push("FLEET — lifetime");
+    parts.push(HR);
+    parts.push(renderStar(fleet.life.levels ?? [], { color: false, status: `fleet lifetime · ${fleet.life.months ?? "?"} month(s)` }));
+  }
+
+  // Strip any residual ANSI that crept in from renderStar/renderCompare
+  return parts.join("\n").replace(/\x1b\[[0-9;]*m/g, "") + "\n";
+}
+
 // The five axes as data. Weights are exactly the ones the star has always used;
 // `mid` is the value at which a term reads about 2.5 before weighting.
 //

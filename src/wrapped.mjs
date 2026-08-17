@@ -395,13 +395,24 @@ export function cardShapeOverTime(rawTimeline) {
   return lines;
 }
 
-export function cardRhythm(profile) {
+export function cardRhythm(profile, rawAgg) {
   const rhy = profile?.rhythm;
-  if (!rhy?.hour_buckets) return null;
-  const weekend = Math.round((rhy.weekend_ratio ?? 0) * 100);
+  // Fall back to the lifetime agg's hour_buckets when profile is absent
+  // (e.g. logs have aged off). The agg carries the accumulated histogram from
+  // snapshots, so the sparkline and peak hour still render from stored history.
+  const hbRaw = rhy?.hour_buckets ?? obj(rawAgg).hour_buckets ?? null;
+  const hb = Array.isArray(hbRaw) ? hbRaw : null;
+  if (!hb) return null;
+  const peakFromBuckets = (buckets) => {
+    if (!Array.isArray(buckets) || !buckets.some(Boolean)) return null;
+    return buckets.indexOf(Math.max(...buckets));
+  };
+  const weekend = Math.round((rhy?.weekend_ratio ?? obj(rawAgg).weekend_ratio ?? 0) * 100);
   const weekday = 100 - weekend;
-  const peak = rhy.peak_hour;
-  const owl = rhy.night_owl;
+  const peak = rhy?.peak_hour ?? peakFromBuckets(hb);
+  const nightShare = rhy?.night_share ??
+    (hb ? hb.slice(0, 6).reduce((a, b) => a + b, 0) / Math.max(1, hb.reduce((a, b) => a + b, 0)) : 0);
+  const owl = rhy?.night_owl ?? (nightShare > 0.15);
   const subhead = owl
     ? "while the 9-5 sleeps, you ship."
     : peak != null && peak >= 18 ? "you do your best work after the day job ends."
@@ -410,10 +421,10 @@ export function cardRhythm(profile) {
   return [
     head("WHEN YOU CODE"),
     "",
-    `  ${CY}${sparkline(rhy.hour_buckets)}${R}`,
+    `  ${CY}${sparkline(hb)}${R}`,
     `  ${D}00    06    12    18  23${R}`,
     "",
-    peak != null ? `  ${WH}peak at ${String(peak).padStart(2, "0")}:00${R}${D} · ${Math.round((rhy.night_share ?? 0) * 100)}% of events 00:00–05:59${R}` : "",
+    peak != null ? `  ${WH}peak at ${String(peak).padStart(2, "0")}:00${R}${D} · ${Math.round(nightShare * 100)}% of events 00:00–05:59${R}` : "",
     "",
     `  ${WH}weekdays${R}  ${bar(weekday, 100, 20)} ${D}${weekday}%${R}`,
     `  ${WH}weekends${R}  ${bar(weekend, 100, 20)} ${D}${weekend}%${R}`,
@@ -496,7 +507,15 @@ export function cardStack(rawAgg, profile) {
 }
 
 export function cardProjects(rawAgg) {
-  const projects = arr(obj(rawAgg).projects).filter((p) => p && typeof p.name === "string").slice(0, 5);
+  const agg = obj(rawAgg);
+  // Prefer live scan projects (full names, current sessions). Fall back to
+  // top_projects stored in the snapshot/lifetime aggregate when logs have
+  // aged off — those were written at scan time so they carry real names.
+  const projects = (
+    arr(agg.projects).filter((p) => p && typeof p.name === "string").length
+      ? arr(agg.projects)
+      : arr(agg.top_projects)
+  ).filter((p) => p && typeof p.name === "string").slice(0, 5);
   if (!projects.length) return null;
   const max = Math.max(...projects.map((p) => p.sessions));
   return [
@@ -768,7 +787,7 @@ export function buildCards(input) {
     [cardHistory(timeline), CY],
     [cardTokens(agg, providers), "\x1b[38;5;213m"],
     [cardShapeOverTime(timeline), CY],
-    [cardRhythm(profile), "\x1b[38;5;213m"],
+    [cardRhythm(profile, agg), "\x1b[38;5;213m"],
     [cardHowYouDrive(profile), GOLD],
     [cardAgents(profile), CY],
     [cardStack(agg, profile), "\x1b[38;5;120m"],
@@ -808,7 +827,7 @@ export function buildCardsSafe(input) {
       ["THE RECORD", () => cardHistory(input.timeline)],
       ["THE WEIGHT OF IT", () => cardTokens(input.agg, input.providers)],
       ["THE SHAPE OVER TIME", () => cardShapeOverTime(input.timeline)],
-      ["WHEN YOU CODE", () => cardRhythm(input.profile)],
+      ["WHEN YOU CODE", () => cardRhythm(input.profile, input.agg)],
       ["YOUR HAND ON IT", () => cardHowYouDrive(input.profile)],
       ["HOW MANY AGENTS YOU JUGGLE", () => cardAgents(input.profile)],
       ["YOUR TOOLS & MODELS", () => cardStack(input.agg, input.profile)],

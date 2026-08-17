@@ -248,6 +248,7 @@ export function loadTimeline() {
         languages: {},
         models: {},
         projects_count: 0,
+        top_projects: {},   // name -> max sessions seen across machines, collapsed to array below
         hour_buckets: new Array(24).fill(0),
         active_days: 0,
         longest_streak_days: 0,
@@ -270,6 +271,16 @@ export function loadTimeline() {
         // snapshots deliberately do not carry names — so this takes the largest
         // single machine's count, a floor rather than an invented total.
         merged.projects_count = Math.max(merged.projects_count, m.projects_count ?? 0);
+        // top_projects: union across machines, keeping the highest session count
+        // per name. Same reason as projects_count — the same repo on two machines
+        // is one project, so we merge by name, not sum.
+        for (const p of (m.top_projects ?? [])) {
+          if (p?.name) {
+            merged.top_projects[p.name] = Math.max(
+              merged.top_projects[p.name] ?? 0, p.sessions ?? 0
+            );
+          }
+        }
         for (const [k, v] of Object.entries(m.languages ?? {}))
           merged.languages[k] = (merged.languages[k] ?? 0) + v;
         for (const [k, v] of Object.entries(m.models ?? {}))
@@ -303,6 +314,11 @@ export function loadTimeline() {
         .filter((v) => typeof v === "number" && Number.isFinite(v));
       if (nights.length) merged.night_hours = +Math.max(...nights).toFixed(1);
       else unmeasuredNights.push(merged.month);
+      // Collapse the temp object back to a sorted array before publishing.
+      merged.top_projects = Object.entries(merged.top_projects)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([name, sessions]) => ({ name, sessions }));
       merged.duration_hours = +merged.duration_hours.toFixed(1);
       merged.levels = computeLevels(merged);
       months.push(merged);
@@ -357,6 +373,11 @@ export function lifetimeFromTimeline(timeline) {
     languages: {},
     models: {},
     projects_count: 0,
+    // Temp object for accumulation — collapsed to array at the end.
+    // top_projects across months: a project that appeared in any month is
+    // kept; session count is the max seen in any one month (not a sum,
+    // because the same project across 12 months is still one project).
+    _topProjectsMap: {},
     hour_buckets: new Array(24).fill(0),
     active_days: 0,
     longest_streak_days: 0,
@@ -382,7 +403,19 @@ export function lifetimeFromTimeline(timeline) {
     for (let h = 0; h < 24; h++) life.hour_buckets[h] += hb[h] ?? 0;
     if (typeof m.night_hours === "number" && Number.isFinite(m.night_hours))
       life.night_hours = (life.night_hours ?? 0) + m.night_hours;
+    for (const p of (m.top_projects ?? [])) {
+      if (p?.name)
+        life._topProjectsMap[p.name] = Math.max(
+          life._topProjectsMap[p.name] ?? 0, p.sessions ?? 0
+        );
+    }
   }
+  // Collapse temp accumulator and remove it from the public object.
+  life.top_projects = Object.entries(life._topProjectsMap)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([name, sessions]) => ({ name, sessions }));
+  delete life._topProjectsMap;
   if (life.night_hours != null) life.night_hours = +life.night_hours.toFixed(1);
   life.duration_hours = +life.duration_hours.toFixed(1);
   life.levels = computeLevels(life);
