@@ -91,8 +91,30 @@ function readJsonSafe(p) {
 
 // ---- credential guard ------------------------------------------------------
 
+// A CREDENTIAL IS RECOGNISED BY SHAPE, NOT BY BEING ON A LIST OF TEN NAMES.
+//
+// SECRET_NAMES held `oauth_creds.json` and this let `oauth-keys.json` — one
+// character different — through with its .json extension into
+// ~/.ai-logs-archive/aider/, on every tick, under a header that says "NEVER
+// archives credential files". An exact-name denylist cannot keep a promise
+// about files it has not seen; the next tool's `api-key.json` or
+// `refresh_token.json` would sail through the same way. So the exact list stays
+// (it is cheap and it names the known offenders) and a pattern test sits beside
+// it: any name carrying a credential-shaped word is refused, whatever the
+// extension.
+//
+// It is NOT a bare-word match on "token". The first draft was, and it refused
+// `token_ledger.jsonl` and `token-usage.json` — this program's own record and
+// deadreckon's — which are exactly the files the archive exists to keep. A
+// credential file says what KIND of secret it is: `oauth-keys`, `api_key`,
+// `refresh_token`, `access_token`, `id_rsa`. A record file uses the word as a
+// unit of measure. The pattern names the credential compounds, and leaves the
+// bare word alone.
+const SECRET_SHAPE = /(?:^|[._-])(?:oauth(?:[._-]?(?:keys?|creds?|tokens?))?|secrets?|credentials?|creds|api[._-]?keys?|apikeys?|auth(?:[._-]?tokens?)?|passwords?|passwd|private[._-]?keys?|id_rsa|id_ed25519|id_ecdsa|refresh[._-]?tokens?|access[._-]?tokens?|bearer|session[._-]?keys?|cookies?[._-]?(?:jar|store|txt))(?:$|[._-])/i;
+
 function isSecretName(name) {
-  return SECRET_NAMES.has(name.toLowerCase());
+  const n = name.toLowerCase();
+  return SECRET_NAMES.has(n) || SECRET_SHAPE.test(n);
 }
 function hasSecretAncestor(rel) {
   // rel is relative to the store root — check each component.
@@ -140,7 +162,23 @@ function looksLikeClaudeProfile(p) {
   return check(proj, 4);
 }
 
-export function findClaudeProfiles(home) {
+/**
+ * Profiles under `home`, plus whatever $CLAUDE_CONFIG_DIR points at.
+ *
+ * `configDir` is a parameter and not a bare `process.env` read because the env
+ * read made this function non-hermetic: handed a fresh temp home it still
+ * returned the developer's own alternate profile, because the variable was set
+ * in that shell and pointed outside the home it was given. Three tests failed,
+ * and the failure was the honest half — the dangerous half is that a test
+ * asserting "empty home -> []" would have PASSED on any machine where the
+ * variable happened to be unset, and failed only on the machines that actually
+ * use it. A suite whose verdict depends on ambient environment is not a suite.
+ *
+ * Production behaviour is unchanged: the default is still the live variable,
+ * which is the whole reason it is honoured — CLAUDE_CONFIG_DIR may point
+ * anywhere at all, and a scan bounded by `home` would never find it.
+ */
+export function findClaudeProfiles(home, { configDir = process.env.CLAUDE_CONFIG_DIR } = {}) {
   home = home ?? homedir();
   const seen = new Set();
   const out = [];
@@ -168,8 +206,7 @@ export function findClaudeProfiles(home) {
   }
 
   // $CLAUDE_CONFIG_DIR may point anywhere
-  const env = process.env.CLAUDE_CONFIG_DIR;
-  if (env) add(env);
+  if (configDir) add(configDir);
 
   // Deep walk for copies/alternate profiles
   const walk = (dir, depth) => {
@@ -429,7 +466,12 @@ export function allStores(home) {
   add("grok-archived", ".grok/archived_sessions");
   add("deepseek", ".deepseek/sessions");
   add("cursor", ".cursor/chats");
-  add("aider", ".aider");
+  // aider's SESSION history, not the whole dotdir. `.aider` was added whole,
+  // and whole includes oauth-keys.json, which the archive then hard-linked —
+  // credential material duplicated into a tree that is meant to be safe to
+  // sync. The chat history is the record; nothing else in that directory is.
+  add("aider", ".aider/.aider.chat.history.md");
+  add("aider-input", ".aider/.aider.input.history");
   add("continue", ".continue/sessions");
   add("opencode", ".opencode/sessions");
   add("goose", ".config/goose/sessions");
@@ -458,9 +500,18 @@ export function allStores(home) {
  * tick()  — apply + return a one-line summary string (for daemon log).
  */
 
-export function check(home) {
+// OPTS REACHES THE DISCOVERY, or the injected home is only half honoured.
+// findClaudeProfiles takes {configDir} and defaults it to
+// $CLAUDE_CONFIG_DIR, which is right for production and wrong for a caller
+// that has just built a temp home to ask a question about. check(), apply()
+// and needsProtection() passed the home and dropped the option, so on a
+// developer machine with CLAUDE_CONFIG_DIR set they answered about a profile
+// the caller never mentioned. The three needsProtection tests were green here
+// only because this machine's $CLAUDE_CONFIG_DIR happens to point at an
+// already-raised profile: set it at a 30-day one and they invert.
+export function check(home, opts = {}) {
   home = home ?? homedir();
-  const profiles = findClaudeProfiles(home);
+  const profiles = findClaudeProfiles(home, opts);
   const stores = allStores(home);
 
   const profileResults = profiles.map(p => ({
@@ -479,9 +530,9 @@ export function check(home) {
   return { profiles: profileResults, stores: storeResults, dry: true };
 }
 
-export function apply(home) {
+export function apply(home, opts = {}) {
   home = home ?? homedir();
-  const profiles = findClaudeProfiles(home);
+  const profiles = findClaudeProfiles(home, opts);
   const stores = allStores(home);
 
   const profileResults = profiles.map(p => ({
@@ -540,8 +591,8 @@ export function tick(home) {
  * Whether any Claude profile still has cleanupPeriodDays below TARGET_DAYS
  * and the 6h daemon is not installed. Used by cli.mjs to print the warning.
  */
-export function needsProtection(home) {
+export function needsProtection(home, opts = {}) {
   home = home ?? homedir();
-  const profiles = findClaudeProfiles(home);
+  const profiles = findClaudeProfiles(home, opts);
   return profiles.some(p => currentPeriod(p) < TARGET_DAYS);
 }

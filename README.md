@@ -388,11 +388,45 @@ starreckon --reset-audit[=WHY]   # retire the run-log history: deletes the logs 
                                # deletion in the new chain's genesis (PROVE-IT.md §4). Scans nothing
 starreckon verify           # the adversarial self-check, with each check's limits printed
 starreckon prove            # print (don't run) the OS-confinement proof command for this machine
+starreckon addons           # companion tools: what this machine is licensed for, what is installed
 ```
 
 An unknown flag exits 2 and reads nothing: `--no-project` (singular) used to be
 ignored in silence while the run wrote every real project name, so flags now
 fail closed rather than open. Same for an unknown subcommand.
+
+### Companion tools — `starreckon addons`
+
+Four pip tools (`cli-wikia`, `cli-enforcement`, `cli-fleet`, `cli-collective`)
+and two MCP servers (`filelens-mcp`, `sitemap-mcp`) are optional companions,
+unlocked by a licence file at `~/.starreckon/licence.json`.
+
+**The licence is checked offline.** It is an Ed25519 signature verified against
+a public key compiled into `src/addons.mjs` — there is no activation call, no
+licence server, and no request of any kind when a licence is missing, expired
+or forged. That was the requirement rather than a convenience: the no-egress
+proof is the most valuable thing this program has, and an entitlement check is
+not worth spending it on. `starreckon addons` adds nothing to the write list in
+[PROVE-IT.md](PROVE-IT.md) §6 either — it reads, and never writes.
+
+`addons` reports five states, and they are deliberately not collapsed:
+
+| | |
+|---|---|
+| `locked` | not covered by this licence. **Nothing was looked for** — an unlicensed install does not inventory your machine |
+| `absent` | covered, and no such executable is on PATH |
+| `unreachable` | covered, on PATH, and what PATH points at cannot be read — an editable install whose drive is unplugged looks exactly like this, and calling it `absent` would tell you to reinstall a tool you already own |
+| `ready` | covered, installed, runnable |
+| `external` | covered and installed, and starreckon will not run it |
+
+`external` is a boundary, not a lesser tier. `sitemap-mcp` fetches live sites by
+design, and both MCP servers are meant to be spawned over stdio by an MCP
+client. starreckon lists them and never executes them, so the tools stay yours
+and this program stays provably silent.
+
+Because the pip tools live in a virtualenv, they are only on PATH when that
+environment is active — so `addons` prints how many PATH entries it searched
+rather than leaving `absent` looking definitive.
 
 `--join-fleet` is the one flag that deliberately writes outside
 `~/.starreckon`: it exists to merge several machines' totals, and if you point

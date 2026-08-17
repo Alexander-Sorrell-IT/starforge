@@ -24,8 +24,9 @@
 //     max(counterTotal + transcript tokens on days strictly after
 //     lastComputedDate, measured on disk). Concatenation is exact; subtraction
 //     is meaningless. dailyModelTokens is never used (input+output only).
-import { sanitizeModel } from "./scan.mjs";
+import { sanitizeModel, creditUsage } from "./scan.mjs";
 import {
+  existsSync,
   lstatSync,
   readdirSync,
   readFileSync,
@@ -35,11 +36,15 @@ import {
 } from "node:fs";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import { maskPath, redactSecrets, accountPseudonym } from "./redact.mjs";
 
 // The four billed usage counters: JSONL key -> output key. usage.iterations
 // restates these for multi-step turns and is deliberately never summed.
+// creditUsage's delta keys -> this file's bucket names.
+const CREDIT_FIELDS = [["in", "input"], ["out", "output"],
+                       ["cr", "cacheRead"], ["cw", "cacheWrite"]];
+
 const USAGE_FIELDS = [
   ["input_tokens", "input"],
   ["cache_creation_input_tokens", "cacheWrite"],
@@ -60,9 +65,24 @@ const TOK_KEYS = ["input", "output", "cacheRead", "cacheWrite"];
 // Dirs that hold COPIES of transcripts rather than a live profile. Reading
 // them is not wrong (global dedup makes a copy contribute nothing) but walking
 // them is a waste, so they are skipped by name — same list as the Python.
+// Trees that hold COPIES of transcripts rather than live ones. Walking into
+// them attributes archived work — often another computer's — to this machine.
+//
+// THIS LIST AND deadreckon's analyze_tokens.COPY_DIRS ARE DOCUMENTED AS THE
+// SAME LIST AND WERE NOT. They differed by exactly one name: this side had
+// `token-corpus`, the other had `deadreckon-record`, and nothing compared them.
+// Measured on the machine where it was found, the missing name let this scan
+// walk 59,131 transcript files out of ~/deadreckon-record — the preservation
+// tree holding FIVE machines' archives — against 1,855 files in the live
+// profiles. Every one of those sessions was being counted as this computer's.
+//
+// It is the union now, both names in both programs, because a copy tree either
+// program knows about is a copy tree. A name that is meaningless here costs one
+// string compare; a name that is missing costs an entire other machine's
+// history landing in your total.
 const COPY_DIRS = new Set([
-  "corpus", "merged", "token-corpus", "node_modules", ".git",
-  "archive", "snap", ".cache", ".local", "venv", ".venv",
+  "corpus", "merged", "token-corpus", "deadreckon-record",
+  "node_modules", ".git", "archive", "snap", ".cache", ".local", "venv", ".venv",
 ]);
 
 function zeroTok() {
@@ -158,8 +178,9 @@ function looksLikeProfile(dir) {
 export function findConfigDirs(home) {
   const seenReal = new Set();
   const out = [];
+  const unclaimed = [];
 
-  const add = (p) => {
+  const add = (p, { deep = false } = {}) => {
     let key;
     try {
       key = realpathSync(p);
@@ -168,6 +189,53 @@ export function findConfigDirs(home) {
     }
     if (seenReal.has(key)) return;
     if (!looksLikeProfile(p)) return;
+
+    // A PROFILE FOUND DEEP IN THE TREE MUST SAY WHO IT IS.
+    //
+    // Profiles are recognised by SHAPE — a directory with projects/ holding
+    // .jsonl — and a copy of a profile has that shape too. On the machine this
+    // rule was ported to, ~/Desktop/standout_clean, _full, _max and _sandbox
+    // each hold a .claude with no config file anywhere near it, and they were
+    // being counted: 489,464,459 tokens published under invented accounts
+    // nobody has ever signed into. The author ruled on 2026-08-10 that they are
+    // EXCLUDED, not re-attributed — moving them to a real account would be
+    // worse than the bug, because it would make invented data look owned.
+    //
+    // A dotdir sitting directly in $HOME is exempt: that IS this machine's own
+    // profile, it is where the tool and $CLAUDE_CONFIG_DIR put them, and it
+    // counts even with no config of its own. Only something found DEEPER has to
+    // produce one, because a profile buried under ~/Desktop/x/ is a copy
+    // somebody made. The archive is exempt too — it is this machine's own
+    // preserved transcripts, hard-linked precisely so they survive the sweep.
+    //
+    // Excluded, and NAMED: an exclusion nobody can see is indistinguishable
+    // from a store that was never there.
+    // The archive is a mirror, and a mirror INHERITS ITS SOURCE'S STANDING.
+    // Exempting the whole archive was the first draft and it was too generous:
+    // ~/.ai-logs-archive/claude/ holds Desktop_standout_full_.claude and three
+    // siblings — preserved copies of the very sandbox profiles excluded above —
+    // so a blanket exemption let the same 489,464,459 tokens back in through
+    // the back door. The mirror's NAME is its source path with the separator
+    // replaced, so the source can be decoded and asked the same question rather
+    // than guessed at.
+    if (deep && !existsSync(join(p, ".claude.json"))) {
+      const archiveRoot = join(resolve(home), ".ai-logs-archive", "claude");
+      const rp = resolve(p);
+      let inherits = false;
+      if (rp.startsWith(archiveRoot + sep)) {
+        const src = join(resolve(home), rp.slice(archiveRoot.length + 1).split("_").join(sep));
+        // Its source counts if it sits directly in $HOME (this machine's own
+        // profile) or carries a config of its own. Anything else is a mirror
+        // of a copy.
+        inherits = resolve(join(src, "..")) === resolve(home)
+                || existsSync(join(src, ".claude.json"));
+      }
+      if (!inherits) {
+        unclaimed.push(p);
+        return;
+      }
+    }
+
     seenReal.add(key);
     out.push(p);
   };
@@ -202,20 +270,52 @@ export function findConfigDirs(home) {
       }
       if (st.isSymbolicLink() || !st.isDirectory() || COPY_DIRS.has(name))
         continue;
-      if (isDir(join(d, "projects"))) add(d);
+      if (isDir(join(d, "projects"))) add(d, { deep: true });
       walk(d, depth - 1);
     }
   };
   walk(home, 4);
+  // The excluded copies ride along on the array so a caller can report them.
+  // Non-enumerable so every existing consumer — length, spread, for..of,
+  // deepEqual in the suites — sees exactly what it saw before.
+  Object.defineProperty(out, "unclaimed", { value: unclaimed, enumerable: false });
   return out;
 }
 
 // ---- account identity (analyze_tokens.account_for) -------------------------
 
+/**
+ * An archive mirror's SOURCE profile, or null.
+ *
+ * ~/.ai-logs-archive/claude/<name> is a hard-link mirror of ~/<name> — the
+ * archiver's whole design. The mirror holds transcripts and no `.claude.json`,
+ * so identity lookup fell through to `unknown (<dirname>)` and invented an
+ * account: NINE of them on this machine, one per mirrored profile, published
+ * beside the five real ones. Fourteen accounts where there are five.
+ *
+ * The name is the decode: both the dotted and undotted spellings appear
+ * (`claude` and `.claude`), because the archiver writes whichever it was given.
+ */
+function archiveSource(configDir, home) {
+  const marker = join(home, ".ai-logs-archive", "claude") + sep;
+  const p = resolve(configDir);
+  if (!p.startsWith(marker)) return null;
+  const name = basename(p);
+  for (const cand of [join(home, name), join(home, "." + name.replace(/^\./, ""))]) {
+    if (isDir(cand)) return cand;
+  }
+  return null;
+}
+
 function configJson(configDir, home) {
   // The ~/.claude quirk: the default profile keeps its state in
   // <home>/.claude.json, not <home>/.claude/.claude.json. Keyed on the dir
   // NAME, exactly like the Python (a copy named ".claude" resolves the same).
+  //
+  // AN ARCHIVE MIRROR ASKS ITS SOURCE. It has no config of its own by design;
+  // inventing an identity for it is how nine phantom accounts got published.
+  const src = archiveSource(configDir, home);
+  if (src) return configJson(src, home);
   const cfg =
     basename(configDir) === ".claude"
       ? join(home, ".claude.json")
@@ -305,7 +405,7 @@ async function streamLines(filePath, onLine) {
 // a live session fails JSON.parse and is silently skipped; non-integer usage
 // values skip that field only; records without a uuid are counted
 // unconditionally (cannot dedup, cannot skip).
-async function scanProfile(configDir, seen) {
+async function scanProfile(configDir, seen, seenSessions) {
   const totals = zeroTok();
   const byDay = new Map(); // "YYYY-MM-DD" -> tok
   const byModel = new Map(); // model id -> tok; partitions totals EXACTLY
@@ -318,13 +418,13 @@ async function scanProfile(configDir, seen) {
     // main = anything not nested under subagents/ or workflows/; each nested
     // transcript is its own billed API conversation and counts toward totals,
     // but only main files count as sessions.
-    if (!parts.includes("workflows") && !parts.includes("subagents"))
-      sessions += 1;
+    const isMain = !parts.includes("workflows") && !parts.includes("subagents");
     const fileTok = zeroTok();
     const modelCounts = new Map();
     let turns = 0;
     let firstTs = null;
     let lastTs = null;
+    let fileSessionId = null;
     try {
       await streamLines(path, (line) => {
         if (!line.includes('"usage"')) return;
@@ -337,11 +437,33 @@ async function scanProfile(configDir, seen) {
         const msg = rec?.message;
         const usage = msg && typeof msg === "object" ? msg.usage : null;
         if (!usage || typeof usage !== "object" || Array.isArray(usage)) return;
-        const uuid = rec.uuid;
-        if (uuid) {
-          if (seen.has(uuid)) return;
-          seen.add(uuid);
-        }
+        // THE DEDUP KEY IS message.id, NOT rec.uuid, AND THE RULE IS A RUNNING
+        // MAXIMUM — the same rule scan.mjs and deadreckon already use.
+        //
+        // This kept a Set of row uuids and SUMMED every row that survived. A
+        // streaming write emits a NEW uuid each time and keeps the SAME
+        // message.id, so on a real profile the uuid set removed 5.7% of rows
+        // (14,797 of 15,690) where message.id collapses 67.5% (5,101). Every
+        // partial write of one assistant message was counted again.
+        //
+        // MEASURED on one profile copied to a scratch home — no .claude.json,
+        // no deleted sessions, floor 0, so nothing lifetime about it:
+        //     accounts.mjs   1,409,787,623
+        //     scan.mjs         520,497,793
+        //     deadreckon       520,497,793
+        // 2.71x, and the two readers that dedup correctly agree to the token.
+        //
+        // It matters because THIS path — not scan.mjs — feeds the ledger, the
+        // per-account tables, --join-fleet and the MACHINE TOTAL floor. The
+        // header of this file called itself a faithful port; it was written
+        // 2026-08-07 and the Python switched to message.id on 2026-08-08.
+        //
+        // creditUsage returns the DELTA to add, so every bucket below stays a
+        // simple accumulation.
+        const credited = creditUsage(seen, msg.id ?? rec.uuid, usage);
+        if (!credited) return;
+        if (fileSessionId === null && typeof rec.sessionId === "string" && rec.sessionId)
+          fileSessionId = rec.sessionId;
         const ts = typeof rec.timestamp === "string" ? rec.timestamp : "";
         const day = ts.slice(0, 10);
         let dayTok = null;
@@ -362,9 +484,9 @@ async function scanProfile(configDir, seen) {
           if (!firstTs || ts < firstTs) firstTs = ts;
           if (!lastTs || ts > lastTs) lastTs = ts;
         }
-        for (const [key, out] of USAGE_FIELDS) {
-          const v = usage[key];
-          if (!Number.isInteger(v)) continue;
+        for (const [field, out] of CREDIT_FIELDS) {
+          const v = credited[field];
+          if (!v) continue;
           totals[out] += v;
           if (dayTok) dayTok[out] += v;
           modelTok[out] += v;
@@ -373,6 +495,26 @@ async function scanProfile(configDir, seen) {
       });
     } catch {
       // unreadable file: skip it, keep the profile
+    }
+    // A SESSION IS COUNTED ONCE, BY ITS OWN ID — NOT ONCE PER FILE THAT HOLDS
+    // IT. ~/.ai-logs-archive is a HARD-LINK MIRROR of the live profiles, so
+    // every archived session is the same session, at the same inode, under a
+    // second path. Tokens were already safe (creditUsage keys on message.id
+    // across the whole machine, so the mirror credits nothing), but the session
+    // COUNT was a file count: 132 live sessions on this machine became 384,
+    // because 252 mirrors were counted again.
+    //
+    // NOT solved by skipping the archive. The mirror exists precisely so that a
+    // session survives its live transcript being deleted — skip it and the
+    // count drops the moment retention runs, which is the opposite failure.
+    // Identity settles both: seen once, counted once, from whichever copy is
+    // still readable.
+    if (isMain) {
+      const sid = fileSessionId ?? rel;
+      if (!seenSessions || !seenSessions.has(sid)) {
+        seenSessions?.add(sid);
+        sessions += 1;
+      }
     }
     if (turns > 0) {
       let topModel = "";
@@ -387,7 +529,29 @@ async function scanProfile(configDir, seen) {
             ) || 0
           : 0;
       sessionRows.push({
-        session_id: rel.split("/").pop().replace(/\.jsonl$/, ""),
+        // THE SESSION SAYS WHO IT IS; THE FILENAME ONLY SOMETIMES AGREES.
+        //
+        // This was the file's basename, and the ledger keys on (cli,
+        // session_id) — so files sharing a basename collapse into ONE ledger
+        // row. Measured on this machine: 77 transcripts named `journal.jsonl`
+        // across two profiles collapsed to a single id, and 1,647 of 1,856
+        // files carried an in-file sessionId that differed from their name at
+        // all. The ledger exists so that deleting a transcript cannot lower the
+        // lifetime total, and it cannot do that job while 89% of files are
+        // filed under the wrong identity.
+        //
+        // Falls back to the basename, which is deadreckon's rule verbatim
+        // (`sid = o.get("sessionId") or f.stem`): a transcript with no
+        // sessionId in it still has to be filed somewhere, and its name is the
+        // only handle left.
+        //
+        // Changed while no ledger file existed on any machine, so there are no
+        // rows under the old identity to reconcile. Doing this after one had
+        // been written would have needed a migration: lifetime() takes the best
+        // row per (cli, session_id), and legacy basename rows would have summed
+        // alongside the new ones instead of replacing them.
+        session_id: fileSessionId
+          ?? rel.split("/").pop().replace(/\.jsonl$/, ""),
         turns,
         start: firstTs,
         end: lastTs,
@@ -482,7 +646,16 @@ export async function discoverAccounts(opts = {}) {
   const home = opts.home ?? homedir();
   const showAccounts = opts.showAccounts === true;
   const dirs = findConfigDirs(home);
-  const seen = new Set(); // ONE uuid set for the whole machine
+  // ONE seen-map for the whole machine — a Map now, not a Set, because
+  // creditUsage keeps the running maximum PER FIELD per message.id and needs
+  // somewhere to keep it. Machine-wide scope is deliberate and unchanged: a
+  // session that appears under two profiles (a copy, or the hard-link archive)
+  // is credited once, which is why the archive can be read without doubling
+  // the tokens.
+  const seen = new Map();
+  // Session identity, machine-wide, for the same reason `seen` is: the archive
+  // mirror holds the same sessions as the profile it mirrors.
+  const seenSessions = new Set();
   const rows = [];
   const merged = new Map(); // account -> { tok, days, byModel, sessionRows, ... }
   // display label -> raw identity. NEVER written to a file: the caller uses it
@@ -494,7 +667,7 @@ export async function discoverAccounts(opts = {}) {
     const account = displayAccount(raw, showAccounts);
     identities.set(account, raw);
     const { totals, byDay, byModel, sessions, sessionRows } =
-      await scanProfile(dir, seen);
+      await scanProfile(dir, seen, seenSessions);
     rows.push({
       configDir: maskPath(String(dir)),
       account,

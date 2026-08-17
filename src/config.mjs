@@ -85,10 +85,29 @@ export function readConfig(home) {
  * Write a config object to ~/.starreckon/config.json.
  * Only recognised fields are written. Unknown keys from manual edits are
  * stripped so the file stays predictable.
- * Passing {} or a config with no recognised non-empty fields deletes the file.
+ *
+ * Deletes the file only when the CALLER passed nothing. An empty object means
+ * "I have no configuration", and that is a request to remove it.
+ *
+ * IT USED TO DELETE WHEN THE FILTER EMPTIED THE RESULT, WHICH IS A DIFFERENT
+ * FACT. `if (Object.keys(clean).length === 0) unlinkSync(file)` could not tell
+ * "the caller asked for nothing" from "everything the caller asked for was
+ * rejected" — and the api_keys filter rejects any name outside
+ * KNOWN_CLI_NAMES, which includes `kilo`, the key the reader registry actually
+ * uses (scanners.mjs READERS). So writing a key under the one spelling the
+ * scanner answers to destroyed the file, taking the user's extra_roots with
+ * it. Nothing in production calls this yet, so no user has lost a file; the
+ * trap was armed and waiting for the first caller.
+ *
+ * A write that is rejected now says so and leaves the file alone.
  */
 export function writeConfig(home, obj) {
   const file = configPath(home);
+  const askedForNothing = !obj || Object.keys(obj).length === 0
+    || Object.entries(obj).every(([, v]) =>
+      v == null || (Array.isArray(v) ? v.length === 0
+                    : typeof v === "object" ? Object.keys(v).length === 0
+                    : false));
   const clean = {};
 
   if (Array.isArray(obj?.extra_roots)) {
@@ -109,8 +128,17 @@ export function writeConfig(home, obj) {
   }
 
   if (Object.keys(clean).length === 0) {
-    if (existsSync(file)) try { unlinkSync(file); } catch { /* best-effort */ }
-    return;
+    if (askedForNothing) {
+      if (existsSync(file)) try { unlinkSync(file); } catch { /* best-effort */ }
+      return;
+    }
+    // The caller offered something and none of it survived. Refusing loudly is
+    // the only option that is not a lie: writing an empty file would discard
+    // their existing config just as thoroughly as unlinking it did.
+    throw new Error(
+      "writeConfig: nothing in the supplied config was recognised, so it was "
+      + "not written and " + file + " was left as it is. Check the CLI names "
+      + "in api_keys against KNOWN_CLI_NAMES.");
   }
 
   mkdirSync(join(home ?? homedir(), ".starreckon"), { recursive: true });

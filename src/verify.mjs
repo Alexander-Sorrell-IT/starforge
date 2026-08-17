@@ -1130,6 +1130,37 @@ export function outputScrub(dataDir = join(homedir(), ".starreckon"), opts = {})
     } else if (MARKUP_EXTS.some((x) => lower.endsWith(x))) {
       for (const { where, s, index } of markupStrings(text))
         prose(s, `${where} at line ${lineOfIndex(text, index)}`);
+    } else if (lower.endsWith(".jsonl")) {
+      // JSONL IS DATA, AND collapse() TURNED ITS LINE BREAKS INTO PROSE.
+      //
+      // The plain-text branch below collapses every whitespace run to one
+      // space, so an N-line file arrives as one string carrying N-1 "spaces".
+      // token_ledger.jsonl — 358 rows, and ZERO space characters anywhere in
+      // it — was reported as a "108858-char prose-like string (357 spaces),
+      // possible transcript text". 357 is 358 minus one. It was counting line
+      // breaks.
+      //
+      // Nothing caught it because no ledger file had ever been written on the
+      // machine this warden runs on: the check only reads what exists, and
+      // `--ledger` had never been run. The moment one existed, every scan
+      // failed its own self-check — and it would have fired for any user whose
+      // ledger passed 41 rows, which is to say all of them.
+      //
+      // Each line is parsed and its STRINGS are walked, which is what the check
+      // was always trying to ask: is there conversation text in here. A line
+      // that is not JSON is reported rather than skipped, because an output
+      // file this program wrote should be readable, and one that is not could
+      // be hiding anything.
+      const lines = text.split("\n");
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        try {
+          walkStrings(JSON.parse(line), `$ line ${i + 1}`, prose);
+        } catch {
+          findings.push(`${rel}:${i + 1}: not valid JSON — cannot rule out embedded transcript text`);
+        }
+      }
     } else {
       prose(collapse(text), "as plain text");
     }

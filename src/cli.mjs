@@ -126,7 +126,7 @@ import { renderCard } from "./card.mjs";
 import { buildCardsSafe, renderAll, box, shareQrLines } from "./wrapped.mjs";
 import { writeSchedule, removeSchedule, daemonStatus, describeSchedule, PROTECT_LABEL } from "./daemon.mjs";
 import { buildReceipt, renderReceipt } from "./receipt.mjs";
-import { scanAllProviders, scannerVersion } from "./scanners.mjs";
+import { scanAllProviders, scanPortedReaders, scannerVersion } from "./scanners.mjs";
 import { discoverAccounts, floorTotals } from "./accounts.mjs";
 import { readContact, writeContact, FIELDS as CONTACT_FIELDS, KEYS as CONTACT_KEYS, LABELS as CONTACT_LABELS } from "./contact.mjs";
 import { readExclusions, addExclusion, removeExclusion, EXCLUDE_FILE } from "./exclude.mjs";
@@ -196,7 +196,7 @@ import { clipboardCmds } from "./clipboard.mjs";
 // Subcommands are explicit. An unknown positional argument EXITS NON-ZERO
 // rather than falling through to a scan — a proof command that silently runs
 // something else and prints success would be worse than having none.
-const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove", "daemon", "protect", "receipt", "serve", "search"]);
+const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove", "daemon", "protect", "receipt", "serve", "search", "addons", "sources"]);
 const positional = args.filter((a) => !a.startsWith("-"));
 const subcommand = positional[0] ?? "scan";
 if (!KNOWN_SUBCOMMANDS.has(subcommand)) {
@@ -311,7 +311,7 @@ for (const a of args) {
   // subcommand would be the same silent-ignore this block exists to end — just
   // with a flag that happens to be spelled correctly. The one exception is
   // declared, not inferred: `receipt --json` emits the machine-readable pack.
-  const SUBCOMMAND_FLAGS = { receipt: new Set(["--json"]), serve: new Set(["--serve-port", "--serve-timeout", "--serve-visits", "--serve-collect"]), search: new Set(["--search-top", "--search-index", "--search-setup", "--search-status", "--roots"]), protect: new Set() };
+  const SUBCOMMAND_FLAGS = { receipt: new Set(["--json"]), serve: new Set(["--serve-port", "--serve-timeout", "--serve-visits", "--serve-collect"]), search: new Set(["--search-top", "--search-index", "--search-setup", "--search-status", "--roots"]), protect: new Set(), addons: new Set(), sources: new Set() };
   if (subcommand !== "scan" && !SUBCOMMAND_FLAGS[subcommand]?.has(base))
     flagError(
       `\`${subcommand}\` takes no flags, and ${base} would have been ignored. Run \`starreckon ${subcommand}\` on its own (to re-pin the allowlist manifest: node src/verify.mjs --update-pins).`
@@ -362,6 +362,8 @@ function printHelp() {
   console.log(`  serve           LAN HTTP server to share your stats page`);
   console.log(`  search QUERY    semantic search over sessions (SecureBERT)`);
   console.log(`  search --search-setup   download models (~600 MB, one-time)`);
+  console.log(`  addons          companion tools and the licence that unlocks them`);
+  console.log(`  sources         every place work can happen, and what this machine has`);
   console.log(`\n${B}BEFORE-YOU-GO MENU${R} ${D}(shown after a scan on an interactive terminal)${R}`);
   console.log(`  [P] prove it       [T] transparency   [C] compare     [D] daemon`);
   console.log(`  [E] exclusions     [R] reach out      [X] copy link   [B] beacon`);
@@ -492,6 +494,46 @@ if (subcommand === "prove") {
   process.exit(0);
 }
 
+
+// `starreckon sources` — every source in spec/sources.json, and whether this
+// machine has it.
+//
+// The gaps are the reason it exists. A source nothing here can count reports
+// `no reader` by name; it never reports 0 and it is never omitted. "you do not
+// use this tool", "you use it and it recorded nothing" and "you use it and
+// nobody can count it" are three facts, and only the third is invisible
+// everywhere else in this program.
+//
+// Reads the filesystem and nothing else — no execution, no network, no writes —
+// so it sits before startAudit() with the other questions that should not write
+// a run log.
+if (subcommand === "sources") {
+  const { survey, render, unknownStores } = await import("./sources.mjs");
+  // The walk costs a bounded pass over home; `sources` is the one command whose
+  // whole job is "what is here", so it pays for it.
+  let undeclared = null;
+  try { undeclared = unknownStores(); } catch { /* the declared list still stands */ }
+  console.log(render(survey(), { color: !process.env.NO_COLOR, undeclared }));
+  process.exit(0);
+}
+
+// `starreckon addons` — which companion tools this machine is licensed for and
+// which are actually installed.
+//
+// It reports; it never runs anything and never fetches anything. The licence is
+// an Ed25519 signature checked locally against a key compiled into
+// src/addons.mjs, so an entitlement question costs no network and PROVE-IT.md's
+// no-egress claim is unaffected — that was the design requirement, not a
+// side-effect. See the header of src/addons.mjs for why the five states are
+// five and not two.
+//
+// Placed here, before startAudit() below, for the same reason the flag parser
+// is: a question about what is installed should not write a run log.
+if (subcommand === "addons") {
+  const { survey, renderSurvey } = await import("./addons.mjs");
+  console.log(renderSurvey(survey(null), { color: !process.env.NO_COLOR }));
+  process.exit(0);
+}
 
 // `starreckon serve` — LAN HTTP server. Generates the stats page and serves it
 // on the local network so another device on the same WiFi can view it.
@@ -730,6 +772,36 @@ async function main() {
   if (!flag("--no-providers")) {
     try {
       providers = scanAllProviders(roots);
+    } catch {}
+    // The readers ported from deadreckon, merged into the same map so every
+    // consumer downstream sees them without change. Kept in its own try: a
+    // failure here must not lose the providers that already scanned.
+    try {
+      // THE SESSION IDS THE SCAN ACTUALLY RECORDED, not the file names.
+      //
+      // The first attempt derived this set from transcript FILENAMES, and that
+      // is wrong for the nested ones: a subagent transcript lives at
+      // projects/<proj>/<session>/subagents/workflows/<wf>/agent.jsonl and is
+      // named `agent`, which is not a session id at all. It produced 1,780
+      // "live ids" against deadreckon's 132 and still MISSED 11 real ones, so
+      // eleven sessions whose transcripts are on disk were reported as
+      // recovered-from-a-deleted-transcript.
+      //
+      // stats.sessions is keyed by the sessionId parseClaudeFile read out of
+      // the file, which is the same identity deadreckon keys on. Codex ids ride
+      // along in that map; they are UUIDs from a different tool and cannot
+      // collide with a Claude session, and over-inclusion here is the safe
+      // direction anyway — it can only ever suppress a row, never double-count
+      // one.
+      const extra = await scanPortedReaders(roots, {
+        knownClaudeIds: new Set(stats.sessions.keys()),
+      });
+      if (providers) {
+        Object.assign(providers.providers, extra.providers);
+        providers.perSession.push(...extra.perSession);
+      } else {
+        providers = { ...extra, scanner_version: scannerVersion() };
+      }
     } catch {}
   }
 
@@ -978,13 +1050,37 @@ async function main() {
   if (models.length) console.log(`models          ${models.map(([m]) => m).join(", ")}`);
 
   if (providers) {
-    const live = Object.entries(providers.providers).filter(([, p]) => p.sessions > 0);
+    const rows = Object.entries(providers.providers);
+    const live = rows.filter(([, p]) => p.sessions > 0);
+    // A STORE THAT COULD NOT BE READ IS NOT A STORE WITH NOTHING IN IT.
+    //
+    // This block filtered on `sessions > 0` and nothing else, so a provider the
+    // readers had already flagged `unreadable` — present on disk, and refused
+    // by the filesystem — printed exactly like a tool the user has never
+    // installed: not at all. The state was computed and thrown away at the last
+    // step. It is the largest defect class in this program (28 of the 106
+    // confirmed on 2026-08-16) and this is the line where it reached the user.
+    const blind = rows.filter(([, p]) => p.state === "unreadable");
     if (live.length) {
       console.log(`\n${BOLD}── other CLIs ──────────────────────────${RESET}`);
       for (const [name, p] of live) {
+        // A row with no token fields at all (history counts sessions, never
+        // tokens) printed `NaN in+out, NaN cache`. Absent is not zero, and it
+        // is certainly not NaN.
+        const counts = p.counts_tokens === false
+          ? `${fmt(p.sessions)} sessions${p.prompts ? `, ${fmt(p.prompts)} prompts` : ""}${DIM} · no token counts in this format${RESET}`
+          : `${fmt(p.sessions)} sessions, ${fmt(p.input + p.output)} in+out, ${fmt(p.cacheRead + p.cacheWrite)} cache`;
+        console.log(`${name.padEnd(12)}  ${counts}`);
+      }
+    }
+    if (blind.length) {
+      if (!live.length) console.log(`\n${BOLD}── other CLIs ──────────────────────────${RESET}`);
+      for (const [name, p] of blind) {
         console.log(
-          `${name.padEnd(12)}  ${fmt(p.sessions)} sessions, ${fmt(p.input + p.output)} in+out, ${fmt(p.cacheRead + p.cacheWrite)} cache`
+          `${name.padEnd(12)}  ${DIM}installed, and could NOT be read — this total is a floor${RESET}`
         );
+        for (const u of (p.unreadable ?? []).slice(0, 3))
+          console.log(`              ${DIM}${u}${RESET}`);
       }
     }
   }
@@ -1338,20 +1434,35 @@ async function main() {
   const buildBeaconPayload = () => {
     const machineName = opt("machine") ?? hostname();
     const label = opt("label") ?? machineName;
-    // Build a minimal totals object from the current scan's agg
+    // Build a minimal totals object from the current scan's agg.
+    //
+    // THE NAMES ON THE LEFT ARE THE WIRE FORMAT; THE NAMES ON THE RIGHT ARE
+    // WHAT THE PRODUCER ACTUALLY EMITS, AND THEY ARE NOT THE SAME NAMES.
+    // Both reads below used to take the wire name from the source object too:
+    // `agg[k]` for these four, and `m.totals?.…` for the months. finalize()
+    // (scan.mjs) emits total_input_tokens, not input_tokens; loadTimeline()
+    // (snapshots.mjs) puts input_tokens at the TOP LEVEL of a month and has no
+    // `totals` key at all — the string does not occur in that file. So every
+    // field of every announced payload was `undefined ?? 0`, and the beacon
+    // broadcast a machine that had done no work, on every run, since it shipped.
+    // A dynamic key and an optional chain are both invisible to a grep for the
+    // field name, which is why this survived a census that searched by name.
     const totals = {
-      accounts: [{ account: "local", ...Object.fromEntries(
-        ["input_tokens","cache_creation_input_tokens","cache_read_input_tokens","output_tokens"]
-          .map((k) => [k, agg[k] ?? 0])
-      )}],
+      accounts: [{
+        account: "local",
+        input_tokens: agg.total_input_tokens ?? 0,
+        cache_creation_input_tokens: agg.total_cache_write_tokens ?? 0,
+        cache_read_input_tokens: agg.total_cache_read_tokens ?? 0,
+        output_tokens: agg.total_output_tokens ?? 0,
+      }],
       by_day: [],
       by_model: {},
       by_project: {},
     };
     const months = timeline.slice(-3).map((m) => ({
       month: m.month,
-      input_tokens: m.totals?.input_tokens ?? 0,
-      output_tokens: m.totals?.output_tokens ?? 0,
+      input_tokens: m.input_tokens ?? 0,
+      output_tokens: m.output_tokens ?? 0,
       active_days: m.active_days ?? 0,
     }));
     return { machine: machineName, label, totals, months };
@@ -1457,7 +1568,13 @@ async function main() {
           inTok += Number(a.input_tokens) || 0;
           outTok += Number(a.output_tokens) || 0;
         }
-        activeDays += Number(m.totals?.active_days) || 0;
+        // `totals` carries accounts/by_day/by_model/by_project and has never
+        // carried active_days, so this read was 0 for every machine including
+        // this one — and TENACITY is scored on it at computeLevels() below.
+        // months[] is where active_days actually lives, in the wire format
+        // beacon.mjs documents, so it works for peers as well as for us. The
+        // months are distinct, so summing them cannot count a day twice.
+        for (const mm of m.months ?? []) activeDays += Number(mm.active_days) || 0;
         months = Math.max(months, (m.months?.length ?? 0));
       }
       const combinedAgg = {

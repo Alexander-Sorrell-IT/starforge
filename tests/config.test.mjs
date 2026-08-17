@@ -1,7 +1,7 @@
 // tests/config.test.mjs — tests for src/config.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -103,11 +103,29 @@ test("writeConfig with empty object deletes existing config file", () => {
   rmSync(home, { recursive: true, force: true });
 });
 
+// Empty fields are still the caller saying "I have nothing" — same as {}.
 test("writeConfig with no valid fields deletes config file", () => {
   const home = tmp();
   writeFileSync(configPath(home), JSON.stringify({ extra_roots: ["/a"] }));
   writeConfig(home, { extra_roots: [], api_keys: {} });
   assert.ok(!existsSync(configPath(home)));
+  rmSync(home, { recursive: true, force: true });
+});
+
+// THE THIRD STATE, WHICH HAD NO TEST AND WAS THE ONE THAT DESTROYED DATA.
+// The two tests above cover "the caller passed nothing". Neither covers "the
+// caller passed something real and the filter rejected all of it", and that is
+// what happened for any api_key written under `kilo` — the spelling the reader
+// registry in scanners.mjs actually uses. The old code could not tell the
+// three apart, so a rejected write deleted the user's extra_roots.
+test("writeConfig refuses an unrecognised write and does NOT destroy the file", () => {
+  const home = tmp();
+  writeFileSync(configPath(home), JSON.stringify({ extra_roots: ["/keep-me"] }));
+  assert.throws(() => writeConfig(home, { api_keys: { kilo: "sk-whatever" } }),
+                /not written/);
+  assert.ok(existsSync(configPath(home)), "the config must survive a refused write");
+  assert.deepEqual(JSON.parse(readFileSync(configPath(home), "utf-8")).extra_roots,
+                   ["/keep-me"], "and survive it unchanged");
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -160,4 +178,46 @@ test("effectiveRoots order: home first, then config roots, then CLI roots", () =
   assert.ok(roots.indexOf("/config-root") < roots.indexOf("/cli-root") ||
             roots.indexOf("/config-root") > 0);
   rmSync(home, { recursive: true, force: true });
+});
+
+// ── the two name lists must agree ─────────────────────────────────────────────
+//
+// NOTHING COMPARED THEM, AND THEY HAD DRIFTED THREE WAYS. KNOWN_CLI_NAMES held
+// 8 names, the reader registry in scanners.mjs held 5 keys, and the overlap was
+// not the story:
+//
+//   kilocode / kilo   the same tool under two spellings, so scanProvider() threw
+//                     on one of them and api_keys could never reach the reader
+//   lmstudio          in the name list and in the billing set, with NO reader
+//                     anywhere in this program - it reported 0, which is the
+//                     same thing it reports when a real store holds nothing.
+//                     deadreckon counts 172,933 tokens across 10 sessions there
+//   claude / codex     read on a different path entirely (scan.mjs sources)
+//
+// The first two are defects and are fixed. The third is deliberate, so it is
+// written down here as an allowlist rather than left as a silent difference -
+// a name in READ_ELSEWHERE is a claim that some other code reads it, and if
+// that stops being true this test does not notice. NO_READER is the same
+// promise in reverse: it must report itself as unreadable and never as zero.
+test("KNOWN_CLI_NAMES and the reader registry describe the same tools", async () => {
+  const { PROVIDERS } = await import("../src/scanners.mjs");
+  const READ_ELSEWHERE = new Set(["claude", "codex"]);   // scan.mjs sources
+  const NO_READER = new Set(["lmstudio"]);               // declared, uncounted
+
+  const registry = new Set(PROVIDERS);
+  const unreachable = [...KNOWN_CLI_NAMES].filter(
+    n => !registry.has(n) && !READ_ELSEWHERE.has(n) && !NO_READER.has(n));
+  assert.deepEqual(unreachable, [],
+    "declared in KNOWN_CLI_NAMES with no reader and no exemption: these report "
+    + "zero tokens, which is indistinguishable from a store that is really empty");
+
+  const undeclared = [...registry].filter(n => !KNOWN_CLI_NAMES.has(n));
+  assert.deepEqual(undeclared, [],
+    "has a reader but is not a known CLI name, so api_keys and every other "
+    + "name-keyed lookup silently misses it");
+
+  for (const n of [...READ_ELSEWHERE, ...NO_READER]) {
+    assert.ok(KNOWN_CLI_NAMES.has(n),
+      `${n} is exempted above but is no longer a known name - delete the exemption`);
+  }
 });

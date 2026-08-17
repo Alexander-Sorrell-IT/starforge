@@ -958,3 +958,41 @@ test("the test-file limit states the consequence, not just the policy", () => {
     "the limit must say what gets through, not only what is caught"
   );
 });
+
+// ── the scrub reads JSONL as data, not as prose ───────────────────────────────
+//
+// collapse() turns every whitespace run into one space, so an N-line file
+// arrives at the prose test as one string carrying N-1 "spaces". The real
+// token_ledger.jsonl — 358 rows and ZERO space characters in the whole file —
+// was reported as a "108858-char prose-like string (357 spaces)". 357 is 358
+// minus one: it was counting line breaks and calling them conversation text.
+//
+// It went unseen because the check reads only what exists, and no ledger file
+// had ever been written on the machine the warden runs on. The first `--ledger`
+// run made every scan fail its own self-check, and it would have done that for
+// any user whose ledger passed 41 rows.
+test("outputScrub: a many-line JSONL of short values is not prose", () => {
+  const dataDir = tmp();
+  const rows = [];
+  for (let i = 0; i < 200; i += 1)
+    rows.push(JSON.stringify({ cli: "claude", session_id: `s${i}`, total: i }));
+  writeFileSync(join(dataDir, "token_ledger.jsonl"), rows.join("\n") + "\n");
+
+  const res = outputScrub(dataDir);
+  assert.strictEqual(res.pass, true,
+    "200 short data rows must not read as transcript text: "
+    + JSON.stringify(res.findings));
+});
+
+// And it must still catch what it is FOR: real conversation text in a value,
+// however many lines the file has.
+test("outputScrub: transcript text inside a JSONL value is still caught", () => {
+  const dataDir = tmp();
+  const prose = "the user asked me to explain the plan and I said ".repeat(40);
+  writeFileSync(join(dataDir, "leak.jsonl"),
+    JSON.stringify({ cli: "claude", note: prose }) + "\n");
+
+  const res = outputScrub(dataDir);
+  assert.strictEqual(res.pass, false, "a long prose string in a value must fail");
+  assert.ok(res.findings.some((f) => f.includes("prose-like")), JSON.stringify(res.findings));
+});

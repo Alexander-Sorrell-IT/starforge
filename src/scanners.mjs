@@ -15,6 +15,7 @@ import {
 import { createRequire } from "node:module";
 import { createDecipheriv, createHash } from "node:crypto";
 import { homedir } from "node:os";
+import { probe, loadSources, stateOf } from "./sources.mjs";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { maskPath, maskText, redactSecrets } from "./redact.mjs";
@@ -57,14 +58,68 @@ export function providerOf(model) {
   return m === "<synthetic>" || m === "unknown" || m === "" ? "synthetic" : "other";
 }
 
+// EVERY FILE THAT DETERMINES A NUMBER, NOT JUST THIS ONE.
+//
+// This hashed scanners.mjs alone, and the counting is spread wider than that:
+// scan.mjs holds parseClaudeFile and parseCodexFile, readers.mjs holds the six
+// ported readers, accounts.mjs computes the per-profile totals and decides
+// which profiles count at all. On 2026-08-16 the Codex arithmetic in scan.mjs
+// was changed — a 1,021,379,811 token correction — and this version did not
+// move. A machine scanned before that fix and one scanned after it stamped the
+// same string and compared equal, which is the exact skew the hash exists to
+// make visible.
+//
+// WHERE YOU LOOKED DETERMINES A NUMBER TOO.
+//
+// sources.mjs and spec/sources.json were added on 2026-08-16, when discovery
+// moved out of the readers and into the spec ("declare where and what, code
+// how"). A reader that counts perfectly still returns the wrong total if it was
+// pointed at three stores instead of four, so a change to either of those —
+// adding a store, fixing a per-platform base — moves every number without
+// touching a line of arithmetic. Before this, two machines that searched
+// different paths stamped the same fingerprint and compared equal, which is the
+// same class of skew as the Codex correction below, one layer earlier.
+//
+// Names are hashed alongside contents so that renaming a file, or dropping one
+// from this list, changes the answer too.
+const COUNTING_SOURCES = [
+  "accounts.mjs", "readers.mjs", "scan.mjs", "scanners.mjs", "sources.mjs",
+];
+
+// The declared paths are DATA, and data that determines a number is hashed like
+// code. Relative to src/, not to cwd: the spec ships inside the package.
+const COUNTING_DATA = [
+  ["../spec/sources.json", "spec/sources.json"],
+];
+
+/**
+ * A fingerprint of the code that produced a number, or NULL when it cannot be
+ * computed.
+ *
+ * NULL, NEVER THE STRING "unknown". The previous version returned "unknown"
+ * from a bare catch, and "unknown" === "unknown": two machines running
+ * different code, both failing to hash, compared EQUAL and every skew check
+ * passed. A value that stands for "I do not know" must not behave like a value.
+ *
+ * Callers must treat null as "not comparable" rather than as a version. That is
+ * the same three-state rule the readers follow — a missing answer is not a
+ * matching answer.
+ */
 export function scannerVersion() {
-  // Content hash of this scanner's source: any edit to counting logic changes
-  // it automatically, so cross-machine consistency checks can spot skew.
   try {
-    const src = readFileSync(fileURLToPath(import.meta.url));
-    return createHash("sha256").update(src).digest("hex").slice(0, 12);
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const h = createHash("sha256");
+    for (const name of COUNTING_SOURCES) {
+      h.update(name);
+      h.update(readFileSync(join(dir, name)));
+    }
+    for (const [rel, name] of COUNTING_DATA) {
+      h.update(name);
+      h.update(readFileSync(join(dir, rel)));
+    }
+    return h.digest("hex").slice(0, 12);
   } catch {
-    return "unknown";
+    return null;
   }
 }
 
@@ -965,11 +1020,28 @@ function readAntigravity(home, base, note = {}) {
 
 // ---- registry + presence ---------------------------------------------------
 
+// THE PATHS ARE NOT HERE ANY MORE. spec/sources.json declares where every
+// source lives, per platform, and `probe()` walks it — so `sources`, the scan,
+// the readers and this registry can no longer disagree about where one tool is.
+// What stays is the READER: how to turn that tool's files into numbers, which
+// is behaviour and belongs in code.
+//
+// `rels` survives only as the fallback for a source the spec does not name, so
+// a half-installed package degrades to the old behaviour rather than counting
+// nothing.
 const READERS = {
   gemini: { rels: [".gemini/tmp"], read: readGemini },
   copilot: { rels: [".copilot/session-state"], read: readCopilot },
   antigravity: { rels: [".gemini/antigravity-cli/conversations"], read: readAntigravity },
-  kilo: { vscode: true, read: readKilo },
+  // `kilocode`, NOT `kilo`. This registry key was the only place in either
+  // program that said `kilo`: deadreckon names the reader, the DETECT key and
+  // the record value `kilocode`, this file already STAMPS `kilocode` on every
+  // record it emits (readKilo, mkRec), the VS Code extension is
+  // kilocode.kilo-code, and KNOWN_CLI_NAMES lists `kilocode`. The consequence
+  // was silent in both directions: scanProvider("kilocode") threw on an
+  // undefined registry entry, and an api_keys entry under `kilocode` could
+  // never reach the reader it names.
+  kilocode: { vscode: true, read: readKilo },
   grok: { rels: [".grok/sessions", ".grok/archived_sessions"], read: readGrok },
 };
 
@@ -981,14 +1053,37 @@ export const PROVIDERS = Object.keys(READERS);
 
 // Presence is separate from counting: "not installed" vs "installed, no
 // usage" vs "zero" stay distinct facts.
-function detectInstalled(name, roots) {
+let _SPEC = null;
+function specProbe(name, home) {
+  _SPEC ??= loadSources();
+  const src = _SPEC.sources.find((x) => x.name === name);
+  return src ? probe(src, home, _SPEC) : null;
+}
+
+/**
+ * Presence, from the declared stores.
+ *
+ * "not installed", "installed and idle" and "installed and unreadable" stay
+ * three facts. The old version answered with `existsSync` on a path typed into
+ * this file, so a store that was there and could not be entered reported
+ * exactly like one that was not there — the largest defect class in this
+ * program, 28 of the 106 confirmed on 2026-08-16.
+ */
+function detectInstalled(name, roots, probes) {
+  if (probes) {
+    for (const home of roots) {
+      const pr = probes.get(`${name}\0${home}`);
+      if (pr && (pr.present || pr.unreadable.length)) return true;
+    }
+    return false;
+  }
   for (const home of roots) {
-    if (name === "kilo") {
+    if (name === "kilocode") {
       for (const [, root] of vscodeRoots(home)) {
         if (isDir(join(root, "User", "globalStorage", "kilocode.kilo-code"))) return true;
       }
     } else {
-      for (const rel of READERS[name].rels) {
+      for (const rel of READERS[name].rels ?? []) {
         if (existsSync(join(home, rel))) return true;
       }
     }
@@ -1001,6 +1096,13 @@ function detectInstalled(name, roots) {
 export function scanProvider(name, roots = [homedir()]) {
   const cfg = READERS[name];
   if (!cfg) throw new Error(`unknown provider: ${name}`);
+  // One probe per (source, root), reused for presence and for the row's state
+  // so the walk happens once and both answers come from the same look.
+  const probes = new Map();
+  for (const home of roots) {
+    const pr = specProbe(name, home);
+    if (pr) probes.set(`${name}\0${home}`, pr);
+  }
   const sessions = [];
   const seen = new Set(); // copied profiles merge, never double-count
   const note = { unreadable: 0 };
@@ -1025,7 +1127,7 @@ export function scanProvider(name, roots = [homedir()]) {
     for (const rec of recs) {
       // Kilo keys on account+id so distinct VS Code channels stay distinct
       // while a copied home merges.
-      const key = name === "kilo" ? `${rec.account}:${rec.session_id}` : rec.session_id;
+      const key = name === "kilocode" ? `${rec.account}:${rec.session_id}` : rec.session_id;
       if (key != null) {
         if (seen.has(key)) continue;
         seen.add(key);
@@ -1043,9 +1145,27 @@ export function scanProvider(name, roots = [homedir()]) {
     models: {},
     firstTs: null,
     lastTs: null,
-    installed: detectInstalled(name, roots),
+    installed: detectInstalled(name, roots, probes.size ? probes : null),
   };
-  if (name === "antigravity") row.unreadable = note.unreadable;
+  // THE STATE, FROM THE SAME PROBE. `installed` is a boolean and there are
+  // four answers; a store that is present and cannot be entered was reporting
+  // exactly like one that is not there.
+  if (probes.size) {
+    const all = [...probes.values()];
+    const blind = all.flatMap((pr) => pr.unreadable);
+    row.state = blind.length ? "unreadable"
+      : stateOf({ present: all.some((pr) => pr.present), unreadable: [] }, sessions.length);
+    if (blind.length) row.unreadable = blind.map((u) => `${maskPath(u.path)} (${u.why})`);
+    row.searched = all.flatMap((pr) => pr.searched).length;
+  }
+  // ALWAYS AN ARRAY OF LINES. This field arrived as three different types —
+  // a count (antigravity), a string (the ported readers) and an array (the
+  // probe) — and the terminal renderer called .slice() on it, which threw on a
+  // real scan the moment a store was genuinely unreadable. A field whose type
+  // depends on which reader filled it is a field every consumer has to guess
+  // about.
+  if (name === "antigravity" && note.unreadable)
+    row.unreadable = [`${note.unreadable} conversation(s) could not be decoded`];
   if (error) row.error = error;
   const perSession = [];
   for (const s of sessions) {
@@ -1089,4 +1209,132 @@ export function scanAllProviders(roots = [homedir()]) {
     perSession.push(...r.perSession);
   }
   return { providers, perSession, scanner_version: scannerVersion() };
+}
+
+// ── the ported readers ────────────────────────────────────────────────────────
+
+/**
+ * The four readers ported from deadreckon, aggregated into the same row shape
+ * scanProvider produces so every downstream consumer — the star, the card, the
+ * stats page, the JSON report, the ledger — sees them without being taught
+ * anything new.
+ *
+ * SEPARATE FROM scanAllProviders BECAUSE ONE OF THEM IS ASYNC. `bob` is SQLite,
+ * and node:sqlite has to be imported lazily (it is a builtin, so this still
+ * costs no dependency, but it arrived in Node 22.5 and must degrade rather than
+ * throw). Making scanAllProviders async would have rippled through its callers
+ * and two suites for one reader's benefit; this keeps the existing path exactly
+ * as it was and adds a second, awaited call beside it.
+ *
+ * `knownClaudeIds` IS REQUIRED AND MUST BE THE LIVE CLAUDE SESSIONS. The orphan
+ * reader recovers sessions whose transcripts were deleted, and it identifies
+ * them by SUBTRACTING the ones still on disk. Hand it an empty set and every
+ * live session is counted a second time — on the machine this was ported from
+ * that is 4,172,332,033 tokens of double count.
+ *
+ * A row carries `state` as well as `installed`, because `installed` is a
+ * boolean and there are four answers: absent, empty, counted, unreadable. The
+ * last one matters most — a store that is present and could not be read must
+ * never render as a tool nobody uses.
+ */
+export async function scanPortedReaders(roots = [homedir()], { knownClaudeIds } = {}) {
+  if (!(knownClaudeIds instanceof Set)) {
+    throw new TypeError(
+      "scanPortedReaders: knownClaudeIds must be the Set of Claude session ids "
+      + "found on disk by this scan. Without it the orphan reader re-counts "
+      + "every live session.");
+  }
+  const { readClaudeOrphans, readClawspring, readLmstudio, readBob,
+          readCopilotChat, readHistory } = await import("./readers.mjs");
+
+  const providers = {};
+  const perSession = [];
+
+  const add = (name, r) => {
+    const row = {
+      sessions: r.sessions.length,
+      input: r.tokens.input,
+      output: r.tokens.output,
+      cacheRead: r.tokens.cacheRead,
+      cacheWrite: r.tokens.cacheWrite,
+      models: {},
+      firstTs: null,
+      lastTs: null,
+      // absent is the only state that means "not on this machine". empty and
+      // unreadable both mean the store IS here.
+      installed: r.state !== "absent",
+      state: r.state,
+    };
+    if (r.state === "unreadable" || (r.unreadable ?? []).length) {
+      // The reader's own list wins when it has one: readCopilotChat names each
+      // file it could not open, which is more use than "something failed".
+      const list = Array.isArray(r.unreadable) && r.unreadable.length
+        ? r.unreadable.map((u) =>
+            typeof u === "string" ? maskPath(u) : `${maskPath(u.path)} (${u.why})`)
+        : (r.probe?.unreadable ?? []).map((u) => `${maskPath(u.path)} (${u.why})`);
+      row.unreadable = list.length ? list : [maskText(String(r.why ?? "could not be read"))];
+    }
+    providers[name] = row;
+    for (const s of r.sessions) {
+      perSession.push({
+        provider: name,
+        session_id: s.id,
+        // NULL, NOT A GUESS. Orphan and rollup records carry no timestamp —
+        // a vanished session has no turn to take a date from. Every consumer
+        // already handles a null month (scanProvider emits one for any session
+        // without a start), and inventing one would move real tokens into a
+        // month that did not earn them.
+        month: null,
+        input: s.tokens.input,
+        output: s.tokens.output,
+        cacheRead: s.tokens.cacheRead,
+        cacheWrite: s.tokens.cacheWrite,
+        model: s.model ?? "unknown",
+        vendor: s.cli === "claude" ? "anthropic" : null,
+        billed: s.billed !== false,
+        turns: 0,
+        duration_min: 0,
+        duration_tight_min: 0,
+        account: null,
+        project: s.project ?? null,
+      });
+    }
+  };
+
+  // One home at a time: these readers take a home directory, not a root list.
+  for (const home of roots) {
+    add("claude-orphans", readClaudeOrphans(home, knownClaudeIds));
+    add("clawspring", readClawspring(home));
+    add("lmstudio", readLmstudio(home));
+    add("bob", await readBob(home));
+    add("copilot-chat", readCopilotChat(home));
+
+    // HISTORY IS NOT A TOKEN READER AND IS NOT GIVEN TOKEN FIELDS.
+    //
+    // history.jsonl records that a session existed, when, and in which project.
+    // It holds no usage counters at all, so it gets its own row shape: session
+    // and prompt counts, a date range, and NO token buckets. `add()` above
+    // would read `r.tokens.input` and turn "this format has no counters" into
+    // four zeroes that sum into the fleet total as though they were measured.
+    //
+    // It earns its place because it OUTLIVES THE TRANSCRIPTS: on the machine
+    // this was ported from it reaches back to 2026-01-14, where the oldest
+    // surviving transcript is 2026-05-05. It cannot say what those months cost;
+    // it can prove they happened, which turns "we may have lost some" into a
+    // count with dates on it.
+    const h = readHistory(home);
+    providers["history"] = {
+      sessions: h.sessions.length,
+      prompts: h.prompts,
+      earliest: h.earliest,
+      latest: h.latest,
+      installed: h.state !== "absent",
+      state: h.state,
+      counts_tokens: false,
+    };
+    break;    // the first root is this machine's home; extra roots are merged
+              // by the caller in the same way scanAllProviders handles them
+  }
+
+  return { providers, perSession };
 }

@@ -227,10 +227,34 @@ export function normaliseProviders(providers) {
         (p?.input ?? 0) + (p?.output ?? 0) + (p?.cacheRead ?? 0) + (p?.cacheWrite ?? 0) ||
         (p?.total_tokens ?? 0),
       sessions: p?.sessions ?? 0,
+      // Carried so a caller can tell "this tool has no tokens" from "this
+      // tool's store could not be read". The wrapped cards rank by tokens and
+      // a floor is still a rank, but the flag has to survive the mapping or
+      // the distinction dies here, one step before it is shown.
+      unreadable: p?.state === "unreadable",
     }))
     .filter((p) => p.tokens > 0)
     .sort((a, b) => b.tokens - a.tokens)
     .slice(0, 5);
+}
+
+/**
+ * Providers that are installed and could NOT be read.
+ *
+ * `normaliseProviders` ranks by tokens and drops everything at zero, which is
+ * right for a leaderboard and wrong as the only view: a store that refused to
+ * open contributes 0 and is dropped by the same test that drops a tool nobody
+ * uses. Anything that presents a total built from these providers has to be
+ * able to say the total is a floor.
+ */
+export function unreadableProviders(providers) {
+  if (!providers) return [];
+  const rows = Array.isArray(providers)
+    ? providers.map((p) => [p.name ?? p.provider ?? "?", p])
+    : Object.entries(providers);
+  return rows
+    .filter(([, p]) => p?.state === "unreadable")
+    .map(([name, p]) => ({ name: String(name), why: p.unreadable ?? [] }));
 }
 
 

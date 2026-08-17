@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { homedir, hostname, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { auditWrite } from "./audit.mjs";
+import { scannerVersion } from "./scanners.mjs";
 import { computeLevels } from "./star.mjs";
 import { renderStarSvg } from "./starsvg.mjs";
 
@@ -65,22 +66,38 @@ export function writeSnapshots(monthlyBuckets, meta = {}, { audit = null } = {})
     // its logs aged off went 18,000,000 -> 3,600,000 input tokens, permanently.
     // Merge instead, field-wise max.
     const held = [];
+    const superseded = [];
     snap.machines[host] = mergeMonth(
       snap.machines[host],
-      { ...bucket, updated_at: new Date().toISOString(), ...meta },
-      held
+      {
+        ...bucket,
+        updated_at: new Date().toISOString(),
+        scanner_version: scannerVersion(),
+        ...meta,
+      },
+      held,
+      superseded
     );
-    // The case the merge exists for is also the one case it cannot decide: a
-    // month that came back smaller is log rotation, but a scanner fix that
-    // corrects an over-count looks identical from here. ledger.mjs can tell
-    // them apart because its rows carry a scanner_version; a snapshot record
-    // does not. So the stored value wins and the run SAYS it won — otherwise
-    // the file silently disagrees with the scan printed above it.
+    // The case the merge exists for used to be the one case it could not
+    // decide: a month that came back smaller is log rotation, but a scanner fix
+    // that corrects an over-count looked identical from here. It is decidable
+    // now, by the rule ledger.mjs has always used one level down — the record
+    // carries the fingerprint of the code that produced it, so "same code, so a
+    // smaller number is rotation" and "different code, so this is a restatement"
+    // are different questions with different answers. Either way the run SAYS
+    // what it did, rather than the file quietly disagreeing with the scan
+    // printed above it.
     if (held.length)
       console.warn(
         `starreckon: ${bucket.month} — this scan is smaller than the stored snapshot ` +
-        `(${held.join(", ")}); kept the stored value. Logs age off after ~30 days; ` +
-        `the snapshot is a floor and does not shrink.`
+        `(${held.join(", ")}); kept the stored value. Same scanner, so a smaller ` +
+        `number is logs ageing off after ~30 days; the snapshot is a floor and does not shrink.`
+      );
+    if (superseded.length)
+      console.warn(
+        `starreckon: ${bucket.month} — the stored snapshot was written by ${superseded.join(", ")}, ` +
+        `so its numbers are a different scanner's statement, not a floor under this one. ` +
+        `Took this scan and kept the old record under "superseded" — nothing is deleted.`
       );
     writeFileSync(file, auditWrite(audit, file, JSON.stringify(snap, null, 2)));
   }
@@ -91,10 +108,56 @@ export function writeSnapshots(monthlyBuckets, meta = {}, { audit = null } = {})
 // level up: a partial SCAN cannot shrink a month. Numbers take the max — per
 // numeric field, per language/model key, per hour bucket — and anything else
 // (month, updated_at, meta) takes the incoming value, because a re-run is the
-// newer statement about those. Top-level numeric fields the stored month won
-// are pushed onto `held` so the caller can report them.
-function mergeMonth(stored, incoming, held) {
+// newer statement about those. Numeric fields the stored month won are pushed
+// onto `held` so the caller can report them — every branch, see below.
+//
+// THE FLOOR ONLY APPLIES BETWEEN TWO RUNS OF THE SAME CODE.
+//
+// Math.max answers "which observation saw more of the same thing", and that is
+// only the question when both observations were produced by the same scanner.
+// Across a scanner change it is the wrong question, and answering it anyway is
+// how a corrected over-count becomes permanent: the correction is smaller by
+// construction, so it loses the max, forever, in every future run. Measured on
+// this machine — the stored 2026-07 record claimed 16,636 sessions against a
+// true 132, and no scanner fix could ever have dislodged it.
+//
+// So versions decide first, exactly as ledger.mjs:90-121 does one level down:
+//
+//   same version        -> floor. A smaller number is logs ageing off.
+//   different version   -> restatement. The newer scanner's number wins.
+//   either absent       -> NOT COMPARABLE, which is not the same as matching
+//                          (scanners.mjs:82-89 states that rule for this exact
+//                          field). An unversioned record cannot outrank one
+//                          that names its producer, so the scan wins.
+//
+// Nothing is discarded when a record is superseded: the whole old record is
+// kept under `superseded` so any number that was ever published stays on disk
+// and can be read back or rolled back.
+function sameScanner(stored, incoming) {
+  const s = stored?.scanner_version;
+  const i = incoming?.scanner_version;
+  // Two nulls are two unknowns, not a match.
+  if (typeof s !== "string" || typeof i !== "string" || !s || !i) return false;
+  return s === i;
+}
+
+function mergeMonth(stored, incoming, held, superseded = []) {
   if (!stored || typeof stored !== "object") return { ...incoming };
+
+  if (!sameScanner(stored, incoming)) {
+    superseded.push(
+      typeof stored.scanner_version === "string" && stored.scanner_version
+        ? `scanner ${stored.scanner_version}`
+        : "a scanner that recorded no version"
+    );
+    // Stored-only keys still survive, for the same reason they do below.
+    // `superseded` is one level deep on purpose: keeping the previous record
+    // preserves what was published, keeping a chain of them grows without
+    // bound in a file that is written on every default run.
+    const { superseded: _prior, ...priorRecord } = stored;
+    return { ...priorRecord, ...incoming, superseded: priorRecord };
+  }
+
   // Stored-only keys survive: a field this scan did not produce at all is not
   // evidence that the field is now zero.
   const out = { ...stored, ...incoming };
@@ -105,15 +168,32 @@ function mergeMonth(stored, incoming, held) {
       out[k] = Math.max(s, v);
     } else if (Array.isArray(v)) {
       const n = Math.max(v.length, Array.isArray(s) ? s.length : 0);
-      out[k] = Array.from({ length: n }, (_, i) => Math.max(numOr0(v[i]), numOr0(s?.[i])));
+      // Held silently until 2026-08-16: `held` was pushed only in the number
+      // branch above, so hour_buckets (array) and languages/models (object)
+      // kept the stored value with no report at all. A held value and an
+      // agreed value rendered identically, which is the four-states defect
+      // inside the snapshot writer itself.
+      let anyHeld = false;
+      out[k] = Array.from({ length: n }, (_, i) => {
+        const sv = numOr0(s?.[i]), iv = numOr0(v[i]);
+        if (sv > iv) anyHeld = true;
+        return Math.max(sv, iv);
+      });
+      if (anyHeld) held.push(k);
     } else if (v && typeof v === "object" && s && typeof s === "object" && !Array.isArray(s)) {
       const keys = new Set([...Object.keys(s), ...Object.keys(v)]);
+      let anyHeld = false;
       // fromEntries, not assignment: these keys come from file extensions and
       // model names, and `out[k]["__proto__"] = 3` is a no-op that would drop
       // the count silently — the same footgun scan.mjs guards EXT_TO_LANG from.
       out[k] = Object.fromEntries(
-        [...keys].map((kk) => [kk, Math.max(numOr0(s[kk]), numOr0(v[kk]))])
+        [...keys].map((kk) => {
+          const sv = numOr0(s[kk]), iv = numOr0(v[kk]);
+          if (sv > iv) anyHeld = true;
+          return [kk, Math.max(sv, iv)];
+        })
       );
+      if (anyHeld) held.push(k);
     }
   }
   return out;

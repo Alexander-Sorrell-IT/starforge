@@ -4,17 +4,18 @@
   "description": "Privacy-first developer wrapped: scans your local AI-coding session logs (Claude Code, Codex, Cowork), redacts secrets and masks paths BEFORE anything is written, keeps rolling monthly snapshots for longitudinal velocity, and renders your skill star live in the terminal. No network code on the scan path \u2014 and PROVE-IT.md shows you how to have the kernel confirm it rather than taking the claim on faith.",
   "type": "module",
   "bin": {
-    "starreckon": "src/cli.mjs",
     "starreckon": "src/cli.mjs"
   },
   "main": "./src/cli.mjs",
   "files": [
     "src/",
+    "spec/",
     "bin/",
     "tests/",
     "README.md",
     "PROVE-IT.md",
-    "LICENSE"
+    "LICENSE",
+    "!spec/identity.json"
   ],
   "repository": {
     "type": "git",

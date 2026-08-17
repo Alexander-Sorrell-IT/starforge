@@ -250,7 +250,19 @@ test("package.json files[] ships everything the docs reference", () => {
   // tests/ ships on purpose — PROVE-IT §5 tells you to run them from the tarball.
   assert.ok(PKG.files.includes("tests/"));
   assert.match(PROVE, /node --test package\/tests\//);
-  for (const entry of PKG.files) assert.ok(existsSync(root + entry), `files[] entry missing: ${entry}`);
+  for (const entry of PKG.files) {
+    // A leading `!` is an EXCLUSION, not something to ship, so it has no path
+    // to exist. `!spec/identity.json` keeps personal email addresses out of the
+    // published tarball — .gitignore does not stop npm pack, which this repo
+    // already proved with src/__pycache__/*.pyc. Requiring it to exist on disk
+    // would fail exactly when the guard is doing its job.
+    if (entry.startsWith("!")) {
+      assert.ok(!existsSync(root + entry),
+        "a negation is a pattern, not a file — nothing should be named that");
+      continue;
+    }
+    assert.ok(existsSync(root + entry), `files[] entry missing: ${entry}`);
+  }
 });
 
 test("package.json points at the project's home", () => {

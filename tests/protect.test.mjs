@@ -43,16 +43,27 @@ function makeSettings(profile, days) {
 
 // ── findClaudeProfiles ────────────────────────────────────────────────────────
 
+// Every test below hands findClaudeProfiles a temp home and asserts on what is
+// INSIDE it, so the $CLAUDE_CONFIG_DIR sweep — which deliberately reaches
+// outside the home — has to be switched off or the assertions are about this
+// developer's machine rather than about the fixture. Three of them failed here
+// for exactly that reason: the variable was set to an alternate profile in that
+// shell, so "empty home" returned one profile.
+//
+// The tests that follow this block switch it back ON, because turning a
+// behaviour off in every test is how the behaviour stops being tested at all.
+const NO_ENV = { configDir: null };
+
 test("findClaudeProfiles returns [] for empty home dir", () => {
   const home = tmp();
-  assert.deepEqual(findClaudeProfiles(home), []);
+  assert.deepEqual(findClaudeProfiles(home, NO_ENV), []);
   rmSync(home, { recursive: true, force: true });
 });
 
 test("findClaudeProfiles finds a profile by shape", () => {
   const home = tmp();
   makeProfile(home, ".claude");
-  const found = findClaudeProfiles(home);
+  const found = findClaudeProfiles(home, NO_ENV);
   assert.ok(found.length >= 1, "expected at least one profile");
   assert.ok(found.some(p => p.endsWith(".claude")));
   rmSync(home, { recursive: true, force: true });
@@ -62,7 +73,7 @@ test("findClaudeProfiles finds non-standard profile names", () => {
   const home = tmp();
   makeProfile(home, ".claude-alt");
   makeProfile(home, ".my-claude");
-  const found = findClaudeProfiles(home);
+  const found = findClaudeProfiles(home, NO_ENV);
   assert.ok(found.some(p => p.endsWith(".claude-alt")));
   assert.ok(found.some(p => p.endsWith(".my-claude")));
   rmSync(home, { recursive: true, force: true });
@@ -73,7 +84,7 @@ test("findClaudeProfiles skips directory without .jsonl (not a profile)", () => 
   // projects/ exists but has no .jsonl
   mkdirSync(join(home, ".claude", "projects"), { recursive: true });
   writeFileSync(join(home, ".claude", "projects", "readme.txt"), "nothing");
-  const found = findClaudeProfiles(home);
+  const found = findClaudeProfiles(home, NO_ENV);
   assert.equal(found.length, 0);
   rmSync(home, { recursive: true, force: true });
 });
@@ -84,7 +95,7 @@ test("findClaudeProfiles skips .ai-logs-archive", () => {
   const archiveProfile = join(home, ".ai-logs-archive", "claude", ".claude");
   mkdirSync(join(archiveProfile, "projects", "proj"), { recursive: true });
   writeFileSync(join(archiveProfile, "projects", "proj", "s.jsonl"), "{}");
-  const found = findClaudeProfiles(home);
+  const found = findClaudeProfiles(home, NO_ENV);
   assert.equal(found.length, 0);
   rmSync(home, { recursive: true, force: true });
 });
@@ -93,9 +104,37 @@ test("findClaudeProfiles deduplicates by inode", () => {
   const home = tmp();
   makeProfile(home, ".claude");
   // Walk will find it twice if not deduplicated — but dedup should give 1
-  const found = findClaudeProfiles(home);
+  const found = findClaudeProfiles(home, NO_ENV);
   const unique = new Set(found);
   assert.equal(found.length, unique.size);
+  rmSync(home, { recursive: true, force: true });
+});
+
+// The CLAUDE_CONFIG_DIR sweep, asserted rather than assumed. Without these two
+// the parameter added above would be a silent off-switch: delete the `add`
+// call and all six tests above still pass, because none of them can see it.
+// A profile the glob cannot reach is the documented reason this sweep exists —
+// ~/.my-claude is missed by any ~/.claude* glob — so it needs a test that dies
+// when it goes away.
+
+test("findClaudeProfiles honours CLAUDE_CONFIG_DIR outside the home", () => {
+  const home = tmp();
+  const elsewhere = tmp();                      // a DIFFERENT tree entirely
+  makeProfile(elsewhere, "config");
+  const found = findClaudeProfiles(home, { configDir: join(elsewhere, "config") });
+  assert.equal(found.length, 1, "the out-of-home config dir was not picked up");
+  assert.ok(found[0].endsWith("config"));
+  rmSync(home, { recursive: true, force: true });
+  rmSync(elsewhere, { recursive: true, force: true });
+});
+
+test("findClaudeProfiles does not double-count a CLAUDE_CONFIG_DIR inside the home", () => {
+  const home = tmp();
+  makeProfile(home, ".claude");
+  // Same directory reached by both routes: the .claude* fast path AND the env
+  // var. The inode dedup is what must stop it counting twice.
+  const found = findClaudeProfiles(home, { configDir: join(home, ".claude") });
+  assert.equal(found.length, 1);
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -346,7 +385,7 @@ test("linkTree archives nested subdirectory structure", () => {
 
 test("needsProtection returns false when no Claude profiles exist", () => {
   const home = tmp();
-  assert.equal(needsProtection(home), false);
+  assert.equal(needsProtection(home, NO_ENV), false);
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -354,7 +393,7 @@ test("needsProtection returns true when profile has default 30-day period", () =
   const home = tmp();
   const profile = makeProfile(home);
   makeSettings(profile, 30);
-  assert.equal(needsProtection(home), true);
+  assert.equal(needsProtection(home, NO_ENV), true);
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -362,7 +401,7 @@ test("needsProtection returns false when all profiles are raised", () => {
   const home = tmp();
   const profile = makeProfile(home);
   makeSettings(profile, 36500);
-  assert.equal(needsProtection(home), false);
+  assert.equal(needsProtection(home, NO_ENV), false);
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -372,6 +411,34 @@ test("needsProtection returns true when any profile is unprotected", () => {
   const p2 = makeProfile(home, ".claude-alt");
   makeSettings(p1, 36500); // protected
   makeSettings(p2, 30);    // not protected
-  assert.equal(needsProtection(home), true);
+  assert.equal(needsProtection(home, NO_ENV), true);
+  rmSync(home, { recursive: true, force: true });
+});
+
+// ── credentials are recognised by SHAPE, not by a list of ten names ──────────
+//
+// SECRET_NAMES held `oauth_creds.json`. `~/.aider` was archived whole. So
+// `oauth-keys.json` — one character different — was hard-linked into
+// ~/.ai-logs-archive/aider/ on every tick, under a header that says "NEVER
+// archives credential files". Found by the 2026-08-16 full inventory. An
+// exact-name denylist cannot keep a promise about names it has not seen.
+test("linkTree refuses credential-shaped names it has never seen, and archives records", () => {
+  const home = tmp();
+  const src = join(home, "store");
+  mkdirSync(src);
+  // credentials — none of these were in the old exact list
+  for (const n of ["oauth-keys.json", "api_key.json", "refresh_token.json", "id_rsa", "cookies.txt"])
+    writeFileSync(join(src, n), "SECRET");
+  // records — the word "token" as a unit of measure, not a credential
+  for (const n of ["session-1.jsonl", "token_ledger.jsonl", "token-usage.json", "cookie-cutter.json"])
+    writeFileSync(join(src, n), '{"a":1}');
+
+  const r = linkTree(src, "shape-store", { home });
+  const archive = join(home, ".ai-logs-archive", "shape-store");
+  for (const n of ["oauth-keys.json", "api_key.json", "refresh_token.json", "id_rsa", "cookies.txt"])
+    assert.ok(!existsSync(join(archive, n)), `${n} is a credential and must not be archived`);
+  for (const n of ["session-1.jsonl", "token_ledger.jsonl", "token-usage.json", "cookie-cutter.json"])
+    assert.ok(existsSync(join(archive, n)), `${n} is a record and must be archived`);
+  assert.equal(r.linked, 4);
   rmSync(home, { recursive: true, force: true });
 });

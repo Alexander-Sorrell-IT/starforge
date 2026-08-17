@@ -180,7 +180,7 @@ test("grok: turn_completed only, modelUsage over top-level, epoch timestamps", (
 
 // ---- kilo ------------------------------------------------------------------
 
-test("kilo: tokensIn already contains cache, placeholder rows skipped, model from history", () => {
+test("kilocode: tokensIn already contains cache, placeholder rows skipped, model from history", () => {
   const home = mkHome();
   const tdir = join(
     home, ".config", "Code", "User", "globalStorage", "kilocode.kilo-code", "tasks", "task-1"
@@ -201,8 +201,8 @@ test("kilo: tokensIn already contains cache, placeholder rows skipped, model fro
     join(tdir, "api_conversation_history.json"),
     'stuff <model>anthropic/claude-sonnet-4.5</model> more'
   );
-  const { providers, perSession } = scanProvider("kilo", [home]);
-  const row = providers.kilo;
+  const { providers, perSession } = scanProvider("kilocode", [home]);
+  const row = providers.kilocode;
   assert.equal(row.sessions, 1);
   assert.equal(row.input, 1000 - 600 - 200); // subtract BOTH cache buckets
   assert.equal(row.cacheRead, 600);
@@ -264,7 +264,15 @@ test("antigravity: encrypted .pb decodes, dedups on request id, garbage is unrea
   const { providers, perSession } = scanProvider("antigravity", [home]);
   const row = providers.antigravity;
   assert.equal(row.sessions, 1);
-  assert.equal(row.unreadable, 1);
+  // ONE SHAPE FOR `unreadable`, ACROSS EVERY READER: an array of lines saying
+  // what could not be read. This asserted `=== 1`, a raw count, and antigravity
+  // was the only reader that used that type — the ported readers set a string
+  // and the probe set an array, so the terminal renderer's .slice() threw on
+  // the first real scan that hit an unreadable store. The count is still here,
+  // in the sentence, where a reader of the output can use it.
+  assert.ok(Array.isArray(row.unreadable), "unreadable is a list of reasons");
+  assert.equal(row.unreadable.length, 1);
+  assert.match(row.unreadable[0], /1 conversation\(s\) could not be decoded/);
   assert.equal(row.input, 100);
   assert.equal(row.cacheRead, 30);
   assert.equal(row.output, 50);
@@ -363,4 +371,59 @@ test("scanAllProviders live run tolerates whatever this machine has", () => {
     assert.ok(PROVIDERS.includes(s.provider));
     assert.ok(Number.isFinite(s.input) && s.input >= 0);
   }
+});
+
+// ── scanner_version ───────────────────────────────────────────────────────────
+//
+// The fingerprint exists so a machine scanned with older counting code can be
+// TOLD APART from one scanned with newer code. Every consistency check inside a
+// machine passes regardless of which scanner produced its numbers, so this is
+// the only thing that can see the skew.
+
+test("scannerVersion covers every file that determines a number", async () => {
+  const { readFileSync, writeFileSync } = await import("node:fs");
+  const { join, dirname } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const src = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
+
+  const base = (await import("../src/scanners.mjs")).scannerVersion();
+  assert.ok(base && base.length === 12);
+
+  // scan.mjs holds parseClaudeFile and parseCodexFile. It was NOT hashed, and
+  // a 1,021,379,811-token correction to the Codex arithmetic landed there
+  // without moving this value — so two machines either side of that fix
+  // compared equal.
+  // sources.mjs and spec/sources.json decide WHERE every reader looks, which
+  // determines a total just as surely as the arithmetic does — a store that is
+  // not searched contributes 0, and 0 is indistinguishable from a real 0.
+  for (const name of ["scan.mjs", "readers.mjs", "accounts.mjs", "sources.mjs",
+                      "../spec/sources.json"]) {
+    const p = join(src, name);
+    const orig = readFileSync(p);
+    // A JS comment appended to spec/sources.json would make it unparseable
+    // while the probe import runs, so the JSON file is perturbed with trailing
+    // whitespace: different bytes, still valid JSON. The point is that the
+    // fingerprint moves, not how the bytes were changed.
+    const probe = name.endsWith(".json") ? "\n \n" : "\n// probe\n";
+    try {
+      writeFileSync(p, Buffer.concat([orig, Buffer.from(probe)]));
+      const mod = await import(`../src/scanners.mjs?probe=${name}${Date.now()}`);
+      assert.notEqual(mod.scannerVersion(), base,
+        `${name} determines a number and must change the scanner version`);
+    } finally {
+      writeFileSync(p, orig);
+    }
+  }
+});
+
+// "unknown" === "unknown". A value standing for "I do not know" must not behave
+// like a value, or two machines that both failed to hash compare EQUAL and the
+// skew check passes on data it never verified.
+test("scannerVersion is null when it cannot be computed, never a shared string", async () => {
+  const mod = await import("../src/scanners.mjs");
+  const v = mod.scannerVersion();
+  assert.notEqual(v, "unknown",
+    "the old sentinel compared equal to itself across different builds");
+  assert.ok(v === null || /^[0-9a-f]{12}$/.test(v),
+    "either a real fingerprint or null — nothing in between");
 });

@@ -233,3 +233,67 @@ test("beacon.mjs --mode=unknown exits 1", () => {
   );
   assert.strictEqual(r.status, 1);
 });
+
+// ---------------------------------------------------------------------------
+// The payload the CLI actually announces — checked against its PRODUCERS.
+//
+// Found 2026-08-16. buildBeaconPayload (cli.mjs) read four token fields off
+// `agg` by dynamic key and two more off `m.totals`, and not one of those names
+// existed on the object being read: finalize() emits total_input_tokens, and
+// loadTimeline() puts input_tokens at the top level of a month with no `totals`
+// key anywhere in snapshots.mjs. Every announced payload was `undefined ?? 0`.
+//
+// This is checked STRUCTURALLY, against the real key sets, because
+// buildBeaconPayload is a local const inside cli.mjs's main flow — src/cli.mjs
+// has zero export statements, so no test can call it. The test that existed
+// before this one exercised beacon.mjs's buildAnnouncePayload with hand-written
+// literals ({ totals: { input_tokens: 1 } }), which passes whatever the CLI
+// puts on the wire: it fed in the answer it was checking for.
+//
+// It is also the CLASS check, not the instance: a dynamic key and an optional
+// chain are both invisible to a grep for a field name, so the only reliable
+// question is "does every name this code reads exist on the thing it reads
+// from", asked of every name at once.
+test("buildBeaconPayload reads only names its producers actually emit", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(join(ROOT, "src", "cli.mjs"), "utf-8");
+
+  const start = src.indexOf("const buildBeaconPayload");
+  assert.ok(start > 0, "buildBeaconPayload still exists in cli.mjs");
+  // Comments stripped first: this function's comments NAME the dead reads they
+  // exist to warn about, and a checker that reads them finds the defect it was
+  // told about rather than the code.
+  const body = src.slice(start, src.indexOf("\n  };", start))
+    .replace(/^\s*\/\/.*$/gm, "");
+
+  // What finalize() really emits, from the real module rather than a copy.
+  const { finalize, emptyStats } = await import("../src/scan.mjs");
+  const aggKeys = new Set(Object.keys(finalize(emptyStats())));
+  assert.ok(aggKeys.has("total_input_tokens"), "sanity: finalize emits total_* names");
+
+  const readsOfAgg = [...body.matchAll(/\bagg\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]);
+  assert.ok(readsOfAgg.length >= 4, "sanity: it still reads token fields off agg");
+  const deadAgg = readsOfAgg.filter((k) => !aggKeys.has(k));
+  assert.deepEqual(deadAgg, [], `these agg fields do not exist and broadcast 0: ${deadAgg}`);
+
+  // The months arm reads a timeline entry. `totals` is not a key loadTimeline
+  // produces — the string does not appear in snapshots.mjs at all.
+  const snapSrc = readFileSync(join(ROOT, "src", "snapshots.mjs"), "utf-8");
+  assert.equal(snapSrc.includes("totals"), false,
+    "snapshots.mjs still has no `totals` key, so nothing may read m.totals");
+  assert.equal(/\bm\.totals\b/.test(body), false,
+    "buildBeaconPayload must read a month's fields at the top level, not off m.totals");
+});
+
+test("the live-fleet star scores active_days on a real number", async () => {
+  // cli.mjs summed `m.totals?.active_days`, and the totals object it built five
+  // lines earlier carries accounts/by_day/by_model/by_project — never
+  // active_days. So combinedAgg.active_days was 0 for every machine including
+  // this one, and TENACITY was scored on that 0.
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(join(ROOT, "src", "cli.mjs"), "utf-8");
+  assert.equal(/activeDays\s*\+=\s*Number\(m\.totals\?\.active_days\)/.test(src), false,
+    "active_days does not live on totals");
+  assert.ok(/for \(const mm of m\.months \?\? \[\]\) activeDays \+=/.test(src),
+    "it comes from months[], which is the documented wire format (beacon.mjs:69)");
+});

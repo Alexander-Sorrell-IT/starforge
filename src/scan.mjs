@@ -17,6 +17,10 @@ import { redactSecrets, maskPath, projectLabel, projectPseudonym } from "./redac
 // in both load orders because neither module CALLS the other at module scope —
 // only function declarations cross the edge.
 import { findConfigDirs } from "./accounts.mjs";
+// Lazily used inside discoverSources (see SPEC_GET) — sources.mjs pulls
+// vscodeRoots from scanners.mjs, which imports this file, so the SPEC is read
+// at call time rather than at module load.
+import { probe, loadSources } from "./sources.mjs";
 
 // "Which day was that?" and "what hour was that?" have to be answered on the
 // SAME clock. They were not: hours came from getHours() (local) while day keys
@@ -92,11 +96,34 @@ export function byCountThenKey(a, b) {
  * Returns the deltas to add. `seen` is a Map the caller owns.
  */
 export function creditUsage(seen, id, usage) {
-  // Finite numbers only. `?? 0` accepts a STRING, and "500" + 0 concatenates
-  // rather than adds, so one malformed row could turn a total into "0500…" or
-  // NaN and poison every downstream number silently. accounts.mjs already
-  // guards this way; this did not.
-  const num = (v) => (Number.isFinite(v) ? v : Number.isFinite(Number(v)) ? Number(v) : 0);
+  // A TOKEN COUNT IS A COUNT: a non-negative INTEGER, or it is not data.
+  //
+  // This accepted any finite number and coerced strings, which was itself a
+  // repair — `?? 0` had accepted a string outright and `"500" + 0` concatenates
+  // rather than adds, so one malformed row could turn a total into "0500…".
+  // But coercion goes one step too far in the other direction: it turns `1.5`
+  // into one and a half tokens and `"9"` into nine, and a counter that accepts
+  // 1.5 of something will accept "1e9" and " 9 " on the same reasoning.
+  //
+  // accounts.mjs required an integer and this did not, which is how folding the
+  // two together surfaced it. Checked before choosing: 73,209 real usage rows
+  // across four live profiles contain ZERO non-integer values, so the strict
+  // rule costs nothing that exists and cannot invent anything that does not.
+  // A malformed field contributes nothing and leaves the running maximum for
+  // that field where it was — it is not evidence that the field is now zero.
+  //
+  // TWO TESTS ENCODED OPPOSITE RULES and folding accounts.mjs onto this
+  // function is what surfaced it: hardening.test.mjs asserts `"500"` coerces to
+  // 500, accounts.test.mjs asserted `"9"` is skipped. Resolved toward COERCING
+  // AN INTEGER WRITTEN AS A STRING, because a serialiser emitting "9" is a real
+  // thing and dropping it loses nine tokens silently — and silent loss is the
+  // failure this whole system is built against. A value that is not a whole
+  // number is still refused: 1.5 tokens is not a count, and a rule that accepts
+  // it would accept "1e9" and " 9 " on the same reasoning.
+  const num = (v) => {
+    const n = typeof v === "string" || typeof v === "number" ? Number(v) : NaN;
+    return Number.isInteger(n) && n >= 0 ? n : 0;
+  };
   const cur = {
     in: num(usage?.input_tokens),
     out: num(usage?.output_tokens),
@@ -184,7 +211,41 @@ function claudeProfileDirs(root, outside) {
   return dirs;
 }
 
+// THE SCAN DEGRADES; IT DOES NOT DIE. `sources` refuses to run without the
+// spec because a source list it cannot read is the whole answer to that
+// question. A SCAN is different: Claude discovery does not need the spec at
+// all, so a missing or unreadable spec must not take the count with it. It
+// falls back to the paths that were hardcoded here before, says so once on
+// stderr, and counts what it can — a broken install that reports fewer sources
+// out loud beats one that reports nothing with a stack trace.
+let _SPEC = null;
+let _SPEC_WARNED = false;
+function SPEC_GET() {
+  if (_SPEC !== null) return _SPEC;
+  try {
+    _SPEC = loadSources();
+  } catch (e) {
+    if (!_SPEC_WARNED) {
+      _SPEC_WARNED = true;
+      process.stderr.write(
+        `note: spec/sources.json could not be read (${e.message.split(":")[0]}) — `
+        + `falling back to built-in paths for Cowork and Codex. Claude Code is `
+        + `unaffected. A complete install ships spec/.\n`);
+    }
+    _SPEC = { sources: [] };
+  }
+  return _SPEC;
+}
+
+// The paths this file used to type, kept ONLY as that fallback.
+const BUILTIN = {
+  cowork: [["Library", "Application Support", "Claude", "local-agent-mode-sessions"],
+           [".config", "Claude", "local-agent-mode-sessions"]],
+  codex: [[".codex", "sessions"]],
+};
+
 export function discoverSources(roots) {
+  const SPEC = SPEC_GET();
   const found = [];
   const outside = new Set();
   for (const root of roots) {
@@ -200,21 +261,27 @@ export function discoverSources(roots) {
       for (const f of listJsonl(join(dir, "projects"), 6))
         found.push({ source: "claude_code", root, path: f });
     }
-    const coworkBase = join(
-      root,
-      "Library",
-      "Application Support",
-      "Claude",
-      "local-agent-mode-sessions"
-    );
-    if (existsSync(coworkBase)) {
-      for (const f of listJsonl(coworkBase, 7))
-        found.push({ source: "cowork", root, path: f });
-    }
-    const codexBase = join(root, ".codex", "sessions");
-    if (existsSync(codexBase)) {
-      for (const f of listJsonl(codexBase, 5))
-        found.push({ source: "codex", root, path: f });
+    // COWORK AND CODEX COME FROM THE SPEC, NOT FROM A PATH TYPED HERE.
+    //
+    // The cowork base was `<root>/Library/Application Support/...` and nothing
+    // else, so on Linux and Windows this scan could never see it — while
+    // `starreckon sources`, guessing from `kind`, reported it as installed.
+    // Two files with two ideas of where one tool lives, and the user is told
+    // the one that is wrong. spec/sources.json declares the bases per platform
+    // and `probe()` walks them; both callers now read the same list.
+    //
+    // The depth stays here: how deep to walk is behaviour, and Cowork nests a
+    // whole Claude profile seven levels down while Codex is a date tree five
+    // deep. The spec says where to start.
+    for (const [name, depth] of [["cowork", 7], ["codex", 5]]) {
+      const src = SPEC.sources.find((x) => x.name === name);
+      const bases = src
+        ? probe(src, root, SPEC).found
+        : BUILTIN[name].map((segs) => join(root, ...segs)).filter(existsSync);
+      for (const base of bases) {
+        for (const f of listJsonl(base, depth))
+          found.push({ source: name, root, path: f });
+      }
     }
   }
   // Skipped by ONE root may still be covered by another, so the report is made
@@ -578,6 +645,13 @@ export async function parseClaudeFile(filePath, stats, opts = {}) {
 export async function parseCodexFile(filePath, stats, opts = {}) {
   let sessionId = filePath.split("/").pop();
   let model = null;
+  // Per FILE, not per session: the inherited prefix belongs to this rollout.
+  // [input, cached_input, output] throughout. See the comment at the
+  // total_token_usage branch below for what each one is holding back.
+  let base = null;          // what this file's total already held on arrival
+  let carry = [0, 0, 0];    // segments completed before a mid-stream reset
+  let prevRaw = null;       // previous absolute total, to see a reset happen
+  let applied = [0, 0, 0];  // what THIS file has already handed to the session
   await streamLines(filePath, (line) => {
     let d;
     try {
@@ -608,10 +682,64 @@ export async function parseCodexFile(filePath, stats, opts = {}) {
     }
     if (d.type === "event_msg" && payload?.info?.total_token_usage) {
       const t = payload.info.total_token_usage;
-      const cached = t.cached_input_tokens ?? 0;
-      s.tok.in = Math.max(0, (t.input_tokens ?? 0) - cached);
-      s.tok.out = t.output_tokens ?? s.tok.out;
-      s.tok.cr = cached;
+      // total_token_usage IS CUMULATIVE OVER THE LINEAGE, NOT OVER THE FILE.
+      //
+      // Assigning it whole counted a resumed or forked session's INHERITED
+      // prefix again in every child file. Measured against deadreckon over the
+      // 156 Codex files on this fleet: 3,340,774,041 here against 2,319,394,230
+      // there, and the 1,021,379,811 gap closes exactly — 17 files open with an
+      // inherited running total summing to 1,021,393,809, one file resets
+      // mid-stream and loses 13,998, and 1,021,393,809 - 13,998 is the gap to
+      // the token. Ten sibling forks share one identical 69,322,178 base, so
+      // that prefix alone was counted ten times: 623,899,602 tokens.
+      //
+      // The field is not wrong and neither is deadreckon's read of
+      // last_token_usage: on the live store (~/.codex/sessions, 4 files) both
+      // programs return 1,453,618, bucket-for-bucket. total[n] equals the sum
+      // of the DEDUPED last[0..n] exactly, 0 mismatches over 117 records. So
+      // the prefix is recoverable from the file's own first record: whatever
+      // its total already held BEYOND that record's own last was inherited.
+      //
+      // The two failure modes are opposite-signed, which is why the reset half
+      // is here too. A session that resets restarts its total from zero, and
+      // subtracting a base alone would silently drop the segment before it —
+      // that is the -13,998 above, and no single-direction assertion catches
+      // both. Completed segments accumulate into `carry`.
+      // AND IT ACCUMULATES ACROSS FILES, because `=` lost whole files. Six
+      // session ids on this fleet appear in more than one rollout, and a plain
+      // assign meant the last file parsed replaced the others rather than
+      // adding to them. That was survivable while each file carried the whole
+      // lineage total; once a file contributes only its own segment it is not.
+      // `applied` is what THIS file has already handed over, so re-reading a
+      // record adds nothing and the running total stays idempotent.
+      const last = payload.info.last_token_usage;
+      const bucket = (x) => [x?.input_tokens ?? 0, x?.cached_input_tokens ?? 0,
+                             x?.output_tokens ?? 0];
+      const inherited = () =>
+        // No last_token_usage means the inherited prefix cannot be recovered
+        // from this record, so claim none — that is the pre-fix behaviour, kept
+        // deliberately rather than guessed at.
+        last ? raw.map((v, i) => Math.max(0, v - bucket(last)[i])) : [0, 0, 0];
+      const raw = bucket(t);
+      const sum = (a) => a[0] + a[1] + a[2];
+      if (base === null) {
+        base = inherited();
+      } else if (prevRaw && sum(raw) < sum(prevRaw)) {
+        // The total restarted. Bank the segment that just ended — subtracting a
+        // base alone would drop it, and that is the under-count half of the
+        // pair. Measured: one file on this fleet, -13,998.
+        carry = carry.map((v, i) => v + Math.max(0, prevRaw[i] - base[i]));
+        base = inherited();
+      }
+      prevRaw = raw;
+      const want = raw.map((v, i) => carry[i] + Math.max(0, v - base[i]));
+      const net = (a) => [Math.max(0, a[0] - a[1]), a[1], a[2]];
+      const [wIn, wCr, wOut] = net(want);
+      const [aIn, aCr, aOut] = net(applied);
+      s.tok.in += wIn - aIn;
+      s.tok.cr += wCr - aCr;
+      s.tok.out += wOut - aOut;
+      applied = want;
       if (model) s.models.set(model, (s.models.get(model) ?? 0) + 1);
     } else if (d.type === "response_item" && payload) {
       if (payload.type === "function_call" || payload.type === "local_shell_call") {

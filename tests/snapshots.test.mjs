@@ -176,3 +176,91 @@ test("a literal '~' in $HOME is expanded, not written into the path", async () =
   // caller and loadTimeline() never looks there again.
   assert.ok(!existsSync(join(process.cwd(), "~")), "a literal '~' directory was created next to cwd");
 });
+
+// ---- 6: the floor is between two runs of the SAME code ---------------------
+
+// Found 2026-08-16. The stored 2026-07 record on the author's own machine
+// claimed 16,636 sessions against a true 132: an early over-count that every
+// later scan lost the Math.max to, because a correction is smaller by
+// construction. A floor that spans a scanner change makes the first number
+// permanent and no fix can ever reach the file.
+//
+// Writes a stored month by hand so the two records disagree about their
+// producer — writeSnapshots() called twice in one process necessarily stamps
+// the same version, which is exactly why tests 1-3 above still hold.
+function seedStored(home, machine, month = "2026-07", host = hostname()) {
+  const dir = join(home, ".starreckon", "snapshots");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${month}.json`),
+    JSON.stringify({ month, machines: { [host]: machine } }, null, 2));
+}
+
+test("a stored month from a DIFFERENT scanner is restated, not used as a floor", async () => {
+  const home = tmp();
+  const { writeSnapshots } = await withHome(home);
+  // The real shape of the defect: an over-count stored by older code.
+  seedStored(home, { ...bucket({ sessions: 16_636, input_tokens: 99_000_000 }),
+                     scanner_version: "0000deadbeef" });
+  const warned = await captureWarn(() => writeSnapshots([bucket({ sessions: 132 })]));
+  const m = readMonth(home, "2026-07");
+  assert.equal(m.sessions, 132, "the correction lands — this is the whole point");
+  assert.equal(m.input_tokens, 18_000_000, "and it is the scan's number, not the max");
+  assert.match(warned, /different scanner's statement/, "the run says it restated");
+  assert.doesNotMatch(warned, /kept the stored value/, "it did not also claim to hold");
+});
+
+test("nothing is deleted: the superseded record stays in the file", async () => {
+  const home = tmp();
+  const { writeSnapshots } = await withHome(home);
+  seedStored(home, { ...bucket({ sessions: 16_636 }), scanner_version: "0000deadbeef" });
+  await captureWarn(() => writeSnapshots([bucket({ sessions: 132 })]));
+  const m = readMonth(home, "2026-07");
+  assert.equal(m.superseded.sessions, 16_636, "the published number is still readable");
+  assert.equal(m.superseded.scanner_version, "0000deadbeef", "and says which code produced it");
+});
+
+test("an UNVERSIONED stored month is not comparable, so it is not a floor", async () => {
+  // Every one of the eight real snapshots on the author's machine is in this
+  // state. scanners.mjs:82-89: a value standing for "I do not know" must not
+  // behave like a value — two absent versions are two unknowns, not a match.
+  const home = tmp();
+  const { writeSnapshots } = await withHome(home);
+  seedStored(home, bucket({ sessions: 16_636 }));           // no scanner_version at all
+  const warned = await captureWarn(() => writeSnapshots([bucket({ sessions: 132 })]));
+  assert.equal(readMonth(home, "2026-07").sessions, 132);
+  assert.match(warned, /recorded no version/, "it says the stored record was unversioned");
+});
+
+test("every run stamps the version, so the NEXT run can compare", async () => {
+  const home = tmp();
+  const { writeSnapshots } = await withHome(home);
+  writeSnapshots([bucket()]);
+  const v = readMonth(home, "2026-07").scanner_version;
+  assert.equal(typeof v, "string", "a snapshot record now names its producer");
+  assert.ok(v.length >= 8, "and it is a real fingerprint");
+  // Self-heals: the unversioned case above cannot recur after one run.
+  const quiet = await captureWarn(() => writeSnapshots([bucket()]));
+  assert.equal(quiet, "", "same code, same numbers — nothing held, nothing restated");
+});
+
+// ---- 7: a held value is announced in EVERY branch --------------------------
+
+test("holding an hour bucket or a language SAYS so, like holding a number does", async () => {
+  // `held` was pushed only in the number branch, so hour_buckets (array) and
+  // languages/models (object) were held with no report: a held value and an
+  // agreed value rendered identically. Four states, inside the writer.
+  const home = tmp();
+  const { writeSnapshots } = await withHome(home);
+  writeSnapshots([bucket()]);
+  const warned = await captureWarn(() => writeSnapshots([bucket({
+    hour_buckets: new Array(24).fill(0).map((_, h) => (h === 3 ? 100 : 10)),  // 500 -> 100
+    languages: { python: 60, rust: 40 },                                      // 300 -> 60
+    models: { "claude-opus-5": 40 },                                          // 200 -> 40
+  })]));
+  assert.match(warned, /hour_buckets/, "the array branch reports");
+  assert.match(warned, /languages/, "the object branch reports");
+  assert.match(warned, /models/, "and so does the other object field");
+  const m = readMonth(home, "2026-07");
+  assert.equal(m.hour_buckets[3], 500, "still a floor within one scanner");
+  assert.equal(m.languages.python, 300);
+});
