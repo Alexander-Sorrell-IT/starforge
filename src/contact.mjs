@@ -5,7 +5,10 @@
 // user editing it directly. That keeps the privacy contract intact: starreckon
 // never collects contact info, you opt in by creating the file.
 //
-// The fields are deliberate: github, email, phone, website, linkedin, twitter.
+// The fields are deliberate: name, github, email, phone, website, linkedin,
+// twitter. `name` lives HERE and not behind a --name flag: a flag is retyped
+// every run, is invisible to the [R] screen that claims to show what is
+// shared, and bypassed the opt-in contract below. One place owns identity.
 // No freeform keys. A controlled set means the QR serialiser knows every tag
 // prefix and the menu knows every prompt, and neither has to handle unknowns.
 
@@ -15,11 +18,12 @@ import { homedir } from "node:os";
 
 // Canonical field order — also the priority order for QR packing (most
 // important first, so if the payload is tight the useful fields survive).
-export const FIELDS = ["github", "email", "phone", "website", "linkedin", "twitter"];
+export const FIELDS = ["name", "github", "email", "phone", "website", "linkedin", "twitter"];
 
 // Short tag prefix for each field in the QR payload. Kept as short as possible
 // to maximise how much fits in the 260-byte cap.
 export const TAGS = {
+  name:     "",
   github:   "gh:",
   email:    "em:",
   phone:    "tel:",
@@ -30,6 +34,7 @@ export const TAGS = {
 
 // Human label for each field — used in the terminal menu.
 export const LABELS = {
+  name:     "Name",
   github:   "GitHub",
   email:    "Email",
   phone:    "Phone",
@@ -40,6 +45,7 @@ export const LABELS = {
 
 // Menu key bindings — single letter, unique, shown in [brackets].
 export const KEYS = {
+  N: "name",
   G: "github",
   E: "email",
   P: "phone",

@@ -140,6 +140,32 @@ import { buildReceipt, renderReceipt } from "./receipt.mjs";
 import { scanAllProviders, scanPortedReaders, scannerVersion } from "./scanners.mjs";
 import { discoverAccounts, floorTotals } from "./accounts.mjs";
 import { readContact, writeContact, FIELDS as CONTACT_FIELDS, KEYS as CONTACT_KEYS, LABELS as CONTACT_LABELS } from "./contact.mjs";
+
+// WHO THIS RUN IS, resolved in ONE place.
+//
+// `--name` used to be the only source, which put identity in a flag you retype
+// every run: invisible to the [R] screen that lists what gets shared, and
+// outside contact.json's opt-in contract. Once the contact file also carried a
+// name, one run could print one name on the card and a different one in the QR
+// — the same two-sources-of-truth drift COPY_DIRS was bitten by.
+//
+// contact.json is the source. The flag stays as a deliberate per-run OVERRIDE
+// (`--name "Team A"` on a compare report) and is checked FIRST: an override
+// that loses to stored state is not an override.
+// Read ONCE. This called readContact() on every invocation and there are five
+// call sites, so a default run re-read the same small file repeatedly for a
+// value that cannot change mid-run.
+let _nameCache;
+const displayName = () => {
+  if (_nameCache !== undefined) return _nameCache;
+  const flagName = opt("name");
+  if (flagName && String(flagName).trim()) return (_nameCache = String(flagName).trim());
+  const stored = readContact()?.name;
+  if (typeof stored === "string" && stored.trim()) return (_nameCache = stored.trim());
+  // A non-string `name` in a hand-edited contact.json (a number, an array, an
+  // object) must not reach String() and land as "[object Object]" on the card.
+  return (_nameCache = null);
+};
 import { readExclusions, addExclusion, removeExclusion, EXCLUDE_FILE } from "./exclude.mjs";
 import { buildShareUrl, PAGES_BASE } from "./shareurl.mjs";
 import { readFleet, writeMachineFolder } from "./fleet.mjs";
@@ -1280,7 +1306,7 @@ async function main() {
   // ---- outputs -------------------------------------------------------------
   const outDir = join(homedir(), ".starreckon", "reports");
   const stamp = new Date().toISOString().slice(0, 10);
-  const name = opt("name");
+  const name = displayName();
 
   if (flag("--json")) {
     mkdirSync(outDir, { recursive: true });
@@ -1441,7 +1467,7 @@ async function main() {
     const saveFullReport = () => {
       mkdirSync(outDir, { recursive: true });
       const p = join(outDir, `report-${stamp}.txt`);
-      const body = buildCompareReport({ mine: _reportMine(), fleet: _reportFleet(), label: opt("name") ?? hostname() });
+      const body = buildCompareReport({ mine: _reportMine(), fleet: _reportFleet(), label: displayName() ?? hostname() });
       writeFileSync(p, auditWrite(audit, p, body));
       console.log(`  report saved ${maskPath(p)}`);
       return p;
@@ -1464,11 +1490,11 @@ async function main() {
         mkdirSync(destDir, { recursive: true });
 
         // report.txt — stars + compare bars
-        const body = buildCompareReport({ mine: _reportMine(), fleet: _reportFleet(), label: opt("name") ?? hostname() });
+        const body = buildCompareReport({ mine: _reportMine(), fleet: _reportFleet(), label: displayName() ?? hostname() });
         writeFileSync(join(destDir, "report.txt"), body);
 
         // star.svg — SVG card (always, regardless of --card flag)
-        const svg = renderCard(levels, agg, vel, { name: opt("name") ?? "SKILL SCREEN" });
+        const svg = renderCard(levels, agg, vel, { name: displayName() ?? "SKILL SCREEN" });
         writeFileSync(join(destDir, "star.svg"), svg);
 
         console.log(`  desktop ${maskPath(destDir)}`);
@@ -1780,7 +1806,7 @@ async function main() {
         const saveReport = async (tag, mine, fleet) => {
           mkdirSync(outDir, { recursive: true });
           const p = join(outDir, `compare-${stamp}-${tag}.txt`);
-          const body = buildCompareReport({ mine, fleet, label: opt("name") ?? hostname() });
+          const body = buildCompareReport({ mine, fleet, label: displayName() ?? hostname() });
           writeFileSync(p, auditWrite(audit, p, body));
           console.log(`  saved ${maskPath(p)}`);
         };
@@ -1855,9 +1881,13 @@ async function main() {
         while (!rDone) {
           console.log(`
 ${BOLD}${CYAN}── reach out (shown in QR) ──────────────────${RESET}`);
-          const fieldKeys = ["G","E","P","W","L","T"];
-          const fieldMap  = { G:"github", E:"email", P:"phone", W:"website", L:"linkedin", T:"twitter" };
-          const labelMap  = { G:"GitHub", E:"Email", P:"Phone", W:"Website", L:"LinkedIn", T:"Twitter/X" };
+          // Derived from contact.mjs, not restated. This block used to carry its
+          // own copy of the field list, so adding a field here and there were
+          // two edits and one of them was always forgotten.
+          const fieldMap  = CONTACT_KEYS;
+          const fieldKeys = Object.keys(fieldMap);
+          const labelMap  = Object.fromEntries(
+            fieldKeys.map((k) => [k, CONTACT_LABELS[fieldMap[k]]]));
           for (const k of fieldKeys) {
             const f = fieldMap[k];
             const val = ct[f] ? `${BOLD}${ct[f]}${RESET}` : `${DIM}(not set)${RESET}`;
@@ -1908,7 +1938,10 @@ ${BOLD}${CYAN}── reach out (shown in QR) ───────────�
         console.log(`${DIM}this tool does not load it for you.${RESET}`);
       } else if (key === "X") {
         // [X] copy share link — build the GitHub Pages URL and copy to clipboard
-        const shareUrl = buildShareUrl(levels, agg, opt("name"));
+        // The contact FILE, not a flag. `--name` was retyped every run, never
+        // appeared on the [R] screen that claims to list what is shared, and
+        // bypassed contact.json's opt-in contract. One place owns identity.
+        const shareUrl = buildShareUrl(levels, agg, readContact());
         if (!shareUrl) {
           console.log(`  ${DIM}could not build share URL — run with --name=NAME to include a label${RESET}`);
         } else {
