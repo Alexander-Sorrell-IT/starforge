@@ -537,4 +537,5 @@ and does not cover, watching the process from outside with `lsof`/`nettop`/
 `tcpdump`, the tamper-evident audit log and its honest limits, checking the npm
 tarball against this repo, and the filesystem-egress caveat.
 
-MIT — see [LICENSE](LICENSE).
+[PolyForm Noncommercial 1.0.0](LICENSE) — free for noncommercial use.
+Commercial use requires a paid license: matrixbuilderops@proton.me
