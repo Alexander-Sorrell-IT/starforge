@@ -17,6 +17,20 @@
 //   starreckon --dual          print ONLY this month beside lifetime
 //                                 (--star/--dual suppress the summary, cards,
 //                                 QR and menu — the default run shows them all)
+//   --with-models                 turn ON the optional models layer. shows the
+//                                 consent screen FIRST — what is about to
+//                                 happen, that a log file will be saved, where
+//                                 it runs, and that it is not required — then
+//                                 asks. two answers: agree / use without.
+//   --with-daemon                 same screen, same two answers, for the
+//                                 optional daemon layer (writes the schedule
+//                                 files; still never loads them for you)
+//   --with-both                   the third door: ONE flag that turns on models
+//                                 AND daemon together, one screen, one answer.
+//                                 the [A] button in the menu is the same door.
+//                                 with no TTY these three do not hang and do
+//                                 not assume consent: they default to "use
+//                                 without" and say so on stderr.
 //   starreckon --ledger        record sessions in the token ledger so
 //                                 transcript deletion cannot lower the lifetime
 //                                 total. the daemon scan passes this by default.
@@ -97,7 +111,13 @@
 //   [P] prove it    [T] transparency  [C] compare   [D] daemon
 //   [E] exclusions  [R] reach out     [X] copy link
 //   [I] install Cisco models          [Z] re-run scan
+//   [A] all extras  models + daemon in ONE press (the third door)
 //   [H] help        [Q] done
+//   [D], [I] and [A] each show the consent screen before anything happens —
+//   and each screen promises only the layers that would REALLY run on this
+//   machine. [D] is offered when the daemon is supported and not yet installed;
+//   [A] only when it genuinely combines two startable layers. A door with
+//   nothing left to start says so and asks nothing. See offeredDoors().
 //
 // COMPARE SUB-MENU:
 //   [M] mine    this machine month vs lifetime
@@ -112,7 +132,7 @@
 // FLAG_SPEC appears above (a test asserts both directions). An unregistered
 // flag EXITS 2 instead of being ignored — see the comment on FLAG_SPEC.
 import { createInterface } from "node:readline/promises";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 // `new URL(...).pathname` URL-ENCODES. A checkout under a directory with a
@@ -199,6 +219,16 @@ import {
 import { armTripwire } from "./tripwire.mjs";
 import { verifyCli } from "./verify.mjs";
 import { detectConfinement, buildProofCommand, sandboxProfile, runConfined, runProbe } from "./confine.mjs";
+import {
+  consentScreen,
+  parseConsent,
+  withoutLine,
+  nonTtyNotice,
+  doorPlan,
+  offeredDoors,
+  nothingToStartNotice,
+  UNRECOGNISED_LINE,
+} from "./consent.mjs";
 
 // NO_COLOR emptied at the source. These four constants are interpolated into
 // roughly a hundred template literals in this file — the banner, the summary,
@@ -300,6 +330,9 @@ const FLAG_SPEC = Object.freeze({
   "--live": "bool",
   "--ledger": "bool",
   "--report": "bool",
+  "--with-models": "bool",
+  "--with-daemon": "bool",
+  "--with-both": "bool",
 });
 const KNOWN_FLAGS = Object.freeze(Object.keys(FLAG_SPEC));
 
@@ -382,6 +415,14 @@ function printHelp() {
   console.log(`  --no-wrapped   skip the paced story, print summary only`);
   console.log(`  --no-pace      print all cards at once (no [enter])`);
   console.log(`  --name=NAME    title on the card and stats page`);
+  console.log(`\n${B}OPTIONAL LAYERS${R} ${D}(consent screen first — every one of these asks)${R}`);
+  console.log(`  --with-models   turn on the models layer  ${D}(same door as [I])${R}`);
+  console.log(`  --with-daemon   turn on the daemon layer  ${D}(same door as [D])${R}`);
+  console.log(`  --with-both     BOTH in one flag          ${D}(same door as [A])${R}`);
+  console.log(`  ${D}the screen names what happens, says a log file will be saved,${R}`);
+  console.log(`  ${D}says it runs locally in this machine's folder, and says it is${R}`);
+  console.log(`  ${D}not required. two answers: agree / use without. the scan runs${R}`);
+  console.log(`  ${D}either way. with no TTY: "use without", said on stderr.${R}`);
   console.log(`\n${B}PRIVACY${R}`);
   console.log(`  --no-projects     write proj-<hash> instead of project names in files`);
   console.log(`  --no-providers    skip the multi-CLI scan (Gemini/Copilot/…)`);
@@ -412,7 +453,8 @@ function printHelp() {
   console.log(`\n${B}BEFORE-YOU-GO MENU${R} ${D}(shown after a scan on an interactive terminal)${R}`);
   console.log(`  [P] prove it       [T] transparency   [C] compare     [D] daemon`);
   console.log(`  [E] exclusions     [R] reach out      [X] copy link   [B] beacon`);
-  console.log(`  [I] install models [Z] re-run scan    [H] this help   [Q] done`);
+  console.log(`  [I] install models [A] all extras     [Z] re-run scan`);
+  console.log(`  [H] this help      [Q] done`);
   console.log(`\n${B}ENVIRONMENT${R}`);
   console.log(`  STARRECKON_DEBUG=1             show full stack on crash`);
   console.log(`  STARRECKON_FORCE_INTERACTIVE=1 force the menu in non-TTY (testing only)`);
@@ -655,6 +697,149 @@ function starOf(agg, available = null) {
   };
 }
 
+// ── the optional layers, and the one screen that guards all three ───────────
+//
+// Three doors — models, daemon, both — each reachable by a FLAG and by a BUTTON.
+// The screen, the two answers and the dispatch all live in openDoor(), so a
+// flag and a button are not two implementations that agree today: they are one
+// code path called from two places. The text itself is in consent.mjs.
+//
+// The `both` door is a door, not two presses chained: the author's requirement
+// is one flag and one button that turn on models AND daemon together, so the
+// reader sees ONE screen and gives ONE answer.
+//
+// Two flags spelled separately (`--with-models --with-daemon`) resolve to the
+// SAME `both` door rather than to two screens. Asking the same question twice
+// in one run is how a reader stops reading it.
+const wantModelsLayer = flag("--with-models") || flag("--with-both");
+const wantDaemonLayer = flag("--with-daemon") || flag("--with-both");
+const consentDoor =
+  wantModelsLayer && wantDaemonLayer ? "both" : wantModelsLayer ? "models" : wantDaemonLayer ? "daemon" : null;
+
+// What the two optional layers would ACTUALLY do on this machine, measured
+// rather than assumed. consent.mjs does no I/O by design, so the measuring
+// happens here and the answer is handed down; see the block above offeredDoors
+// for the defect that made this necessary ([A] promising a daemon on platforms
+// that have none).
+//
+// The models check is filesystem-only, on purpose. Whether python3 is on PATH
+// is a third state this could report, but finding out costs a subprocess spawn
+// on every menu render AND an eager import of search.mjs, which imports
+// node:child_process — the very import that is kept lazy here for the reason
+// stated on installModelsLayer. A missing python is still caught honestly, one
+// step later, by installModelsLayer itself.
+const MODELS_VENV = () => homedir() + "/.starreckon/.venv-search";
+function layerStates() {
+  const dst = daemonStatus();
+  const venv = MODELS_VENV();
+  return {
+    models: existsSync(venv + "/bin/python") || existsSync(venv + "/Scripts/python.exe") ? "installed" : "ready",
+    daemon: !dst.supported ? "unsupported" : dst.installed ? "installed" : "ready",
+  };
+}
+
+// The daemon half. This is the body the [D] button has always run, lifted into
+// a function so the [A] button and --with-both can reach it without a second
+// copy. Its last line — "this tool does not load it for you" — is the sentence
+// the whole consent screen was modelled on; it stays exactly as it was.
+//
+// The already-installed case is filtered out by the plan in openDoor, not here:
+// `starreckon daemon on` stays the explicit "write them again" path, so a
+// reader who wants to repair a mangled schedule file still has one.
+function installDaemonLayer() {
+  const dst = daemonStatus();
+  if (!dst.supported) {
+    console.log(`  ${DIM}no schedule format for this platform (${dst.platform}) — nothing was written${RESET}`);
+    return;
+  }
+  const { files, activate } = writeSchedule();
+  console.log("");
+  for (const f of files) console.log(`wrote ${maskPath(f)}`);
+  console.log(`${BOLD}read it, then load it yourself:${RESET}\n  ${activate}`);
+  console.log(`${DIM}this tool does not load it for you.${RESET}`);
+}
+
+// The models half — likewise the [I] body, unchanged, in a function.
+// search.mjs is imported LAZILY here for the reason stated on the --full block
+// below: it imports node:child_process, and cli.mjs's static-scan exemption
+// covers that import only while it is deferred, never at module load.
+async function installModelsLayer() {
+  const { checkPython, runSearch } = await import("./search.mjs");
+  const py = checkPython("python3") ? "python3" : null;
+  if (!py) {
+    console.log(`  ${DIM}python3 not found on PATH — install Python 3.8+ then try again${RESET}`);
+    return;
+  }
+  const { existsSync } = await import("node:fs");
+  const { homedir: _hd } = await import("node:os");
+  const venv = _hd() + "/.starreckon/.venv-search";
+  if (existsSync(venv + "/bin/python") || existsSync(venv + "/Scripts/python.exe")) {
+    console.log(`  ${DIM}models already installed at ~/.starreckon/.venv-search${RESET}`);
+    console.log(`  ${DIM}run: starreckon search "your query"${RESET}`);
+    return;
+  }
+  console.log(`\n  downloading Cisco SecureBERT models (~600 MB) — this takes a few minutes…\n`);
+  const code = await runSearch(["setup"], { python: py });
+  if (code === 0) {
+    console.log(`\n  ${DIM}models installed. run: starreckon search "your query"${RESET}`);
+  } else {
+    console.log(`\n  ${DIM}setup exited ${code} — re-run: starreckon search --search-setup${RESET}`);
+  }
+}
+
+/**
+ * Show the consent screen for one door, take one of exactly two answers, and
+ * act on it. Returns "agree" or "without" — never a third thing, because there
+ * is no third answer.
+ *
+ * `ask` is null when there is no terminal to ask on. That case does not hang and
+ * does not assume consent: the screen is still printed (so a piped log records
+ * what was offered), the answer defaults to "use without", and it is said on
+ * STDERR — passing a flag is a request to be asked, not an answer.
+ *
+ * An unrecognised answer is re-asked ONCE and then falls to "use without". A
+ * loop with no bound would hang on a closed pipe, which is the same failure the
+ * non-TTY branch exists to prevent.
+ */
+async function openDoor(doorKey, ask) {
+  // Measured once, and the SAME states drive the screen and the dispatch below.
+  // Two reads could disagree — the screen promising what the dispatch then
+  // skips is the entire defect this guard exists for, and re-measuring after
+  // the answer would reintroduce it in a narrower window.
+  const layers = layerStates();
+  const plan = doorPlan(doorKey, layers);
+  if (plan.start.length === 0) {
+    // Nothing to consent to. Say the state and ask nothing — a question whose
+    // only honest outcome is "nothing happens" teaches the reader to skip the
+    // next one. Flags land here too: --with-both on a machine that is already
+    // set up is answered, not silently ignored.
+    console.log(nothingToStartNotice(doorKey, layers));
+    return "without";
+  }
+  console.log(consentScreen(doorKey, { color: !PLAIN, layers }));
+  if (!ask) {
+    console.error(nonTtyNotice(doorKey));
+    return "without";
+  }
+  let answer = null;
+  for (let attempt = 0; attempt < 2 && answer === null; attempt += 1) {
+    answer = parseConsent(await ask("  > "));
+    if (answer === null) console.log(`  ${DIM}${UNRECOGNISED_LINE}${RESET}`);
+  }
+  if (answer !== "agree") {
+    console.log(`  ${DIM}${withoutLine(doorKey)}${RESET}`);
+    return "without";
+  }
+  // Daemon first: it is instant and local, so a reader who agreed to `both`
+  // has the cheap half done before the long download starts.
+  //
+  // Driven by the PLAN, not by the door name: what runs is exactly the set the
+  // screen just promised, which is what makes the screen true.
+  if (plan.start.includes("daemon")) installDaemonLayer();
+  if (plan.start.includes("models")) await installModelsLayer();
+  return "agree";
+}
+
 async function main() {
   // Banner honesty: this process cannot prove its own no-egress claim (see
   // README "Privacy model" #2), so it states only what it can back and hands
@@ -692,6 +877,28 @@ async function main() {
     if (resetLog)
       console.log(`${DIM}run log:   ${maskPath(resetLog)} — this run, chained onto the genesis above${RESET}`);
     process.exit(0);
+  }
+
+  // ---- the optional-layer flags: consent BEFORE anything happens ----------
+  // Placed here on purpose — after the banner, before a single session file is
+  // discovered or read. "Shown before ANYTHING happens" is the requirement, and
+  // a screen that appears after the scan has already walked the disk would be
+  // asking permission for something already done. Whichever answer is given,
+  // execution falls through to the scan below: neither answer is a dead end.
+  if (consentDoor) {
+    const canAsk = process.stdin.isTTY || process.env.STARRECKON_FORCE_INTERACTIVE === "1";
+    let rl = null;
+    const ask = canAsk
+      ? async (prompt) => {
+          rl ??= createInterface({ input: process.stdin, output: process.stdout });
+          return rl.question(prompt);
+        }
+      : null;
+    try {
+      await openDoor(consentDoor, ask);
+    } finally {
+      rl?.close();
+    }
   }
 
   // Contact info — read once, used by the QR and the [C] menu.
@@ -1768,13 +1975,23 @@ async function main() {
       console.log(`  ${BOLD}[T]${RESET} transparency  ${DIM}every field this tool KEPT, read from the bytes on disk${RESET}`);
       if (timeline.length)
         console.log(`  ${BOLD}[C]${RESET} compare      ${DIM}[M] mine · ${fleetStars?.lifetime ? "[F] fleet · " : ""}[S] save${RESET}`);
-      const dst0 = daemonStatus();
-      if (dst0.supported && !dst0.installed)
+      // Which optional doors are real on THIS machine, right now — re-measured
+      // each time round the loop, because pressing [D] changes the answer for
+      // [D] and for [A].
+      //
+      // [A] used to print unconditionally while [D] gated itself, so on a
+      // platform with no schedule format "all extras" offered a daemon, its
+      // screen announced schedule files, and it wrote none. The rule for all
+      // three doors now lives in offeredDoors() beside the text it gates.
+      const offered = offeredDoors(layerStates());
+      if (offered.daemon)
         console.log(`  ${BOLD}[D]${RESET} daemon       ${DIM}schedule monthly re-scans so history outlives the logs${RESET}`);
       console.log(`  ${BOLD}[E]${RESET} exclusions   ${DIM}add or remove paths never scanned${RESET}`);
       console.log(`  ${BOLD}[R]${RESET} reach out    ${DIM}set contact info shown in the QR (github, email, phone…)${RESET}`);
       console.log(`  ${BOLD}[X]${RESET} copy link    ${DIM}copy share URL to clipboard (paste on any social platform)${RESET}`);
       console.log(`  ${BOLD}[I]${RESET} install models ${DIM}download Cisco SecureBERT for semantic search (one-time ~600 MB)${RESET}`);
+      if (offered.both)
+        console.log(`  ${BOLD}[A]${RESET} all extras   ${DIM}models AND daemon in ONE press — one screen, one answer${RESET}`);
       console.log(`  ${BOLD}[B]${RESET} beacon       ${DIM}broadcast on LAN · collect peer stars (8s)${RESET}`);
       console.log(`  ${BOLD}[Z]${RESET} re-run        ${DIM}run a fresh scan now${RESET}`);
       console.log(`  ${BOLD}[H]${RESET} help          ${DIM}all flags and subcommands${RESET}`);
@@ -1938,11 +2155,10 @@ ${BOLD}${CYAN}── reach out (shown in QR) ───────────�
         // Refresh contact so the QR on any subsequent re-render is current
         Object.assign(contact, readContact());
       } else if (key === "D") {
-        const { files, activate } = writeSchedule();
-        console.log("");
-        for (const f of files) console.log(`wrote ${maskPath(f)}`);
-        console.log(`${BOLD}read it, then load it yourself:${RESET}\n  ${activate}`);
-        console.log(`${DIM}this tool does not load it for you.${RESET}`);
+        // The button and the --with-daemon flag are the SAME door: same screen,
+        // same two answers, same dispatch. Nothing is written until the reader
+        // answers "agree".
+        await openDoor("daemon", ask);
       } else if (key === "X") {
         // [X] copy share link — build the GitHub Pages URL and copy to clipboard
         // The contact FILE, not a flag. `--name` was retyped every run, never
@@ -1973,28 +2189,14 @@ ${BOLD}${CYAN}── reach out (shown in QR) ───────────�
           console.log(`  ${DIM}the page renders your star from the URL fragment — no server needed${RESET}`);
           }
         } else if (key === "I") {
-          // [I] install Cisco SecureBERT models for semantic search
-          const { checkPython, runSearch } = await import("./search.mjs");
-          const py = checkPython("python3") ? "python3" : null;
-          if (!py) {
-            console.log(`  ${DIM}python3 not found on PATH — install Python 3.8+ then press [I] again${RESET}`);
-          } else {
-            const { existsSync } = await import("node:fs");
-            const { homedir: _hd } = await import("node:os");
-            const venv = _hd() + "/.starreckon/.venv-search";
-            if (existsSync(venv + "/bin/python") || existsSync(venv + "/Scripts/python.exe")) {
-              console.log(`  ${DIM}models already installed at ~/.starreckon/.venv-search${RESET}`);
-              console.log(`  ${DIM}run: starreckon search "your query"${RESET}`);
-            } else {
-              console.log(`\n  downloading Cisco SecureBERT models (~600 MB) — this takes a few minutes…\n`);
-              const code = await runSearch(["setup"], { python: py });
-              if (code === 0) {
-                console.log(`\n  ${DIM}models installed. run: starreckon search "your query"${RESET}`);
-              } else {
-                console.log(`\n  ${DIM}setup exited ${code} — re-run: starreckon search --search-setup${RESET}`);
-              }
-            }
-          }
+          // [I] install Cisco SecureBERT models — same door as --with-models.
+          // The download used to start on the keypress; now the screen comes
+          // first and nothing is fetched until the reader answers "agree".
+          await openDoor("models", ask);
+        } else if (key === "A") {
+          // [A] the third door — models AND daemon in ONE press. Same menu
+          // level as [D] and [I], one screen, one answer, both layers.
+          await openDoor("both", ask);
         } else if (key === "B") {
           // [B] beacon — broadcast this machine's result and collect peers
           await runBeacon(8000);
