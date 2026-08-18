@@ -379,7 +379,10 @@ starreckon --no-projects    # write proj-<hash> into the files instead of projec
 starreckon --show-accounts  # opt in: write the RAW account email addresses into the files
 starreckon --no-providers   # skip the multi-CLI scan (Gemini/Copilot/…)
 starreckon --no-snapshot    # don't touch ~/.starreckon/snapshots or ~/.starreckon/stars
-starreckon --name=NAME      # title printed on the card and the stats page
+starreckon --name=NAME      # OVERRIDE the display name for this run only.
+                               # Your name normally lives in ~/.starreckon/contact.json
+                               # with the rest of your details — press [R] in the menu to
+                               # set it, see what is shared, and clear any field.
 starreckon --roots=/Volumes/other-mac/Users/me   # merge another machine's logs
 starreckon --join-fleet=DIR [--machine=NAME] [--label=LABEL]   # write this machine's folder into a
                                # fleet dir (--machine/--label default to this machine's hostname)

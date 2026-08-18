@@ -1,7 +1,7 @@
 // tests/shareurl.test.mjs — unit tests for src/shareurl.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildShareUrl, parseShareUrl, PAGES_BASE } from "../src/shareurl.mjs";
+import { buildShareUrl, parseShareUrl, PAGES_BASE, QR_BUDGET_BYTES } from "../src/shareurl.mjs";
 
 const ARMS = 5, MAX_LV = 7;
 const levels = [4.8, 4.6, 4.5, 4.7, 4.4];
@@ -153,4 +153,101 @@ test("parseShareUrl decodes archetype underscores as spaces", () => {
   const url = buildShareUrl(levels, agg, null);
   const d = parseShareUrl(url);
   assert.ok(!d.archetype.includes("_"), "underscores not decoded to spaces");
+});
+
+// ---- contact in the share URL ---------------------------------------------
+// The [R] menu's heading reads "reach out (shown in QR)". It was not: the only
+// path that encoded contact fields sat on the right of
+// `buildShareUrl(...) ?? sharePayload(...)`, and buildShareUrl returns null only
+// for an empty levels array — which lv5() cannot produce. Every field typed into
+// that screen was written to disk and shown nowhere. These pin the fix.
+
+test("contact fields ride in the share URL, so the QR still opens a page", () => {
+  const url = buildShareUrl(levels, agg, {
+    name: "Alexander Sorrell", github: "matrixbuilderops", email: "you@example.com",
+  });
+  const p = new URLSearchParams(url.split("#")[1]);
+  assert.equal(p.get("n"), "Alexander Sorrell");
+  assert.equal(p.get("gh"), "matrixbuilderops");
+  assert.equal(p.get("em"), "you@example.com");
+  assert.ok(url.startsWith("https://"), "must stay a clickable URL, not raw text");
+});
+
+test("a bare string is still treated as the name", () => {
+  const p = new URLSearchParams(buildShareUrl(levels, agg, "Solo Name").split("#")[1]);
+  assert.equal(p.get("n"), "Solo Name");
+});
+
+test("an empty contact object adds nothing, and a full one adds something", () => {
+  // The first assertion alone passed with the ENTIRE contact loop deleted —
+  // it only ever exercised the zero-input path. Paired with the second, the
+  // test now fails if the feature is removed, which is the only reason to
+  // have it.
+  assert.equal(buildShareUrl(levels, agg, {}), buildShareUrl(levels, agg, null));
+  assert.notEqual(
+    buildShareUrl(levels, agg, { github: "someone" }),
+    buildShareUrl(levels, agg, null),
+    "a set contact field must change the URL");
+});
+
+test("a full contact still fits the QR byte cap", () => {
+  const url = buildShareUrl(levels, agg, {
+    name: "Alexander Sorrell", github: "matrixbuilderops", email: "you@example.com",
+    phone: "+1-555-0100", website: "signalcore.dev", linkedin: "alexsorrell",
+    twitter: "asorrell",
+  });
+  assert.ok(Buffer.byteLength(url, "utf8") <= QR_BUDGET_BYTES,
+    `${Buffer.byteLength(url, "utf8")} bytes exceeds the ${QR_BUDGET_BYTES}-byte cap`);
+});
+
+test("over budget: whole fields are dropped, lowest priority first — never truncated", () => {
+  const long = (n) => "x".repeat(n);
+  const url = buildShareUrl(levels, agg, {
+    name: "Alexander Sorrell", github: long(30), email: `${long(20)}@${long(10)}.com`,
+    phone: long(30), website: long(30), linkedin: long(30), twitter: long(30),
+  });
+  const p = new URLSearchParams(url.split("#")[1]);
+  assert.ok(Buffer.byteLength(url, "utf8") <= QR_BUDGET_BYTES, "must respect the cap");
+  // name is first in CONTACT_FIELDS, so it is the last thing to go.
+  assert.equal(p.get("n"), "Alexander Sorrell", "name must survive a tight budget");
+  // and nothing that DID make it may be a fragment: every value is whole.
+  for (const [, v] of p) assert.ok(!v.endsWith("�"), "no half-encoded value");
+  assert.equal(p.get("tw"), null, "lowest-priority field drops when over budget");
+});
+
+test("the URL round-trips: every contact field encoded comes back out", () => {
+  // parseShareUrl returned `name` and silently dropped github/email/phone/
+  // website/linkedin/twitter, so any consumer reading a shared link back lost
+  // the contact without an error.
+  const ct = { name: "Alexander Sorrell", github: "matrixbuilderops",
+               email: "you@example.com", phone: "+1-555-0100" };
+  const back = parseShareUrl(buildShareUrl(levels, agg, ct));
+  assert.equal(back.name, ct.name);
+  for (const [f, v] of Object.entries(ct)) {
+    if (f === "name") continue;
+    assert.equal(back.contact[f], v, `${f} did not survive the round trip`);
+  }
+});
+
+test("budget holds for characters URLSearchParams encodes but encodeURIComponent does not", () => {
+  // ! ( ) ~ and an apostrophe are 1 byte under encodeURIComponent and 3 under
+  // URLSearchParams. Estimating with the first and writing with the second
+  // UNDER-counted, so the cap could be blown by a name like O'Brien (Alex).
+  const nasty = "'".repeat(8) + "!".repeat(8) + "(".repeat(8) + ")".repeat(8);
+  const url = buildShareUrl(levels, agg, {
+    name: nasty, github: nasty, email: nasty, phone: nasty,
+    website: nasty, linkedin: nasty, twitter: nasty,
+  });
+  assert.ok(Buffer.byteLength(url, "utf8") <= QR_BUDGET_BYTES,
+    `${Buffer.byteLength(url, "utf8")} bytes exceeds the ${QR_BUDGET_BYTES}-byte cap`);
+});
+
+test("budget holds for multi-byte values", () => {
+  const cjk = "\u6771\u4eac\u90fd\u6e0b\u8c37\u533a".repeat(5);
+  const url = buildShareUrl(levels, agg, {
+    name: cjk, github: cjk, email: cjk, phone: cjk,
+    website: cjk, linkedin: cjk, twitter: cjk,
+  });
+  assert.ok(Buffer.byteLength(url, "utf8") <= QR_BUDGET_BYTES,
+    `${Buffer.byteLength(url, "utf8")} bytes exceeds the ${QR_BUDGET_BYTES}-byte cap`);
 });

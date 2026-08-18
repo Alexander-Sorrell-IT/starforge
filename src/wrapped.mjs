@@ -591,7 +591,21 @@ export function sharePayload(rawLevels, agg, url, contact) {
   const budget = 260 - new TextEncoder().encode(base + "\n").length;
   const cLines = contactLines(contact ?? {}, budget);
   let text = cLines.length ? base + "\n" + cLines.join("\n") : base;
-  if (text.length > 260) text = text.slice(0, 257) + "...";
+  // BYTES, not .length. This compared UTF-16 code units against a BYTE cap:
+  // a 32-character CJK name is 96 bytes and .length 32, so the guard never
+  // fired and the payload sailed past the QR limit. contact.mjs:121 already
+  // measures with TextEncoder; this is the same cap and must count the same way.
+  const enc = new TextEncoder();
+  if (enc.encode(text).length > 260) {
+    // Cut by BYTES and never mid-codepoint: slicing a UTF-8 sequence in half
+    // produces a replacement char, which is a corrupt payload, not a short one.
+    let out = "";
+    for (const ch of text) {
+      if (enc.encode(out + ch).length > 257) break;
+      out += ch;
+    }
+    text = out + "...";
+  }
   return text;
 }
 
@@ -634,12 +648,58 @@ export function shareQrLines(rawLevels, agg, url, contact) {
   // Prefer encoding the GitHub Pages URL (short, clickable, renders the star
   // in a browser) over the raw-text payload. Fall back to raw text if the
   // URL can't be built (e.g. levels missing).
-  const shareUrl = buildShareUrl(lv5(rawLevels), agg, null);
+  // THE CONTACT GOES IN. It used to be passed as `null` here and could only
+  // reach the QR through `sharePayload` on the right of the `??` — which is
+  // unreachable: buildShareUrl returns null only for an empty levels array, and
+  // lv5() always returns ARMS entries. So every field typed into the [R] screen,
+  // whose heading reads "reach out (shown in QR)", was written to disk and
+  // encoded nowhere.
+  //
+  // It stays a URL rather than becoming a raw vCard so a phone that scans it can
+  // still just open the page. buildShareUrl drops whole fields, lowest priority
+  // first, if the contact would push it past the QR byte cap.
+  const shareUrl = buildShareUrl(lv5(rawLevels), agg, contact);
   const payload = shareUrl ?? sharePayload(lv5(rawLevels), agg, url ?? PAGES_BASE, contact);
   try {
-    return qrToTerminal(payload, { color: !plain() }).split("\n").map((r) => "  " + r);
+    const qr = qrToTerminal(payload, { color: !plain() }).split("\n").map((r) => "  " + r);
+    // PRINT THE RESULTS URL UNDER THE QR.
+    //
+    // The card carries two links and only ever showed one. `npx starreckon` and
+    // the project repo answer "what is this and where do I get it" — they are
+    // the same on every user's card, and they belong there. The OTHER link, the
+    // one this QR actually encodes and the only one that is YOURS, was never
+    // printed anywhere: the sole route to it was [X] copy link, which shells out
+    // to a clipboard binary. clipboard.mjs defaults to xclip on Linux/X11, which
+    // is frequently absent — and on a headless box, a container, or an SSH
+    // session there is then no way to obtain your own link at all. You cannot
+    // even select it off the screen, because it is not on the screen.
+    //
+    // It goes BELOW the frame, next to the QR, for the same reason the QR does:
+    // a version-10 symbol needs 61 columns and the card is 60, and this URL is
+    // ~190-250 characters. Inside the frame it would be clipped, and a clipped
+    // URL is worse than none — it looks copyable and is not.
+    //
+    // serve.mjs:255 already prints its URL this way ("or open <url> in a
+    // browser"), so this is an established pattern here, not a new one. Most
+    // terminals linkify a bare https:// , which is also the tappable answer to
+    // "I do not want to scan it with a second device".
+    if (!shareUrl) return qr;
+    return [
+      ...qr,
+      "",
+      // plain() gated, matching the frame drawing above (:61, :87, :89).
+      // NO_COLOR means NOT ONE escape sequence, and the suite asserts it.
+      plain()
+        ? "  your results — the same page the QR opens:"
+        : `  ${D}your results — the same page the QR opens:${R}`,
+      `  ${shareUrl}`,
+    ];
   } catch (e) {
-    return [`  ${D}(could not encode the QR: ${String(e?.message ?? e).slice(0, 60)})${R}`];
+    // plain() gated like the success path above. Bob caught this: I fixed the
+    // line I added and left the error line beside it emitting escapes
+    // unconditionally, so NO_COLOR held only while the QR encoded successfully.
+    const msg = `(could not encode the QR: ${String(e?.message ?? e).slice(0, 60)})`;
+    return [plain() ? `  ${msg}` : `  ${D}${msg}${R}`];
   }
 }
 
