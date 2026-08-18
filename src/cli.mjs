@@ -115,6 +115,13 @@ import { createInterface } from "node:readline/promises";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
+// `new URL(...).pathname` URL-ENCODES. A checkout under a directory with a
+// space yields "Quest%20coder", which is not a path: `prove` printed a script
+// that does not exist, and the beacon/menu child spawns failed with
+// "Cannot find module". Every other module in src/ already does this —
+// daemon.mjs:36, sources.mjs:23, scanners.mjs:20 — cli.mjs was the only one
+// that did not. Fatal under ~/Library/Application Support and C:\\Program Files.
+import { fileURLToPath } from "node:url";
 import {
   discoverSources,
   emptyStats,
@@ -440,7 +447,7 @@ if (subcommand === "daemon") {
   }
   const st = daemonStatus();
   if (!st.supported) {
-    console.log(`starreckon daemon: no scheduler wired for ${st.platform}. Run the scan from your own cron/timer:\n  ${process.execPath} ${new URL("./cli.mjs", import.meta.url).pathname} --yes --no-wrapped --no-pace`);
+    console.log(`starreckon daemon: no scheduler wired for ${st.platform}. Run the scan from your own cron/timer:\n  ${process.execPath} ${fileURLToPath(new URL("./cli.mjs", import.meta.url))} --yes --no-wrapped --no-pace`);
     process.exit(0);
   }
 
@@ -501,7 +508,7 @@ if (subcommand === "prove") {
     console.log(`\nno OS confinement available here: ${maskText(e.message)}`);
   }
   console.log(
-    `\nfull scripted proof (scan in-sandbox + positive control):\n  sh ${maskPath(new URL("../bin/starreckon-proof.sh", import.meta.url).pathname)}`
+    `\nfull scripted proof (scan in-sandbox + positive control):\n  sh ${maskPath(fileURLToPath(new URL("../bin/starreckon-proof.sh", import.meta.url)))}`
   );
   process.exit(0);
 }
@@ -1513,7 +1520,7 @@ async function main() {
   // beacon.mjs runs as a CHILD PROCESS — dgram.createSocket is patched to throw
   // in this process. child_process is lazy-imported (same pattern as [Z] re-run).
   // buildBeaconPayload packages the scan result into the compact fleet format.
-  const _beaconPath = new URL("./beacon.mjs", import.meta.url).pathname;
+  const _beaconPath = fileURLToPath(new URL("./beacon.mjs", import.meta.url));
   const buildBeaconPayload = () => {
     const machineName = opt("machine") ?? hostname();
     const label = opt("label") ?? machineName;
@@ -1964,7 +1971,7 @@ ${BOLD}${CYAN}── reach out (shown in QR) ───────────�
           if (rl) rl.close();
           const { spawnSync: _ss } = await import("node:child_process");
           const rerunArgv = args.filter((a) => a !== "-h" && a !== "--help");
-          _ss(process.execPath, [new URL(import.meta.url).pathname, ...rerunArgv], {
+          _ss(process.execPath, [fileURLToPath(new URL(import.meta.url)), ...rerunArgv], {
             stdio: "inherit",
             env: { ...process.env },
           });
@@ -1988,7 +1995,7 @@ ${BOLD}${CYAN}── reach out (shown in QR) ───────────�
   console.log(`${DIM}from this one. run either of these and let the kernel answer:${RESET}`);
   console.log(`  ${CYAN}npx starreckon prove${RESET}${DIM}      print the sandbox command, run nothing${RESET}`);
   try {
-    const script = maskPath(new URL("../bin/starreckon-proof.sh", import.meta.url).pathname);
+    const script = maskPath(fileURLToPath(new URL("../bin/starreckon-proof.sh", import.meta.url)));
     console.log(`  ${CYAN}sh ${script}${RESET}`);
     console.log(`${DIM}    runs this scan inside a deny-network sandbox and fires a real TCP${RESET}`);
     console.log(`${DIM}    probe on both sides of the wall: outside it connects, inside the${RESET}`);
