@@ -14,6 +14,12 @@
 //   that ever saw this session (by last-seen index in the file). Among all
 //   rows from THAT version, take the maximum per field.
 //
+//   The maximum is conditional on rows SHARING a version tag, and one class of
+//   row never does: a scan that could not determine its own version is tagged
+//   unhashable-<uuid>, fresh per appended row, so it is ranked and superseded
+//   rather than maxed. lifetime()'s docstring below states the whole condition
+//   and why the trade is the right one — this summary is the short form.
+//
 // This means:
 //   - A re-scan after more turns → higher number wins (correct)
 //   - Transcript deleted, re-scan → old observation preserved (correct)
@@ -29,6 +35,7 @@
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -79,10 +86,45 @@ export function rows(home) {
 /**
  * The lifetime total and per-CLI breakdown.
  *
- * For each (cli, session_id) pair: find the newest scanner_version that ever
+ * For each (cli, session_id) pair: find the newest scanner tag that ever
  * observed it (by last-seen position in the file, not by hash magnitude).
- * Among all rows from that version, take the field-wise maximum so a partial
- * write cannot shrink a session.
+ * Among all rows carrying THAT SAME TAG, take the field-wise maximum so a
+ * partial write cannot shrink a session.
+ *
+ * THE MAXIMUM IS CONDITIONAL ON THE TAG. This used to be stated flat — "among
+ * all rows from that version, take the field-wise maximum" — and that claimed
+ * more than the code delivers. Max happens only between rows whose tag is
+ * EQUAL (`rank === cur.rank` below), and there are three kinds of tag:
+ *
+ *   a real scanner version  every row that scan wrote carries it, so those rows
+ *                           share a bucket and merge: max. The "more turns"
+ *                           case, and the only one the old wording described.
+ *   "pre-versioning"        the sentinel for rows written before the `scanner`
+ *                           field existed. Legacy rows all share it, so they
+ *                           merge with each other too.
+ *   "unhashable-<uuid>"     what record() writes when it could not determine a
+ *                           scanner version. FRESH PER APPENDED ROW, therefore
+ *                           shared with nothing — not even the next unhashable
+ *                           row. Those rows are ranked, never merged: the newest
+ *                           observation SUPERSEDES rather than maximises.
+ *
+ * The third case is deliberate. "I could not determine the version" is not a
+ * version, and maxing two of them together is how a corrected over-count
+ * becomes permanent: the correction is smaller by construction, so it loses the
+ * max in every future run and no later fix can dislodge it. Measured one level
+ * up, on this machine, when snapshots did exactly that — a stored 2026-07
+ * record of 16,636 sessions against a true 132 (see snapshots.mjs:106-131).
+ * The trade: unhashable rows get no floor, so a re-scan that saw less does
+ * lower them. That is the cheaper wrong, because it is recoverable by scanning
+ * again and a frozen number is not.
+ *
+ * Both halves are pinned by tests/ledger.test.mjs — "max WITHIN one known
+ * scanner tag, supersede ACROSS unknown ones".
+ *
+ * Note on scope: the per-FIELD maxima computed below feed nothing that leaves
+ * this function. The returned shape carries `total` (itself maxed) and the
+ * per-CLI sums; the four FIELDS values are dropped by the destructure at the
+ * `byCli` loop. "Field-wise" describes the merge, not the output.
  *
  * Returns:
  *   { total, sessions, by_cli, by_cli_marked, earliest, latest }
@@ -166,26 +208,66 @@ export function lifetime(home) {
  *
  * Only appends rows that are new or have a higher total than the last
  * observation from the same scanner version. Does NOT re-write existing rows.
+ *
+ * `scannerVersion == null` takes the other path documented below: the test is
+ * DIFFERENT total, not higher, because those rows are never merged and a lower
+ * number from a later scan is a restatement that has to be able to land.
+ *
  * Returns { appended, unchanged } counts.
  */
 export function record(sessions, scannerVersion, home) {
   if (!sessions || sessions.length === 0) return { appended: 0, unchanged: 0 };
 
-  const ver = scannerVersion ?? "unknown";
+  // R1 vs R2 split:
+  //   R1 (dedup): record() must not append a row whose (cli, sid, total) is
+  //       already represented in the ledger — or the file grows without bound.
+  //   R2 (no-merge): lifetime() must not Math.max two rows from scans that
+  //       could not hash themselves — a value meaning "I do not know" must not
+  //       behave like a value.
+  //
+  // For a real scanner version both requirements are satisfied by the stable
+  // version string: same-version / same-or-higher total → skip; rows with the
+  // same version share a rank bucket and field-wise-max correctly.
+  //
+  // For a null scanner version the requirements pull in opposite directions:
+  //   - R1 needs a stable key to find existing rows and skip duplicates.
+  //   - R2 needs each written row to have a UNIQUE scanner tag so lifetime()
+  //     never puts two null-scanner rows in the same rank bucket.
+  //
+  // Solution: null-scanner rows are written with a fresh unhashable-<uuid>
+  // tag each time they are appended (satisfying R2).  Dedup (R1) is handled
+  // separately: skip if any existing unhashable-* row for this (cli, sid)
+  // already carries exactly this total.  An EQUAL total means "same data,
+  // same machine, nothing changed" — do not re-append.  A DIFFERENT total
+  // means a legitimately new observation (more turns, or a different machine's
+  // count) — append with a fresh UUID so it lands in its own rank bucket.
+  const isNullScanner = scannerVersion == null;
   const existing = rows(home);
 
-  // Build: (cli, sid) -> highest total we have already recorded for this
-  // specific scanner version. We only skip a session if the same scanner
-  // already has an equal-or-higher total — a different scanner's row does
-  // NOT prevent recording.
-  const alreadyByVer = new Map(); // `${cli}\0${sid}\0${ver}` -> max total seen
-
+  // For known-version rows: (cli, sid, version) -> max total seen.
+  // We skip a session only when the same scanner already has an equal-or-higher
+  // total; a different scanner's row does NOT prevent recording.
+  const alreadyByVer = new Map();
   for (const r of existing) {
     if (!r.cli || !r.session_id) continue;
     const v = r.scanner ?? "pre-versioning";
     const key = `${r.cli}\0${r.session_id}\0${v}`;
     const prev = alreadyByVer.get(key) ?? -1;
     alreadyByVer.set(key, Math.max(prev, intOr0(r.total)));
+  }
+
+  // For null-scanner rows: (cli, sid) -> Set of totals already written as
+  // unhashable-*.  Skip only when this exact total is already present —
+  // a different total is a new observation and must be written.
+  const unhashableTotals = new Map();
+  if (isNullScanner) {
+    for (const r of existing) {
+      if (!r.cli || !r.session_id) continue;
+      if (typeof r.scanner !== "string" || !r.scanner.startsWith("unhashable-")) continue;
+      const k = `${r.cli}\0${r.session_id}`;
+      if (!unhashableTotals.has(k)) unhashableTotals.set(k, new Set());
+      unhashableTotals.get(k).add(intOr0(r.total));
+    }
   }
 
   const p = ledgerPath(home);
@@ -203,12 +285,30 @@ export function record(sessions, scannerVersion, home) {
     const total = intOr0(s.total) || FIELDS.reduce((a, f) => a + intOr0(tk[f]), 0);
     if (total === 0) continue; // nothing to record
 
-    const verKey = `${cli}\0${sid}\0${ver}`;
-    const prevTotal = alreadyByVer.get(verKey) ?? -1;
-
-    if (prevTotal >= total) {
-      unchanged += 1;
-      continue;
+    let ver;
+    if (isNullScanner) {
+      const seenTotals = unhashableTotals.get(`${cli}\0${sid}`) ?? new Set();
+      if (seenTotals.has(total)) {
+        unchanged += 1;
+        continue;
+      }
+      // Fresh unique tag: each appended unhashable row gets its own rank
+      // bucket in lifetime(), so two different null-scanner observations
+      // can never Math.max into each other.
+      ver = `unhashable-${randomUUID()}`;
+      // Track within this call to prevent double-appending for the same
+      // (cli, sid, total) pair appearing twice in the sessions array.
+      if (!unhashableTotals.has(`${cli}\0${sid}`)) unhashableTotals.set(`${cli}\0${sid}`, new Set());
+      unhashableTotals.get(`${cli}\0${sid}`).add(total);
+    } else {
+      ver = scannerVersion;
+      const verKey = `${cli}\0${sid}\0${ver}`;
+      const prevTotal = alreadyByVer.get(verKey) ?? -1;
+      if (prevTotal >= total) {
+        unchanged += 1;
+        continue;
+      }
+      alreadyByVer.set(verKey, total); // prevent double-appending in same call
     }
 
     const row = {
@@ -225,7 +325,6 @@ export function record(sessions, scannerVersion, home) {
       recorded_at: new Date().toISOString(),
     };
     lines.push(JSON.stringify(row));
-    alreadyByVer.set(verKey, total); // prevent double-appending in same call
     appended += 1;
   }
 
