@@ -174,6 +174,60 @@ test("--sessions obeys --no-projects, and the file says which of the two it did"
   );
 });
 
+test("--card writes an SVG that is actually an SVG", () => {
+  // Bob's branch found this one and mine had missed it: --card is named in
+  // comments and in the README but nothing had ever run it and looked at the
+  // file. A renderer returning "" leaves a 0-byte file that existsSync calls a
+  // success.
+  const home = fakeHome();
+  const r = run(home, [...SCAN, "--no-snapshot", "--card"]);
+  assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+  const file = reports(home).find((f) => /^star-.*\.svg$/.test(f));
+  assert.ok(file, `no star-*.svg written; reports dir holds: ${reports(home).join(", ")}`);
+  const svg = readFileSync(join(home, ".starreckon", "reports", file), "utf8");
+  assert.match(svg, /<svg/, "--card wrote something that is not an SVG");
+  assert.match(svg, /<\/svg>/, "--card wrote a truncated SVG");
+  assert.ok(svg.length > 400, `the card is ${svg.length} bytes — an empty render, not a card`);
+});
+
+test("--reset-audit with no value DELETES the run logs and records the deletion", () => {
+  // The "opt" form. cli-ux.test.mjs covers --reset-audit=WHY; the bare spelling
+  // — the one a person types — was never run. It is the only DELETE in the tool
+  // that removes an audit trail, so what replaces the trail is the whole point.
+  const home = fakeHome();
+  assert.equal(run(home, [...SCAN, "--no-snapshot"]).status, 0);
+  assert.equal(run(home, [...SCAN, "--no-snapshot"]).status, 0);
+  const auditDir = join(home, ".starreckon", "audit");
+  const before = readdirSync(auditDir);
+  assert.ok(before.length >= 2, `expected at least 2 run logs, found ${before.length}`);
+
+  const r = run(home, ["--reset-audit"]);
+  assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+  const after = readdirSync(auditDir);
+  // Every log that existed is gone…
+  for (const f of before)
+    assert.ok(!after.includes(f), `--reset-audit left ${f} behind`);
+  // …and what stands in their place records the deletion, so the history of
+  // how much history there was does not vanish with it. Each field is asserted
+  // on its own: an alternation over "sha256 OR removed" would pass with the
+  // hashes dropped, and the hash is the whole reason a kept copy can still be
+  // matched to the chain.
+  assert.ok(after.length >= 1, "--reset-audit left no genesis record");
+  const genesis = JSON.parse(readFileSync(join(auditDir, after.sort()[0]), "utf8"));
+  const reset = genesis.audit_reset;
+  assert.ok(reset, `the genesis carries no audit_reset block: ${JSON.stringify(genesis).slice(0, 300)}`);
+  assert.equal(reset.removed_logs, before.length, "the genesis miscounts what it removed");
+  assert.equal(reset.removed.length, before.length);
+  for (const row of reset.removed) {
+    assert.ok(before.includes(row.file), `the genesis names a log that was not there: ${row.file}`);
+    assert.match(String(row.sha256), /^[0-9a-f]{64}$/, `no sha256 kept for ${row.file} — a saved copy can no longer be matched`);
+  }
+  assert.match(r.stdout, /removed /, "the reset did not say what it removed");
+  assert.match(r.stdout, /run counter was NOT rolled back/i,
+    "the reset must say the counter survived, or a wiped chain looks like a fresh install");
+  assert.match(r.stdout, /nothing was scanned/i);
+});
+
 test("--report writes a report file with the compare bars in it", () => {
   const home = fakeHome();
   const r = run(home, ["--yes", "--no-pace", "--no-providers", "--report"]);
@@ -400,8 +454,67 @@ test("[Z] re-run spawns a second full scan and its run log lands on disk", () =>
   // so it completes on its own and the parent returns.
   const r = run(home, [...SCAN, "--no-snapshot"], { input: "Z\n", interactive: true });
   assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+  // The parent must wait for the child and then leave. A hang shows up as a
+  // killed process, not a failed assertion — worth naming separately, because
+  // spawnSync reports it in `signal` and nowhere else. (Taken from Bob's
+  // branch; it catches a different failure than the log count below.)
+  assert.equal(r.signal, null, "[Z] hung the parent process");
   const after = readdirSync(join(home, ".starreckon", "audit")).length;
   assert.ok(after >= before + 2, `[Z] did not spawn a fresh scan: ${before} audit logs before, ${after} after`);
+});
+
+test("[P] prove-it runs all three steps and never claims PASS on a partial result", () => {
+  // [P] EXECUTES: a TCP probe outside the sandbox, the same probe inside it, and
+  // a confined scan. The outcomes depend on the machine — this box has no
+  // sandbox, so steps 2 and 3 come back null and the verdict is INCONCLUSIVE —
+  // but the STRUCTURE does not, and neither does the rule connecting the two.
+  //
+  // So the assertion is the invariant rather than the outcome: all three steps
+  // are reported, a verdict is printed, and PASS is printed ONLY when all three
+  // conditions actually held. A loosened pass condition fails this on any
+  // machine, including one where the proof genuinely passes.
+  const home = fakeHome();
+  const r = run(home, [...SCAN, "--no-snapshot"], { input: "P\nQ\n", interactive: true });
+  assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+  for (const step of ["1/3", "2/3", "3/3"])
+    assert.ok(r.stdout.includes(step), `[P] did not report step ${step}`);
+  assert.match(r.stdout, /control (VALID|INVALID)/, "[P] did not report whether the control was valid");
+  assert.match(r.stdout, /\bPASS\b|INCONCLUSIVE/, "[P] printed no verdict");
+
+  if (/\bPASS\b/.test(r.stdout)) {
+    assert.match(r.stdout, /control VALID/, "PASS was printed with an invalid control");
+    const exits = [...r.stdout.matchAll(/exit (\S+)/g)].map((m) => m[1]);
+    assert.ok(exits.length >= 2, "PASS was printed without both exit codes reported");
+    for (const e of exits.slice(0, 2))
+      assert.equal(e, "0", `PASS was printed while a step exited ${e}`);
+  }
+  // And it must keep saying this is the weaker form, whichever way it went.
+  assert.match(r.stdout, /weaker/i, "[P] stopped marking itself as the weaker proof");
+  assert.match(r.stdout, /bin\/starreckon-proof\.sh/, "[P] must point at the strong form");
+});
+
+test("--ledger is accepted, and writes nothing when there is nothing it can record", () => {
+  // Bob's branch found the shape of this and asserted only that the flag is
+  // accepted. The behaviour worth pinning is the one that surprises: --ledger
+  // records `providers.perSession`, and the Claude half only when --accounts
+  // also ran. On a Claude-only home with --no-providers there is nothing to
+  // record, ledgerRecord() returns early, and NO ledger file appears — a run
+  // that exits 0 having recorded nothing at all.
+  //
+  // That is the honest contract, so it is what is asserted. If --ledger ever
+  // starts recording the Claude sessions a plain scan already read, this fails
+  // and the promise ("transcript deletion cannot lower the lifetime total")
+  // gets to be re-read against what the flag does.
+  const home = fakeHome();
+  const r = run(home, ["--yes", "--no-wrapped", "--no-pace", "--no-snapshot", "--no-providers", "--ledger"]);
+  assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+  const dir = join(home, ".starreckon");
+  const ledgerFiles = readdirSync(dir).filter((f) => /ledger/i.test(f));
+  assert.deepEqual(
+    ledgerFiles,
+    [],
+    `--ledger now writes ${ledgerFiles.join(", ")} for a Claude-only scan — the contract changed; assert what it records`
+  );
 });
 
 // ── 6. POST /submit under --serve-collect ───────────────────────────────────
