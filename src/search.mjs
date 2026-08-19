@@ -22,6 +22,7 @@ import { spawn, spawnSync } from "node:child_process"; // launcher — only spaw
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { logLayerRun, searchDetail, scheduledRun } from "./layerlog.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const SEARCH_PY = join(__dirname, "search.py");
@@ -34,7 +35,34 @@ export const SEARCH_PY = join(__dirname, "search.py");
  * opts.roots  — extra home root paths passed as --roots to search.py
  */
 export function runSearch(argv, { python = "python3", roots = [] } = {}) {
+  // EVERY model invocation this program makes passes through here — the
+  // `search` subcommand, the [I] and [A] doors' setup download, and --full's
+  // auto-index — which is why the log hook is here and not at the call sites.
+  // A hook at three call sites is a hook that will one day be four call sites
+  // and three hooks. The consent screen promises a log for EVERY run of the
+  // layer, and this is the only place that promise can be kept by construction.
+  //
+  // The query itself is never recorded: searchDetail() reduces it to a length
+  // and a hash prefix. The reasoning is in the masking note in layerlog.mjs.
+  const { event, detail } = searchDetail(argv);
+  const scheduled = scheduledRun();
+  const trigger = scheduled?.layer === "models" ? "schedule" : "interactive";
+  const started = Date.now();
+  const log = (outcome, extra) =>
+    logLayerRun({
+      layer: "models",
+      event,
+      trigger,
+      outcome,
+      exit_code: Number.isInteger(extra?.exit_code) ? extra.exit_code : null,
+      duration_ms: Date.now() - started,
+      detail: { ...detail, ...(extra?.detail ?? {}) },
+    });
+
   if (!existsSync(SEARCH_PY)) {
+    // A model run that could not start is still an account of the layer: the
+    // alternative is a silent gap that reads exactly like "nobody searched".
+    log("failed", { detail: { error: "search.py not found" } });
     return Promise.reject(new Error(`search.py not found at ${SEARCH_PY}`));
   }
   const rootArgs = roots.flatMap((r) => ["--roots", r]);
@@ -42,8 +70,14 @@ export function runSearch(argv, { python = "python3", roots = [] } = {}) {
     stdio: "inherit",
   });
   return new Promise((resolve, reject) => {
-    child.on("error", reject);
-    child.on("close", resolve);
+    child.on("error", (e) => {
+      log("failed", { detail: { error: String(e?.code ?? e?.message ?? e) } });
+      reject(e);
+    });
+    child.on("close", (code) => {
+      log(code === 0 ? "ok" : "failed", { exit_code: code });
+      resolve(code);
+    });
   });
 }
 

@@ -164,6 +164,7 @@ import { renderCard } from "./card.mjs";
 import { buildCardsSafe, renderAll, box, shareQrLines } from "./wrapped.mjs";
 import { writeSchedule, removeSchedule, daemonStatus, describeSchedule, PROTECT_LABEL } from "./daemon.mjs";
 import { buildReceipt, renderReceipt } from "./receipt.mjs";
+import { armScheduledRunLog, scheduledRun, TRIGGER_ENV } from "./layerlog.mjs";
 import { scanAllProviders, scanPortedReaders, scannerVersion } from "./scanners.mjs";
 import { discoverAccounts, floorTotals } from "./accounts.mjs";
 import { readContact, writeContact, FIELDS as CONTACT_FIELDS, KEYS as CONTACT_KEYS, LABELS as CONTACT_LABELS } from "./contact.mjs";
@@ -458,6 +459,8 @@ function printHelp() {
   console.log(`\n${B}ENVIRONMENT${R}`);
   console.log(`  STARRECKON_DEBUG=1             show full stack on crash`);
   console.log(`  STARRECKON_FORCE_INTERACTIVE=1 force the menu in non-TTY (testing only)`);
+  console.log(`  ${TRIGGER_ENV}=daemon:scan   set by the schedule files, not by you: it is`);
+  console.log(`                                what makes a scheduled run write its log`);
   console.log(`  DEADRECKON_MODEL_CACHE=<dir>  shared HuggingFace model cache`);
   console.log(`\n${D}zero dependencies · zero network calls on the scan path · source: github.com/Alexander-Sorrell-IT/starreckon${R}\n`);
 }
@@ -467,6 +470,23 @@ if (flag("-h") || flag("--help")) {
   printHelp();
   process.exit(0);
 }
+
+// ── the daemon layer's own accounting ───────────────────────────────────────
+//
+// ARMED HERE, ABOVE EVERY SUBCOMMAND, because the two scheduled jobs land in
+// two different branches — `protect` exits at its own branch below, and the
+// monthly scan falls through to main() — and a hook placed after either one
+// would silently miss the other. This is also above startAudit(), which the
+// protect and search branches never reach at all (they exit first), so the
+// audit log is not an option for this and never was.
+//
+// Only a run the SCHEDULE FILE marked is recorded. A `starreckon protect` a
+// person types and watches is a foreground command whose account is the
+// terminal in front of them; writing a file for it would mean writing files on
+// machines where nobody turned any optional layer on, which is the opposite of
+// what the consent screen agreed. The models layer's runs are recorded inside
+// runSearch() instead — every model invocation goes through that one door.
+armScheduledRunLog(scheduledRun());
 
 // `starreckon verify` — the adversarial self-check. Runs the static scan, the
 // audit chain, the output scrub, and the confinement report, and prints each
@@ -524,6 +544,16 @@ if (subcommand === "daemon") {
     console.log(`platform:  ${st.platform}`);
     console.log(`scan job:    ${st.installed ? `${maskPath(st.file)} (written)` : "not written"}`);
     console.log(`protect job: ${st.protectInstalled ? `${maskPath(st.protectFile)} (written)` : "not written — numbers will degrade as transcripts age"}`);
+    // A schedule written before the log marker existed still runs and still
+    // works — it just cannot be told apart from a command you typed, so its
+    // runs write no log and the consent screen's promise goes unkept for
+    // exactly the runs nobody watches. Say so, and say the one-word fix.
+    const stale = [st.installed && st.logged === false && "scan", st.protectInstalled && st.protectLogged === false && "protect"].filter(Boolean);
+    if (stale.length)
+      console.log(
+        `\n${DIM}the ${stale.join(" and ")} job predates the run log: it carries no ${TRIGGER_ENV},${RESET}\n` +
+        `${DIM}so its runs write nothing under ~/.starreckon/logs. rewrite it: starreckon daemon on${RESET}`
+      );
     if (st.installed || st.protectInstalled) {
       console.log(`\n${DIM}whether jobs are LOADED is the scheduler's business, not this tool's.${RESET}`);
       console.log(`${DIM}check: ${st.platform === "darwin" ? `launchctl list | grep starreckon` : "systemctl --user list-timers"}${RESET}`);
