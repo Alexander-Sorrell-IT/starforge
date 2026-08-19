@@ -831,6 +831,9 @@ export function finalize(stats) {
   const projects = new Map();
   const models = new Map();
   const monthly = new Map();
+  // Sessions that reached NO monthly bucket, counted rather than dropped. See
+  // undated_sessions below.
+  let undated = 0;
   for (const [, s] of sessions) {
     const dur = activeDurationMs(s.minutes);
     durationMs += dur;
@@ -876,11 +879,34 @@ export function finalize(stats) {
         }
       }
       monthly.set(key, b);
+    } else {
+      undated += 1;
     }
   }
   const streaks = computeStreaks(stats.activeDays);
   return {
     total_sessions: stats.sessions.size,
+    // A SESSION IN ONE FIGURE AND INVISIBLE IN ANOTHER.
+    //
+    // The loop above files a session into the month it STARTED in, and only if
+    // that start is a finite timestamp. A session without one still counts in
+    // total_sessions and its tokens are still in the grand totals above — but
+    // it reaches no monthly bucket, so it is in no month's star, no snapshot,
+    // and no lifetime figure derived from the timeline. Before this the gap had
+    // no name and read as an arithmetic fault in the tool.
+    //
+    // The invariant this field exists to make checkable, from the report alone:
+    //
+    //   total_sessions === sum(monthly_buckets[].sessions) + undated_sessions
+    //
+    // ZERO IS A MEASUREMENT. Both transcript parsers drop a row whose timestamp
+    // will not parse, so on a Claude/Codex corpus this is normally 0 — and that
+    // is worth printing, because "nothing is undated" and "this build never
+    // looked" are the same blank line otherwise. The undated sessions that
+    // actually carry tokens on a real machine come from the ported readers,
+    // which emit `start: null` on purpose for a session whose transcript is
+    // gone; cli.mjs counts those alongside this number.
+    undated_sessions: undated,
     active_days: stats.activeDays.size,
     total_duration_hours: +(durationMs / 3.6e6).toFixed(1),
     total_input_tokens: totIn,
