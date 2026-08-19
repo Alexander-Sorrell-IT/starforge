@@ -328,6 +328,46 @@ test("antigravity: raw sqlite reader reads table columns directly", (t) => {
   assert.throws(() => sqliteColumnRaw(db, "nope", "x"));
 });
 
+// The fixture above is two short rows: one leaf page, no overflow. That leaves
+// the two branches a REAL Antigravity store always takes untouched — the
+// interior-page walk (scanners.mjs:876-880) and the overflow-page chain
+// (892-906) — and those decide which rows and how many bytes are decoded, which
+// is to say they decide a token total. Both were verified byte-identical to
+// node:sqlite here; this pins them so they stay that way.
+test("antigravity: raw sqlite reader spans interior pages and overflow chains", (t) => {
+  let hasSqlite3 = true;
+  try { execFileSync("sqlite3", ["--version"], { stdio: "ignore" }); } catch { hasSqlite3 = false; }
+  if (!hasSqlite3) return t.skip("sqlite3 CLI not available to build fixture");
+  const dir = mkHome();
+
+  // 4,000 rows at a 4 KB page size is far past one leaf: the table root becomes
+  // an interior page and every row hangs off a child.
+  const many = join(dir, "many.db");
+  let sql = "PRAGMA page_size=4096;\nCREATE TABLE steps (metadata BLOB);\nBEGIN;\n";
+  for (let i = 0; i < 4000; i++) {
+    sql += `INSERT INTO steps VALUES (x'${i.toString(16).padStart(8, "0")}');\n`;
+  }
+  sql += "COMMIT;\n";
+  execFileSync("sqlite3", [many], { input: sql });
+  const rows = sqliteColumnRaw(many, "steps", "metadata");
+  assert.equal(rows.length, 4000, "a reader that stops at the root page returns a fraction of these");
+  assert.equal(Buffer.from(rows[0]).toString("hex"), "00000000");
+  assert.equal(Buffer.from(rows[3999]).toString("hex"), "00000f9f");
+
+  // One 60 KB blob at a 4 KB page size: the record cannot fit in its cell and
+  // spills into a chain of overflow pages that must be walked and rejoined.
+  const big = join(dir, "big.db");
+  const payload = Buffer.alloc(60000);
+  for (let i = 0; i < payload.length; i++) payload[i] = i & 0xff;
+  execFileSync("sqlite3", [big], {
+    input: `PRAGMA page_size=4096;\nCREATE TABLE steps (metadata BLOB);\n`
+         + `INSERT INTO steps VALUES (x'${payload.toString("hex")}');\n`,
+  });
+  const [blob] = sqliteColumnRaw(big, "steps", "metadata");
+  assert.equal(blob.length, 60000, "a reader that keeps only the in-cell prefix returns a truncated blob");
+  assert.ok(Buffer.from(blob).equals(payload), "the rejoined overflow chain must be byte-exact");
+});
+
 // ---- shared machinery ------------------------------------------------------
 
 test("providerOf prefix table", () => {

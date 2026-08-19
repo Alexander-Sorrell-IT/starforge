@@ -159,6 +159,30 @@ test("computeToolRelationship: loyalist and switch", () => {
   assert.equal(computeToolRelationship([]).kind, "insufficient");
 });
 
+// The third branch. computeToolRelationship has three outcomes and the test
+// above pinned two of them; `polyglot` was reached by no test in the suite, and
+// statspage.mjs:407 publishes its `share` as a percentage on the stats page.
+// Doubling the denominator in that branch changed the rendered figures from
+// 56%/44% to 28%/22% and all 813 tests stayed green.
+test("computeToolRelationship: polyglot shares are the fraction of ALL sessions", () => {
+  const mk = (month, source) => ({ start_ts: Date.parse(`${month}-05T10:00:00Z`), source });
+  // Dominant flips codex -> claude_code -> codex, so it is neither a loyalist
+  // nor a clean switch (first and last dominant agree): the polyglot fallback.
+  const rel = computeToolRelationship([
+    mk("2026-05", "codex"), mk("2026-05", "codex"), mk("2026-05", "claude_code"),
+    mk("2026-06", "claude_code"), mk("2026-06", "claude_code"), mk("2026-06", "codex"),
+    mk("2026-07", "codex"), mk("2026-07", "codex"), mk("2026-07", "claude_code"),
+  ]);
+  assert.equal(rel.kind, "polyglot");
+  assert.deepEqual(rel.tools, [
+    { tool: "Codex", share: 0.56 },      // 5 of 9
+    { tool: "Claude Code", share: 0.44 },// 4 of 9
+  ]);
+  // Ordered by session count, and the shares are a partition of the whole.
+  assert.ok(rel.tools.every((t, i, a) => i === 0 || a[i - 1].share >= t.share));
+  assert.ok(Math.abs(rel.tools.reduce((a, t) => a + t.share, 0) - 1) < 0.02);
+});
+
 // ---- collectProfileSignals on temp fixtures --------------------------------
 
 test("collectProfileSignals: counts prompts, filters low-signal, dedups usage, no text stored", async () => {
@@ -208,6 +232,90 @@ test("collectProfileSignals: counts prompts, filters low-signal, dedups usage, n
     assert.ok(!blob.includes("build pipeline"));
     assert.deepEqual(sig.active_days, ["2026-08-01"]);
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A killed process leaves a half-written final line, and rotation can leave one
+// mid-file. Nothing in the suite fed collectProfileSignals a line that fails
+// JSON.parse, so the catch that skips it was never executed: rethrowing there
+// instead of returning dropped this fixture from 650 tokens to 230 and from 5
+// events to 2, with all 813 tests green.
+test("collectProfileSignals: an unparseable line is skipped, not the rest of the file", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "starreckon-profile-"));
+  try {
+    const p = join(dir, "sess-truncated.jsonl");
+    const row = (i, out) => claudeLine({
+      type: "assistant", timestamp: `2026-07-1${i}T10:00:00Z`, sessionId: "trunc-1",
+      message: { id: `m${i}`, model: "claude-sonnet-4-5",
+                 usage: { input_tokens: 100, output_tokens: out } },
+    });
+    // The bad line sits in the MIDDLE: a reader that aborts on it keeps what it
+    // already read, so the loss is silent and partial rather than an empty file.
+    writeFileSync(p, [
+      row(1, 10), row(2, 20), '{"type":"assistant","timesta', row(3, 30), row(4, 40), row(5, 50),
+    ].join("\n") + "\n");
+    // collectCodexFile carries its own copy of this try/catch, and a fix that
+    // lands in one reader and not the other is how this class of bug survives.
+    const cx = join(dir, "rollout-truncated.jsonl");
+    writeFileSync(cx, [
+      claudeLine({ type: "session_meta", timestamp: "2026-07-11T10:00:00Z",
+                   payload: { id: "trunc-codex", model: "gpt-5-codex" } }),
+      '{"type":"event_msg","timesta',
+      claudeLine({ type: "event_msg", timestamp: "2026-07-12T10:00:00Z",
+                   payload: { info: { total_token_usage: {
+                     input_tokens: 5000, cached_input_tokens: 1000, output_tokens: 400 } } } }),
+    ].join("\n") + "\n");
+
+    const sig = await collectProfileSignals([
+      { source: "claude_code", path: p },
+      { source: "codex", path: cx },
+    ]);
+    assert.equal(sig.total_events, 7, "seven well-formed rows across both files, two skipped");
+    const s = sig.sessions.find((x) => x.id.startsWith("trunc-1"));
+    assert.equal(s.tok.in, 500);
+    assert.equal(s.tok.out, 150);
+    // The codex counters are cumulative, so the row AFTER the bad line is the
+    // only one that carries the answer: lose it and the session reads as zero.
+    const c = sig.sessions.find((x) => x.source === "codex");
+    assert.equal(c.tok.in, 4000);
+    assert.equal(c.tok.out, 400);
+    assert.equal(c.tok.cr, 1000);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// computeToolRelationship is only ever handed hand-built session objects, so
+// nothing enforces that collectProfileSignals emits the shape it reads. Swapping
+// start_ts and end_ts at the producer left every one of the 813 tests green
+// while filing a session that began 20:00 on 31 Jul under August instead.
+test("collectProfileSignals: sessions carry a start that precedes their end", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "starreckon-profile-"));
+  const tz = process.env.TZ;
+  try {
+    process.env.TZ = "UTC";
+    const p = join(dir, "sess-boundary.jsonl");
+    const at = (ts) => claudeLine({
+      type: "assistant", timestamp: ts, sessionId: "boundary-1",
+      message: { id: ts, model: "claude-sonnet-4-5",
+                 usage: { input_tokens: 10, output_tokens: 1 } },
+    });
+    // One session across a month boundary — the case where start-vs-end decides
+    // which month the session is filed under.
+    writeFileSync(p, [at("2026-07-31T20:00:00Z"), at("2026-08-01T02:00:00Z")].join("\n") + "\n");
+    const sig = await collectProfileSignals([{ source: "claude_code", path: p }]);
+    for (const s of sig.sessions) assert.ok(s.start_ts <= s.end_ts, "start_ts must not follow end_ts");
+    // Fed straight from the producer, not from a fixture: the month is the
+    // month the session STARTED in.
+    const rel = computeToolRelationship([
+      ...sig.sessions,
+      { start_ts: Date.parse("2026-09-05T10:00:00Z"), source: "codex" },
+    ]);
+    assert.equal(rel.kind, "switch");
+    assert.equal(rel.timeline[0].month, "2026-07");
+  } finally {
+    process.env.TZ = tz;
     rmSync(dir, { recursive: true, force: true });
   }
 });
