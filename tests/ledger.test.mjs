@@ -311,3 +311,249 @@ test("lifetime by_cli_marked carries marker per cli", () => {
   assert.ok(byCli.includes("gemini†"));
   rmSync(home, { recursive: true, force: true });
 });
+
+// ── null-scanner sentinel tests ───────────────────────────────────────────────
+// These tests enforce the discipline: a value meaning "I do not know" (null
+// scanner version) must not behave like a value.  Two unhashable rows must
+// never field-wise-max into each other, must not merge with real-hash rows, and
+// must not merge with pre-versioning rows.
+
+test("null-scanner (a): two rows for same session that both failed to hash do NOT field-wise-max", () => {
+  // Two separate record() calls with null scannerVersion simulate two machines
+  // (or two runs) that both failed to compute the scanner hash.  Each call gets
+  // its own unique unhashable-<uuid> sentinel, so they land in different rank
+  // buckets and the LAST-SEEN one wins rather than their numbers being maxed.
+  const home = tmp();
+  // First failed-hash scan: inflated count 9000
+  record([makeSession({ session_id: "s1", total: 9000,
+    tokens: { input_tokens: 9000, cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0, output_tokens: 0 } })],
+    null, home);
+  // Second failed-hash scan: lower count 1000 (the "real" number after the bug
+  // was fixed in the source, but the hash still can't be computed)
+  record([makeSession({ session_id: "s1", total: 1000,
+    tokens: { input_tokens: 1000, cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0, output_tokens: 0 } })],
+    null, home);
+  const lt = lifetime(home);
+  // The second unhashable sentinel is last-seen, so 1000 wins — NOT max(9000,1000).
+  assert.equal(lt.total, 1000, `expected 1000 (last-seen sentinel wins) but got ${lt.total}`);
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("null-scanner (b): a row that failed to hash does NOT merge with a real-hash row", () => {
+  const home = tmp();
+  // Real-hash scan first: count 5000
+  record([makeSession({ session_id: "s1", total: 5000,
+    tokens: { input_tokens: 5000, cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0, output_tokens: 0 } })],
+    "sha256-abc123def456", home);
+  // Failed-hash scan second: count 9999
+  record([makeSession({ session_id: "s1", total: 9999,
+    tokens: { input_tokens: 9999, cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0, output_tokens: 0 } })],
+    null, home);
+  const lt = lifetime(home);
+  // The unhashable sentinel is last-seen, so its 9999 is what lifetime returns.
+  // The critical assertion: the two rows are in DIFFERENT buckets — they were
+  // NOT maxed together.  We verify by checking the rows directly.
+  const r = rows(home);
+  assert.equal(r.length, 2, "expected exactly 2 rows");
+  const scanners = r.map(row => row.scanner);
+  assert.ok(scanners.includes("sha256-abc123def456"), "real-hash row must be present");
+  assert.ok(scanners.some(s => s.startsWith("unhashable-")), "unhashable row must be present");
+  // They must carry different scanner tags (different buckets)
+  assert.notEqual(scanners[0], scanners[1], "real-hash and unhashable must have different scanner tags");
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("null-scanner (c): a row that failed to hash does NOT merge with a pre-versioning row", () => {
+  // A pre-versioning row has no scanner field (written before versioning existed).
+  // It maps to the "pre-versioning" sentinel in lifetime().
+  // A null-scanner row must NOT collapse into that same bucket.
+  const home = tmp();
+  // Write a pre-versioning row directly (no scanner field) — writeFileSync is
+  // already imported at the top of this file.
+  const lp = ledgerPath(home);
+  writeFileSync(lp,
+    JSON.stringify({ cli: "claude", session_id: "s1", total: 8000,
+      input_tokens: 8000, cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0, output_tokens: 0 }) + "\n");
+  // Now record with null scannerVersion — must get its own unique sentinel
+  record([makeSession({ session_id: "s1", total: 200,
+    tokens: { input_tokens: 200, cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0, output_tokens: 0 } })],
+    null, home);
+  const r = rows(home);
+  assert.equal(r.length, 2, "expected exactly 2 rows");
+  const scanners = r.map(row => row.scanner);
+  // Pre-versioning row has scanner === undefined (absent in JSON → undefined in JS)
+  assert.ok(scanners[0] === undefined || scanners[0] === null,
+    "first row must be pre-versioning (no scanner field)");
+  assert.ok(scanners[1]?.startsWith("unhashable-"),
+    "second row must carry an unhashable-<uuid> sentinel");
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("null-scanner (d): same real hash — field-wise-max unchanged (existing behaviour)", () => {
+  // Two observations from the SAME real scanner hash — this is a re-scan after
+  // more turns.  The higher number per field must still win (correct, deliberate).
+  const home = tmp();
+  const REAL_HASH = "sha256-deadbeef1234567890";
+  record([makeSession({ session_id: "s1", total: 800,
+    tokens: { input_tokens: 600, cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0, output_tokens: 200 } })],
+    REAL_HASH, home);
+  record([makeSession({ session_id: "s1", total: 1200,
+    tokens: { input_tokens: 900, cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0, output_tokens: 300 } })],
+    REAL_HASH, home);
+  const lt = lifetime(home);
+  // Both rows share the same real hash → same rank → field-wise max → 1200
+  assert.equal(lt.total, 1200,
+    `expected field-wise-max of 1200 for same real hash, got ${lt.total}`);
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("null-scanner (e): record() called 3 times with null and same session appends ONE row, not three", () => {
+  // Regression: the original fix used randomUUID() per call, making every call
+  // look like a new version that had never been recorded.  result: appended=1,1,1
+  // and the file grew without bound.  The correct behaviour: first call writes,
+  // subsequent calls with the same total are unchanged.
+  const home = tmp();
+  const sess = makeSession({ session_id: "s-repeat", total: 1000,
+    tokens: { input_tokens: 1000, cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0, output_tokens: 0 } });
+
+  const r1 = record([sess], null, home);
+  const r2 = record([sess], null, home);
+  const r3 = record([sess], null, home);
+
+  assert.equal(r1.appended, 1, "first call must append");
+  assert.equal(r1.unchanged, 0);
+  assert.equal(r2.appended, 0, "second call must not append (same total)");
+  assert.equal(r2.unchanged, 1);
+  assert.equal(r3.appended, 0, "third call must not append (same total)");
+  assert.equal(r3.unchanged, 1);
+  assert.equal(rows(home).length, 1, "file must contain exactly one row");
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("null-scanner (f): null, real-hash, null — three distinct observations, no field-wise-max between null runs", () => {
+  // Three interleaved records: first null (total 1000), a real-hash run
+  // (total 2000), then a second null with a DIFFERENT total (1500, simulating
+  // more turns discovered by a machine that cannot hash).  All three must land
+  // as separate rows; the two null rows must NOT field-wise-max together.
+  const home = tmp();
+  const REAL_HASH = "sha256-realversion001";
+
+  const r1 = record([makeSession({ session_id: "sf", total: 1000,
+    tokens: { input_tokens: 1000, cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0, output_tokens: 0 } })],
+    null, home);
+  const r2 = record([makeSession({ session_id: "sf", total: 2000,
+    tokens: { input_tokens: 2000, cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0, output_tokens: 0 } })],
+    REAL_HASH, home);
+  const r3 = record([makeSession({ session_id: "sf", total: 1500,
+    tokens: { input_tokens: 1500, cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0, output_tokens: 0 } })],
+    null, home);
+
+  assert.equal(r1.appended, 1);
+  assert.equal(r2.appended, 1);
+  assert.equal(r3.appended, 1, "second null with different total must be appended");
+
+  const allRows = rows(home);
+  assert.equal(allRows.length, 3, "all three observations must be distinct rows");
+
+  const scanners = allRows.map(row => row.scanner);
+  // First null row: unhashable-<uuid>
+  assert.ok(scanners[0].startsWith("unhashable-"), "first row must be an unhashable sentinel");
+  // Real-hash row
+  assert.equal(scanners[1], REAL_HASH, "second row must carry the real hash");
+  // Second null row: a DIFFERENT unhashable-<uuid>
+  assert.ok(scanners[2].startsWith("unhashable-"), "third row must be an unhashable sentinel");
+  assert.notEqual(scanners[0], scanners[2], "the two null rows must have DIFFERENT sentinel tags");
+
+  // lifetime() must not merge the two unhashable rows — last-seen wins
+  const lt = lifetime(home);
+  // The second null row (total 1500) is last-seen, so it beats the first (1000).
+  // The real-hash row (2000) is at index 1, null-uuid2 is at index 2 → higher rank.
+  assert.equal(lt.total, 1500,
+    `expected 1500 (last null row wins over earlier null, real-hash is older), got ${lt.total}`);
+  rmSync(home, { recursive: true, force: true });
+});
+
+// ── the conditional in lifetime()'s docstring ────────────────────────────────
+// src/ledger.mjs used to promise, flat: "Among all rows from that version, take
+// the field-wise maximum so a partial write cannot shrink a session." The max
+// is real, but only among rows that SHARE a scanner tag. Rows whose scanner
+// version could not be determined are tagged unhashable-<uuid>, fresh per row,
+// so they share a bucket with nothing and are SUPERSEDED, never maxed — the
+// deliberate trade that stops a corrected over-count from freezing forever.
+//
+// This pins both halves in one test, with the SAME two numbers in the SAME
+// order, so the only thing that differs is whether the version was knowable:
+// 9000 then 1000 → 9000 when the tag is known, 1000 when it is not.
+//
+// Instruments differ on purpose. Half 1 writes rows directly, because the claim
+// under test is lifetime()'s merge branch and record() would refuse the lower
+// second row before it ever got there. Half 2 goes through record(), because
+// record() is the only producer of unknown-version tags and the guarantee is
+// worthless if it stops holding end-to-end.
+test("lifetime: max WITHIN one known scanner tag, supersede ACROSS unknown ones", () => {
+  // Half 1 — one known tag, two observations. The higher survives: the floor.
+  const known = tmp();
+  writeFileSync(ledgerPath(known), [
+    JSON.stringify({ cli: "claude", session_id: "s1", total: 9000,
+      input_tokens: 9000, scanner: "sha256-known-version" }),
+    JSON.stringify({ cli: "claude", session_id: "s1", total: 1000,
+      input_tokens: 1000, scanner: "sha256-known-version" }),
+  ].join("\n") + "\n");
+  const ltKnown = lifetime(known);
+  assert.equal(ltKnown.total, 9000,
+    `same scanner tag must MAX (a partial write cannot shrink a session): expected 9000, got ${ltKnown.total}`);
+  assert.equal(ltKnown.sessions, 1, "one (cli, session_id) pair is one session");
+  rmSync(known, { recursive: true, force: true });
+
+  // Half 1, other order. Both orders are needed or the pin does not bite:
+  // descending alone still reads 9000 if the merge branch is deleted outright
+  // (the first row simply stays), so ascending is what proves a MAX happened
+  // and descending is what proves it was not a supersede.
+  const knownAsc = tmp();
+  writeFileSync(ledgerPath(knownAsc), [
+    JSON.stringify({ cli: "claude", session_id: "s1", total: 1000,
+      input_tokens: 1000, scanner: "sha256-known-version" }),
+    JSON.stringify({ cli: "claude", session_id: "s1", total: 9000,
+      input_tokens: 9000, scanner: "sha256-known-version" }),
+  ].join("\n") + "\n");
+  assert.equal(lifetime(knownAsc).total, 9000,
+    "same scanner tag, ascending: the re-scan that saw more must win");
+  rmSync(knownAsc, { recursive: true, force: true });
+
+  // Half 2 — same numbers, same order, but neither scan could name its version.
+  const unknown = tmp();
+  record([makeSession({ session_id: "s1", total: 9000,
+    tokens: { input_tokens: 9000, cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0, output_tokens: 0 } })],
+    null, unknown);
+  record([makeSession({ session_id: "s1", total: 1000,
+    tokens: { input_tokens: 1000, cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0, output_tokens: 0 } })],
+    null, unknown);
+
+  const r = rows(unknown);
+  assert.equal(r.length, 2, "both observations must be on disk — nothing is overwritten");
+  assert.ok(r.every(row => typeof row.scanner === "string" && row.scanner.startsWith("unhashable-")),
+    `unknown-version rows must carry an unhashable-<uuid> tag, got ${JSON.stringify(r.map(x => x.scanner))}`);
+  assert.notEqual(r[0].scanner, r[1].scanner,
+    "the tags must differ, or the two rows would share a rank bucket and be maxed");
+
+  const ltUnknown = lifetime(unknown);
+  assert.equal(ltUnknown.total, 1000,
+    `unknown scanner tags must SUPERSEDE, not max: expected the newest observation 1000, got ${ltUnknown.total}` +
+    " — 9000 here would mean a correction can never lower a number again");
+  assert.equal(ltUnknown.sessions, 1, "still one session, however many rows describe it");
+  rmSync(unknown, { recursive: true, force: true });
+});

@@ -372,6 +372,11 @@ starreckon --dual           # ONLY two stars: this month, then lifetime
 starreckon --card           # write the Porter-Grade SVG card
 starreckon --page           # write the full HTML stats page (runs the deeper profile pass)
 starreckon --json           # write both a compact baseline and the full expanded JSON report
+starreckon --sessions       # write the per-session export: one record per session, its four
+                               # token counters kept apart, plus start/end, CLI and project.
+                               # For comparing against another counter session by session —
+                               # a grand-total check survives a swap between two sessions.
+                               # Obeys --no-projects; project names are readable without it.
 starreckon --profile        # run the deeper profile pass without writing the HTML page
                                # (it lands in the expanded JSON report)
 starreckon --accounts       # per-account split + floor (files get acct-<hash>, not addresses)
@@ -379,7 +384,10 @@ starreckon --no-projects    # write proj-<hash> into the files instead of projec
 starreckon --show-accounts  # opt in: write the RAW account email addresses into the files
 starreckon --no-providers   # skip the multi-CLI scan (Gemini/Copilot/…)
 starreckon --no-snapshot    # don't touch ~/.starreckon/snapshots or ~/.starreckon/stars
-starreckon --name=NAME      # title printed on the card and the stats page
+starreckon --name=NAME      # OVERRIDE the display name for this run only.
+                               # Your name normally lives in ~/.starreckon/contact.json
+                               # with the rest of your details — press [R] in the menu to
+                               # set it, see what is shared, and clear any field.
 starreckon --roots=/Volumes/other-mac/Users/me   # merge another machine's logs
 starreckon --join-fleet=DIR [--machine=NAME] [--label=LABEL]   # write this machine's folder into a
                                # fleet dir (--machine/--label default to this machine's hostname)

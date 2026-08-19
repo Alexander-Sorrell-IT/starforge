@@ -103,7 +103,7 @@ export function writeSnapshots(monthlyBuckets, meta = {}, { audit = null } = {})
   }
 }
 
-// ledger.mjs:118 takes the field-wise max of two observations of one session so
+// ledger.mjs:160 takes the field-wise max of two observations of one session so
 // that "a partial write cannot shrink a session". This is the same rule one
 // level up: a partial SCAN cannot shrink a month. Numbers take the max — per
 // numeric field, per language/model key, per hour bucket — and anything else
@@ -121,7 +121,9 @@ export function writeSnapshots(monthlyBuckets, meta = {}, { audit = null } = {})
 // this machine — the stored 2026-07 record claimed 16,636 sessions against a
 // true 132, and no scanner fix could ever have dislodged it.
 //
-// So versions decide first, exactly as ledger.mjs:90-121 does one level down:
+// So versions decide first, exactly as ledger.mjs:132-163 does one level down
+// (with the caveat ledger.mjs now spells out: rows whose version could not be
+// determined share a bucket with nothing, so they supersede instead of maxing):
 //
 //   same version        -> floor. A smaller number is logs ageing off.
 //   different version   -> restatement. The newer scanner's number wins.

@@ -27,22 +27,64 @@ const BOLD = "\x1b[1m";
 const DIM = "\x1b[2m";
 
 // Canvas. Pixels are (W) x (ROWS*2); one cell = two vertically stacked pixels.
-// Base dimensions — used when no terminal width is available or terminal is narrow.
-const W_BASE = 78;
-const ROWS_BASE = 26;
-const R_BASE = 16.5;
+//
+// 78 IS PINNED, NOT MERELY THE DEFAULT. buildCompareReport() renders these same
+// frames into report-*.txt and the Desktop report.txt, and the README carries
+// one verbatim (tests/docs.test.mjs pins it). A width that followed the terminal
+// everywhere would make the CONTENT of a file depend on which window ran the
+// scan — two machines holding an identical corpus would publish different
+// bytes, which is the one thing tests/determinism.test.mjs exists to prevent.
+// So the terminal is read only where output goes to a terminal, and everything
+// written to disk asks for this number by name.
+export const STAR_WIDTH = 78;
+const BASE_ROWS = 26;
+const BASE_R = 16.5;
 
-// Responsive canvas: wider star on wide terminals.
-// Breakpoints chosen so the star fills the screen without exceeding ~2/3 of
-// the width (labels need breathing room on both sides).
-// ROWS scales proportionally — the star is always taller than it is wide
-// because each cell is ~2px tall and 1px wide.
-// opts.columns can be injected by callers / tests without touching process.stdout.
-function canvasFor(columns) {
-  const cols = typeof columns === "number" && columns > 0 ? columns : W_BASE;
-  if (cols >= 140) return { W: 120, ROWS: 40, R: 25.5 };
-  if (cols >= 100) return { W: 96,  ROWS: 32, R: 20.5 };
-  return { W: W_BASE, ROWS: ROWS_BASE, R: R_BASE };
+// Where growth stops. Past this the star is not more legible, only further
+// apart: the eye has to travel the whole width to compare two arms, and a
+// 200-column star in scrollback is a wall, not a shape.
+export const MAX_STAR_WIDTH = 140;
+
+// Everything the renderer needs, from one number. Rows and radius scale WITH
+// the width because the pixel grid is square (one cell = two stacked pixels on
+// a cell about twice as tall as it is wide): growing the width alone would
+// stretch the star into an ellipse and then clip it at the top and bottom.
+function geometry(width) {
+  const W = Math.max(1, Math.round(Number(width) || STAR_WIDTH));
+  const k = W / STAR_WIDTH;
+  const ROWS = Math.max(1, Math.round(BASE_ROWS * k));
+  const PH = ROWS * 2;
+  return { W, ROWS, PH, CX: W / 2, CY: PH / 2, R: BASE_R * k };
+}
+
+// How tall a frame of a given width is, without rendering one. terminalStarWidth
+// needs it, and deriving it here means the two can never disagree.
+export function starRowsFor(width) {
+  return geometry(width).ROWS;
+}
+
+/**
+ * The width to draw at on THIS terminal. Terminal path only — never for a file.
+ *
+ * Two clamps, and both are floors on damage rather than preferences:
+ *
+ *   columns — one column of slack, because a frame exactly as wide as the
+ *     terminal wraps the moment anything is appended to a line.
+ *   rows    — LiveStar.draw() redraws in place with cursor-up. A frame taller
+ *     than the viewport scrolls, the cursor-up lands in the wrong row, and the
+ *     redraw shreds the screen. Below the canonical star's own 26 rows there is
+ *     nothing to do but refuse to make it worse: this never returns less than
+ *     STAR_WIDTH, because shrinking the star is a different change than the one
+ *     this option exists for.
+ */
+export function terminalStarWidth(stream = process.stdout) {
+  const cols = Number(stream?.columns);
+  if (!Number.isFinite(cols) || cols <= 0) return STAR_WIDTH;
+  let w = Math.min(MAX_STAR_WIDTH, Math.floor(cols) - 1);
+  const rows = Number(stream?.rows);
+  if (Number.isFinite(rows) && rows > 0)
+    while (w > STAR_WIDTH && starRowsFor(w) > rows) w -= 1;
+  return Math.max(STAR_WIDTH, w);
 }
 
 const UPPER = "▀"; // ▀
@@ -87,31 +129,30 @@ function minEdgeDist(px, py, pts) {
 }
 
 // Intensity field, 0..1, sampled at one pixel centre. Supersampled by the
-// caller for anti-aliasing. CX/CY/R passed in so the function works for any
-// canvas size — removing the dependency on the old module-level constants.
-function intensityAt(x, y, hull, ghost, CX, CY, R) {
+// caller for anti-aliasing.
+function intensityAt(x, y, hull, ghost, g) {
   const edge = minEdgeDist(x, y, hull);
   if (edge < 0.85) return 1; // the luminous outline of the silhouette
   if (inPoly(x, y, hull)) {
     // Brightest at the core, falling off outward — the same radial gradient the
     // SVG fill uses, so the two renderers read as the same object.
-    const d = Math.min(1, Math.hypot(x - CX, y - CY) / R);
+    const d = Math.min(1, Math.hypot(x - g.CX, y - g.CY) / g.R);
     return 0.72 - 0.26 * d;
   }
   if (minEdgeDist(x, y, ghost) < 0.7) return 0.2; // dashed max-extent reference
-  const rr = Math.hypot(x - CX, y - CY);
+  const rr = Math.hypot(x - g.CX, y - g.CY);
   for (let k = 1; k <= MAX_LEVEL; k++) {
-    if (Math.abs(rr - armRadius(k, R)) < 0.35 && ((x + y) & 3) === 0) return 0.14;
+    if (Math.abs(rr - armRadius(k, g.R)) < 0.35 && ((x + y) & 3) === 0) return 0.14;
   }
   return 0;
 }
 
-function shadePixel(x, y, hull, ghost, CX, CY, R) {
+function shadePixel(x, y, hull, ghost, g) {
   // 2x2 supersample.
   let acc = 0;
   for (let sy = 0; sy < 2; sy++)
     for (let sx = 0; sx < 2; sx++)
-      acc += intensityAt(x + (sx + 0.5) / 2 - 0.5, y + (sy + 0.5) / 2 - 0.5, hull, ghost, CX, CY, R);
+      acc += intensityAt(x + (sx + 0.5) / 2 - 0.5, y + (sy + 0.5) / 2 - 0.5, hull, ghost, g);
   return acc / 4;
 }
 
@@ -131,37 +172,36 @@ function useColor(stream) {
 
 /**
  * Render one frame. Returns a string of ROWS lines.
- * levels   — 5 numbers 0..5 in AXES order.
- * opts.columns — terminal width; used to pick the canvas size. Defaults to
- *   process.stdout.columns when rendering to a live TTY. Pass a number in
- *   tests or when you want a specific size. Omit for the default 78-col canvas.
+ * levels — 5 numbers 0..5 in AXES order.
+ * opts.width — canvas width in columns. Defaults to STAR_WIDTH, which is what
+ *   every caller writing to a FILE must leave alone; terminal callers pass
+ *   terminalStarWidth().
  */
 export function renderStar(levels, opts = {}) {
-  // Canvas dimensions — resolved once per frame from the terminal width.
-  // opts.columns lets callers and tests inject a specific width without
-  // touching process.stdout, keeping this function pure and side-effect-free.
-  const termCols = opts.columns ?? process.stdout.columns;
-  const { W, ROWS, R } = canvasFor(termCols);
-  const PH = ROWS * 2;
-  const CX = W / 2;
-  const CY = PH / 2;
-
   const lv = Array.from({ length: ARMS }, (_, i) => clampLevel(levels?.[i] ?? 0));
-  // opts.progress: per-arm growth factor 0→1, used by the arm-tip animation.
-  // Defaults to 1 for every arm (fully grown). When an arm is growing, its
-  // effective level is lv[i] * progress[i], which shrinks its hull polygon
-  // without touching any other state — arms already done stay full.
+  const color = opts.color ?? true;
+  // opts.columns — the author's API, kept: a terminal width injected by a
+  // caller or a test, resolved through the same clamp terminalStarWidth uses
+  // so the two can never disagree about what fits. opts.width wins when both
+  // are given, because width is the explicit form.
+  const colW = typeof opts.columns === "number" && opts.columns > 0
+    ? Math.max(STAR_WIDTH, Math.min(MAX_STAR_WIDTH, Math.floor(opts.columns) - 1))
+    : null;
+  const g = geometry(opts.width ?? colW ?? STAR_WIDTH);
+  const { W, ROWS, PH, CX, CY, R } = g;
+  // opts.progress — the author's arm-tip animation, kept: per-arm growth
+  // factor 0→1. The HULL is drawn at lv[i] * progress[i]; the labels below
+  // keep reading lv, so a half-grown arm is drawn short and labelled true.
   const prog = opts.progress;
   const effLv = prog
     ? Array.from({ length: ARMS }, (_, i) => clampLevel(lv[i] * (prog[i] ?? 1)))
     : lv;
-  const color = opts.color ?? true;
   const hull = starPoints(effLv, R, CX, CY);
   const ghost = starPoints(new Array(ARMS).fill(MAX_LEVEL), R, CX, CY);
 
   // Shade the pixel field.
   const px = Array.from({ length: PH }, (_, y) =>
-    Array.from({ length: W }, (_, x) => shadePixel(x, y, hull, ghost, CX, CY, R))
+    Array.from({ length: W }, (_, x) => shadePixel(x, y, hull, ghost, g))
   );
 
   // Text overlay, in CELL space — a label owns its whole cell, so it is applied
@@ -239,66 +279,53 @@ export class LiveStar {
     this.lines = 0;
     this.enabled = Boolean(stream?.isTTY);
     this.color = useColor(stream);
+    // Measured ONCE, at construction. draw() redraws in place with cursor-up
+    // against `this.lines`, so a width that changed mid-scan (a resize) would
+    // change the frame height and leave the cursor pointing at the wrong row.
+    // A star that stays the size it started at is worth more than one that
+    // tracks the window and tears while it does it.
+    this.width = terminalStarWidth(stream);
   }
-  draw(levels, status, opts = {}) {
+  draw(levels, status) {
     if (!this.enabled) return;
-    const frame = renderStar(levels, { status, color: this.color, columns: this.stream.columns, ...opts });
+    const frame = renderStar(levels, { status, color: this.color, width: this.width });
     const rows = frame.split("\n");
     if (this.lines > 0) this.stream.write(`\x1b[${this.lines}A`);
     this.stream.write(rows.map((l) => `\x1b[2K${l}`).join("\n") + "\n");
     this.lines = rows.length;
   }
-  // Forge-pulse reveal: arms grow one at a time, tip-first, largest last —
-  // like watching a shape being forged. Each arm grows from nothing to full
-  // length over ~300ms; the next arm starts growing immediately after.
-  // 5 arms × 300ms = ~1.5 s total, 60fps feels smooth even on slow terminals.
-  //
-  // Uses opts.progress so already-finished arms stay full while the current
-  // arm grows — no sudden pops.
+  // Forge-pulse reveal: arms appear one at a time, longest first, each
+  // brightening from 0 to full over a short pause — like watching a star
+  // being struck into shape. Cross-platform: only cursor-up + line-clear
+  // ANSI, no platform-specific syscalls.
   //
   // When the terminal is not a TTY (piped, redirected, CI) the reveal is
-  // skipped and the final frame is printed once.
+  // skipped and the final frame is printed once — same as before.
   async finish(levels, status) {
     if (!this.enabled) {
-      this.stream.write(renderStar(levels, { status, color: this.color, columns: this.stream.columns }) + "\n");
+      this.stream.write(renderStar(levels, { status, color: this.color, width: this.width }) + "\n");
       return;
     }
     const lv = Array.from({ length: ARMS }, (_, i) => clampLevel(levels?.[i] ?? 0));
 
-    // Order arms: smallest first, largest last — the dominant axis lands last
-    // and holds the screen longest. On a tie, axis index breaks deterministically.
+    // Order arms by size, largest first — the dominant axis lands last and
+    // holds the screen longest. On a tie, axis index breaks it deterministically.
     const order = lv
       .map((v, i) => ({ v, i }))
-      .sort((a, b) => a.v - b.v || b.i - a.i)
+      .sort((a, b) => b.v - a.v || a.i - b.i)
       .map((x) => x.i);
 
+    // Build each intermediate frame: show only the arms revealed so far,
+    // all others zeroed. The final frame shows all arms at full.
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-    const ARM_MS = 300;   // ms for one arm to grow from 0 → 1
-    const FPS    = 60;
-    const STEP   = 1000 / FPS;
-
-    // progress[i]: growth factor 0→1 for each arm. Starts at 0 for all.
-    const progress = new Array(ARMS).fill(0);
-    // Arms that have already finished get progress 1 immediately.
-    // We animate one arm at a time in `order`.
-    for (let f = 0; f < order.length; f++) {
-      const arm = order[f];
-      const steps = Math.max(1, Math.round(ARM_MS / STEP));
-      for (let s = 1; s <= steps; s++) {
-        progress[arm] = s / steps;
-        const isLast = f === order.length - 1 && s === steps;
-        this.draw(
-          lv,
-          isLast ? status : "forging…",
-          // Pass a COPY — draw() must not mutate it
-          { progress: progress.slice() }
-        );
-        if (!isLast) await wait(STEP);
-      }
-      // Arm fully grown: lock it at 1 so it never redraws as partial
-      progress[arm] = 1;
+    const frames = order.length;
+    for (let f = 0; f < frames; f++) {
+      const partial = new Array(ARMS).fill(0);
+      for (let k = 0; k <= f; k++) partial[order[k]] = lv[order[k]];
+      this.draw(partial, f < frames - 1 ? "forging…" : status);
+      if (f < frames - 1) await wait(120);
     }
-    // Final draw at true levels with no progress override (clean frame)
+    // Final draw at true levels (handles rounding from the partial build)
     this.draw(lv, status);
   }
 }
@@ -375,6 +402,11 @@ export function renderCompare(monthly, lifetime, opts = {}) {
 // The same string is what [S] saves from the menu and --report writes
 // automatically. color: false so the file is readable in any editor.
 export function buildCompareReport({ mine, fleet, label = null } = {}) {
+  // PINNED, and passed by name at every call below rather than left to the
+  // default. This function's output is written to report-*.txt and to the
+  // Desktop report.txt; if a later change ever moves renderStar's default, the
+  // files must not move with it.
+  const width = STAR_WIDTH;
   const stamp = new Date().toISOString().replace("T", " ").slice(0, 19);
   const header = label ? `starreckon compare — ${label}\ngenerated ${stamp}\n` : `starreckon compare\ngenerated ${stamp}\n`;
   const HR = "─".repeat(62);
@@ -384,16 +416,16 @@ export function buildCompareReport({ mine, fleet, label = null } = {}) {
     parts.push(HR);
     parts.push("THIS MACHINE — this month vs lifetime");
     parts.push(HR);
-    parts.push(renderStar(mine.month.levels ?? computeLevels(mine.month), { color: false, status: `this month · ${mine.month.month ?? ""}`.trimEnd() }));
+    parts.push(renderStar(mine.month.levels ?? computeLevels(mine.month), { width, color: false, status: `this month · ${mine.month.month ?? ""}`.trimEnd() }));
     parts.push("");
-    parts.push(renderStar(mine.life.levels ?? computeLevels(mine.life), { color: false, status: `lifetime · ${mine.life.months ?? "?"} month(s)` }));
+    parts.push(renderStar(mine.life.levels ?? computeLevels(mine.life), { width, color: false, status: `lifetime · ${mine.life.months ?? "?"} month(s)` }));
     parts.push("");
     parts.push(renderCompare(mine.month, mine.life, { color: false }));
   } else if (mine?.life) {
     parts.push(HR);
     parts.push("THIS MACHINE — lifetime");
     parts.push(HR);
-    parts.push(renderStar(mine.life.levels ?? computeLevels(mine.life), { color: false, status: `lifetime · ${mine.life.months ?? "?"} month(s)` }));
+    parts.push(renderStar(mine.life.levels ?? computeLevels(mine.life), { width, color: false, status: `lifetime · ${mine.life.months ?? "?"} month(s)` }));
   }
 
   if (fleet?.month && fleet?.life) {
@@ -401,9 +433,9 @@ export function buildCompareReport({ mine, fleet, label = null } = {}) {
     parts.push(HR);
     parts.push("FLEET — this month vs lifetime");
     parts.push(HR);
-    parts.push(renderStar(fleet.month.levels ?? [], { color: false, status: `fleet this month · ${fleet.month.month ?? ""}`.trimEnd() }));
+    parts.push(renderStar(fleet.month.levels ?? [], { width, color: false, status: `fleet this month · ${fleet.month.month ?? ""}`.trimEnd() }));
     parts.push("");
-    parts.push(renderStar(fleet.life.levels ?? [], { color: false, status: `fleet lifetime · ${fleet.life.months ?? "?"} month(s)` }));
+    parts.push(renderStar(fleet.life.levels ?? [], { width, color: false, status: `fleet lifetime · ${fleet.life.months ?? "?"} month(s)` }));
     parts.push("");
     parts.push(renderCompare(fleet.month, fleet.life, { color: false }));
   } else if (fleet?.life) {
@@ -411,7 +443,7 @@ export function buildCompareReport({ mine, fleet, label = null } = {}) {
     parts.push(HR);
     parts.push("FLEET — lifetime");
     parts.push(HR);
-    parts.push(renderStar(fleet.life.levels ?? [], { color: false, status: `fleet lifetime · ${fleet.life.months ?? "?"} month(s)` }));
+    parts.push(renderStar(fleet.life.levels ?? [], { width, color: false, status: `fleet lifetime · ${fleet.life.months ?? "?"} month(s)` }));
   }
 
   // Strip any residual ANSI that crept in from renderStar/renderCompare

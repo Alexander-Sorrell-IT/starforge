@@ -17,11 +17,32 @@
 //   starreckon --dual          print ONLY this month beside lifetime
 //                                 (--star/--dual suppress the summary, cards,
 //                                 QR and menu — the default run shows them all)
+//   --with-models                 turn ON the optional models layer. shows the
+//                                 consent screen FIRST — what is about to
+//                                 happen, that a log file will be saved, where
+//                                 it runs, and that it is not required — then
+//                                 asks. two answers: agree / use without.
+//   --with-daemon                 same screen, same two answers, for the
+//                                 optional daemon layer (writes the schedule
+//                                 files; still never loads them for you)
+//   --with-both                   the third door: ONE flag that turns on models
+//                                 AND daemon together, one screen, one answer.
+//                                 the [A] button in the menu is the same door.
+//                                 with no TTY these three do not hang and do
+//                                 not assume consent: they default to "use
+//                                 without" and say so on stderr.
 //   starreckon --ledger        record sessions in the token ledger so
 //                                 transcript deletion cannot lower the lifetime
 //                                 total. the daemon scan passes this by default.
 //   starreckon --roots=a,b     extra home roots (other accounts/machines)
 //   starreckon --json          write baseline + expanded JSON reports
+//   starreckon --sessions      write the PER-SESSION export: one record per
+//                                 session with its four token counters kept
+//                                 apart, its start/end, its CLI and its project.
+//                                 Exists so another counter can be compared
+//                                 session by session instead of only on grand
+//                                 totals, which a swap between two sessions
+//                                 survives. Obeys --no-projects.
 //   starreckon --report        auto-save full report (stars + compare) to
 //                                 ~/.starreckon/reports/report-<date>.txt
 //   starreckon --card          write the Porter-Grade SVG card
@@ -109,7 +130,13 @@
 //   [P] prove it    [T] transparency  [C] compare   [D] daemon
 //   [E] exclusions  [R] reach out     [X] copy link
 //   [I] install Cisco models          [Z] re-run scan
+//   [A] all extras  models + daemon in ONE press (the third door)
 //   [H] help        [Q] done
+//   [D], [I] and [A] each show the consent screen before anything happens —
+//   and each screen promises only the layers that would REALLY run on this
+//   machine. [D] is offered when the daemon is supported and not yet installed;
+//   [A] only when it genuinely combines two startable layers. A door with
+//   nothing left to start says so and asks nothing. See offeredDoors().
 //
 // COMPARE SUB-MENU:
 //   [M] mine    this machine month vs lifetime
@@ -127,6 +154,12 @@ import { createInterface } from "node:readline/promises";
 import { writeFileSync, mkdirSync, existsSync, copyFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
+// `new URL(...).pathname` URL-ENCODES. A checkout under a directory with a
+// space yields "Quest%20coder", which is not a path: `prove` printed a script
+// that does not exist, and the beacon/menu child spawns failed with
+// "Cannot find module". Every other module in src/ already does this —
+// daemon.mjs:36, sources.mjs:23, scanners.mjs:20 — cli.mjs was the only one
+// that did not. Fatal under ~/Library/Application Support and C:\\Program Files.
 import { fileURLToPath } from "node:url";
 import {
   discoverSources,
@@ -135,8 +168,9 @@ import {
   parseCodexFile,
   finalize,
   localDayKey,
+  sessionRecords,
 } from "./scan.mjs";
-import { LiveStar, computeLevels, explainLevels, renderCompare, renderStar, buildCompareReport, AXES } from "./star.mjs";
+import { LiveStar, computeLevels, explainLevels, renderCompare, renderStar, buildCompareReport, terminalStarWidth, AXES } from "./star.mjs";
 import {
   writeSnapshots,
   writeSnapshotStars,
@@ -151,9 +185,36 @@ import { renderCard } from "./card.mjs";
 import { buildCardsSafe, renderAll, box, shareQrLines } from "./wrapped.mjs";
 import { writeSchedule, removeSchedule, daemonStatus, describeSchedule, PROTECT_LABEL } from "./daemon.mjs";
 import { buildReceipt, renderReceipt } from "./receipt.mjs";
+import { armScheduledRunLog, scheduledRun, TRIGGER_ENV } from "./layerlog.mjs";
 import { scanAllProviders, scanPortedReaders, scannerVersion } from "./scanners.mjs";
 import { discoverAccounts, floorTotals } from "./accounts.mjs";
 import { readContact, writeContact, FIELDS as CONTACT_FIELDS, KEYS as CONTACT_KEYS, LABELS as CONTACT_LABELS } from "./contact.mjs";
+
+// WHO THIS RUN IS, resolved in ONE place.
+//
+// `--name` used to be the only source, which put identity in a flag you retype
+// every run: invisible to the [R] screen that lists what gets shared, and
+// outside contact.json's opt-in contract. Once the contact file also carried a
+// name, one run could print one name on the card and a different one in the QR
+// — the same two-sources-of-truth drift COPY_DIRS was bitten by.
+//
+// contact.json is the source. The flag stays as a deliberate per-run OVERRIDE
+// (`--name "Team A"` on a compare report) and is checked FIRST: an override
+// that loses to stored state is not an override.
+// Read ONCE. This called readContact() on every invocation and there are five
+// call sites, so a default run re-read the same small file repeatedly for a
+// value that cannot change mid-run.
+let _nameCache;
+const displayName = () => {
+  if (_nameCache !== undefined) return _nameCache;
+  const flagName = opt("name");
+  if (flagName && String(flagName).trim()) return (_nameCache = String(flagName).trim());
+  const stored = readContact()?.name;
+  if (typeof stored === "string" && stored.trim()) return (_nameCache = stored.trim());
+  // A non-string `name` in a hand-edited contact.json (a number, an array, an
+  // object) must not reach String() and land as "[object Object]" on the card.
+  return (_nameCache = null);
+};
 import { readExclusions, addExclusion, removeExclusion, EXCLUDE_FILE } from "./exclude.mjs";
 import { buildShareUrl, PAGES_BASE } from "./shareurl.mjs";
 import { readFleet, writeMachineFolder } from "./fleet.mjs";
@@ -181,6 +242,16 @@ import {
 import { armTripwire } from "./tripwire.mjs";
 import { verifyCli } from "./verify.mjs";
 import { detectConfinement, buildProofCommand, sandboxProfile, runConfined, runProbe } from "./confine.mjs";
+import {
+  consentScreen,
+  parseConsent,
+  withoutLine,
+  nonTtyNotice,
+  doorPlan,
+  offeredDoors,
+  nothingToStartNotice,
+  UNRECOGNISED_LINE,
+} from "./consent.mjs";
 
 // NO_COLOR emptied at the source. These four constants are interpolated into
 // roughly a hundred template literals in this file — the banner, the summary,
@@ -229,7 +300,7 @@ import { clipboardCmds } from "./clipboard.mjs";
 // Subcommands are explicit. An unknown positional argument EXITS NON-ZERO
 // rather than falling through to a scan — a proof command that silently runs
 // something else and prints success would be worse than having none.
-const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove", "daemon", "protect", "receipt", "serve", "search", "addons", "sources", "scoreboard", "broadcast"]);
+const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove", "daemon", "protect", "receipt", "serve", "search", "addons", "sources", "series", "scoreboard", "broadcast"]);
 const positional = args.filter((a) => !a.startsWith("-"));
 const subcommand = positional[0] ?? "scan";
 if (!KNOWN_SUBCOMMANDS.has(subcommand)) {
@@ -258,6 +329,7 @@ const FLAG_SPEC = Object.freeze({
   "--star": "bool",
   "--dual": "bool",
   "--json": "bool",
+  "--sessions": "bool",
   "--card": "bool",
   "--wrapped": "bool",
   "--no-wrapped": "bool",
@@ -292,6 +364,9 @@ const FLAG_SPEC = Object.freeze({
   "--serve-discover": "bool",
   "--broadcast-port": "value",
   "--broadcast-timeout": "value",
+  "--with-models": "bool",
+  "--with-daemon": "bool",
+  "--with-both": "bool",
 });
 const KNOWN_FLAGS = Object.freeze(Object.keys(FLAG_SPEC));
 
@@ -348,7 +423,7 @@ for (const a of args) {
   // subcommand would be the same silent-ignore this block exists to end — just
   // with a flag that happens to be spelled correctly. The one exception is
   // declared, not inferred: `receipt --json` emits the machine-readable pack.
-  const SUBCOMMAND_FLAGS = { receipt: new Set(["--json"]), serve: new Set(["--serve-port", "--serve-timeout", "--serve-visits", "--serve-collect", "--serve-discover"]), search: new Set(["--search-top", "--search-index", "--search-setup", "--search-status", "--roots"]), protect: new Set(), addons: new Set(), sources: new Set(), scoreboard: new Set(), broadcast: new Set(["--broadcast-port", "--broadcast-timeout", "--machine", "--label", "--roots"]) };
+  const SUBCOMMAND_FLAGS = { receipt: new Set(["--json"]), serve: new Set(["--serve-port", "--serve-timeout", "--serve-visits", "--serve-collect", "--serve-discover"]), search: new Set(["--search-top", "--search-index", "--search-setup", "--search-status", "--roots"]), protect: new Set(), addons: new Set(), sources: new Set(), series: new Set(), scoreboard: new Set(), broadcast: new Set(["--broadcast-port", "--broadcast-timeout", "--machine", "--label", "--roots"]) };
   if (subcommand !== "scan" && !SUBCOMMAND_FLAGS[subcommand]?.has(base))
     flagError(
       `\`${subcommand}\` takes no flags, and ${base} would have been ignored. Run \`starreckon ${subcommand}\` on its own (to re-pin the allowlist manifest: node src/verify.mjs --update-pins).`
@@ -374,6 +449,14 @@ function printHelp() {
   console.log(`  --no-wrapped   skip the paced story, print summary only`);
   console.log(`  --no-pace      print all cards at once (no [enter])`);
   console.log(`  --name=NAME    title on the card and stats page`);
+  console.log(`\n${B}OPTIONAL LAYERS${R} ${D}(consent screen first — every one of these asks)${R}`);
+  console.log(`  --with-models   turn on the models layer  ${D}(same door as [I])${R}`);
+  console.log(`  --with-daemon   turn on the daemon layer  ${D}(same door as [D])${R}`);
+  console.log(`  --with-both     BOTH in one flag          ${D}(same door as [A])${R}`);
+  console.log(`  ${D}the screen names what happens, says a log file will be saved,${R}`);
+  console.log(`  ${D}says it runs locally in this machine's folder, and says it is${R}`);
+  console.log(`  ${D}not required. two answers: agree / use without. the scan runs${R}`);
+  console.log(`  ${D}either way. with no TTY: "use without", said on stderr.${R}`);
   console.log(`\n${B}PRIVACY${R}`);
   console.log(`  --no-projects     write proj-<hash> instead of project names in files`);
   console.log(`  --no-providers    skip the multi-CLI scan (Gemini/Copilot/…)`);
@@ -401,13 +484,18 @@ function printHelp() {
   console.log(`  search --search-setup   download models (~600 MB, one-time)`);
   console.log(`  addons          companion tools and the licence that unlocks them`);
   console.log(`  sources         every place work can happen, and what this machine has`);
+  console.log(`  series          how many months of history each sequence holds, and how`);
+  console.log(`                  many more before a band over it would mean anything`);
   console.log(`\n${B}BEFORE-YOU-GO MENU${R} ${D}(shown after a scan on an interactive terminal)${R}`);
   console.log(`  [P] prove it       [T] transparency   [C] compare     [D] daemon`);
   console.log(`  [E] exclusions     [R] reach out      [X] copy link   [B] beacon`);
-  console.log(`  [I] install models [Z] re-run scan    [H] this help   [Q] done`);
+  console.log(`  [I] install models [A] all extras     [Z] re-run scan`);
+  console.log(`  [H] this help      [Q] done`);
   console.log(`\n${B}ENVIRONMENT${R}`);
   console.log(`  STARRECKON_DEBUG=1             show full stack on crash`);
   console.log(`  STARRECKON_FORCE_INTERACTIVE=1 force the menu in non-TTY (testing only)`);
+  console.log(`  ${TRIGGER_ENV}=daemon:scan   set by the schedule files, not by you: it is`);
+  console.log(`                                what makes a scheduled run write its log`);
   console.log(`  DEADRECKON_MODEL_CACHE=<dir>  shared HuggingFace model cache`);
   console.log(`\n${D}zero dependencies · zero network calls on the scan path · source: github.com/Alexander-Sorrell-IT/starreckon${R}\n`);
 }
@@ -417,6 +505,23 @@ if (flag("-h") || flag("--help")) {
   printHelp();
   process.exit(0);
 }
+
+// ── the daemon layer's own accounting ───────────────────────────────────────
+//
+// ARMED HERE, ABOVE EVERY SUBCOMMAND, because the two scheduled jobs land in
+// two different branches — `protect` exits at its own branch below, and the
+// monthly scan falls through to main() — and a hook placed after either one
+// would silently miss the other. This is also above startAudit(), which the
+// protect and search branches never reach at all (they exit first), so the
+// audit log is not an option for this and never was.
+//
+// Only a run the SCHEDULE FILE marked is recorded. A `starreckon protect` a
+// person types and watches is a foreground command whose account is the
+// terminal in front of them; writing a file for it would mean writing files on
+// machines where nobody turned any optional layer on, which is the opposite of
+// what the consent screen agreed. The models layer's runs are recorded inside
+// runSearch() instead — every model invocation goes through that one door.
+armScheduledRunLog(scheduledRun());
 
 // `starreckon verify` — the adversarial self-check. Runs the static scan, the
 // audit chain, the output scrub, and the confinement report, and prints each
@@ -474,6 +579,16 @@ if (subcommand === "daemon") {
     console.log(`platform:  ${st.platform}`);
     console.log(`scan job:    ${st.installed ? `${maskPath(st.file)} (written)` : "not written"}`);
     console.log(`protect job: ${st.protectInstalled ? `${maskPath(st.protectFile)} (written)` : "not written — numbers will degrade as transcripts age"}`);
+    // A schedule written before the log marker existed still runs and still
+    // works — it just cannot be told apart from a command you typed, so its
+    // runs write no log and the consent screen's promise goes unkept for
+    // exactly the runs nobody watches. Say so, and say the one-word fix.
+    const stale = [st.installed && st.logged === false && "scan", st.protectInstalled && st.protectLogged === false && "protect"].filter(Boolean);
+    if (stale.length)
+      console.log(
+        `\n${DIM}the ${stale.join(" and ")} job predates the run log: it carries no ${TRIGGER_ENV},${RESET}\n` +
+        `${DIM}so its runs write nothing under ~/.starreckon/logs. rewrite it: starreckon daemon on${RESET}`
+      );
     if (st.installed || st.protectInstalled) {
       console.log(`\n${DIM}whether jobs are LOADED is the scheduler's business, not this tool's.${RESET}`);
       console.log(`${DIM}check: ${st.platform === "darwin" ? `launchctl list | grep starreckon` : "systemctl --user list-timers"}${RESET}`);
@@ -551,6 +666,25 @@ if (subcommand === "sources") {
   let undeclared = null;
   try { undeclared = unknownStores(); } catch { /* the declared list still stands */ }
   console.log(render(survey(), { color: !process.env.NO_COLOR, undeclared }));
+  process.exit(0);
+}
+
+// `starreckon series` — how much ordered history the snapshots hold, and what
+// stands between it and a forecast band that would mean anything.
+//
+// IT IS A COUNT, NOT A WITNESS. deadreckon holds the time-series model; this
+// program holds none, so nothing here predicts, scores or gates and it exits 0
+// whatever the counts are. It exists because "8 months is not enough history
+// yet", "the model ran and recorded nothing" and "there is no model on this
+// machine" are three different facts that every other view in this program
+// would render as the same silence.
+//
+// Reads ~/.starreckon and nothing else — no execution, no network, no writes —
+// so it sits here with sources/addons, before startAudit(): a question about how
+// much history exists should not itself write a run log.
+if (subcommand === "series") {
+  const { surveySeries, renderSeries } = await import("./series.mjs");
+  console.log(renderSeries(surveySeries(), { color: !process.env.NO_COLOR }));
   process.exit(0);
 }
 
@@ -904,6 +1038,149 @@ function starOf(agg, available = null) {
 const DESKTOP_BASE      = join(homedir(), "Desktop", "starreckon");
 const DESKTOP_FLEET_DIR = join(DESKTOP_BASE, "fleet");
 
+// ── the optional layers, and the one screen that guards all three ───────────
+//
+// Three doors — models, daemon, both — each reachable by a FLAG and by a BUTTON.
+// The screen, the two answers and the dispatch all live in openDoor(), so a
+// flag and a button are not two implementations that agree today: they are one
+// code path called from two places. The text itself is in consent.mjs.
+//
+// The `both` door is a door, not two presses chained: the author's requirement
+// is one flag and one button that turn on models AND daemon together, so the
+// reader sees ONE screen and gives ONE answer.
+//
+// Two flags spelled separately (`--with-models --with-daemon`) resolve to the
+// SAME `both` door rather than to two screens. Asking the same question twice
+// in one run is how a reader stops reading it.
+const wantModelsLayer = flag("--with-models") || flag("--with-both");
+const wantDaemonLayer = flag("--with-daemon") || flag("--with-both");
+const consentDoor =
+  wantModelsLayer && wantDaemonLayer ? "both" : wantModelsLayer ? "models" : wantDaemonLayer ? "daemon" : null;
+
+// What the two optional layers would ACTUALLY do on this machine, measured
+// rather than assumed. consent.mjs does no I/O by design, so the measuring
+// happens here and the answer is handed down; see the block above offeredDoors
+// for the defect that made this necessary ([A] promising a daemon on platforms
+// that have none).
+//
+// The models check is filesystem-only, on purpose. Whether python3 is on PATH
+// is a third state this could report, but finding out costs a subprocess spawn
+// on every menu render AND an eager import of search.mjs, which imports
+// node:child_process — the very import that is kept lazy here for the reason
+// stated on installModelsLayer. A missing python is still caught honestly, one
+// step later, by installModelsLayer itself.
+const MODELS_VENV = () => homedir() + "/.starreckon/.venv-search";
+function layerStates() {
+  const dst = daemonStatus();
+  const venv = MODELS_VENV();
+  return {
+    models: existsSync(venv + "/bin/python") || existsSync(venv + "/Scripts/python.exe") ? "installed" : "ready",
+    daemon: !dst.supported ? "unsupported" : dst.installed ? "installed" : "ready",
+  };
+}
+
+// The daemon half. This is the body the [D] button has always run, lifted into
+// a function so the [A] button and --with-both can reach it without a second
+// copy. Its last line — "this tool does not load it for you" — is the sentence
+// the whole consent screen was modelled on; it stays exactly as it was.
+//
+// The already-installed case is filtered out by the plan in openDoor, not here:
+// `starreckon daemon on` stays the explicit "write them again" path, so a
+// reader who wants to repair a mangled schedule file still has one.
+function installDaemonLayer() {
+  const dst = daemonStatus();
+  if (!dst.supported) {
+    console.log(`  ${DIM}no schedule format for this platform (${dst.platform}) — nothing was written${RESET}`);
+    return;
+  }
+  const { files, activate } = writeSchedule();
+  console.log("");
+  for (const f of files) console.log(`wrote ${maskPath(f)}`);
+  console.log(`${BOLD}read it, then load it yourself:${RESET}\n  ${activate}`);
+  console.log(`${DIM}this tool does not load it for you.${RESET}`);
+}
+
+// The models half — likewise the [I] body, unchanged, in a function.
+// search.mjs is imported LAZILY here for the reason stated on the --full block
+// below: it imports node:child_process, and cli.mjs's static-scan exemption
+// covers that import only while it is deferred, never at module load.
+async function installModelsLayer() {
+  const { checkPython, runSearch } = await import("./search.mjs");
+  const py = checkPython("python3") ? "python3" : null;
+  if (!py) {
+    console.log(`  ${DIM}python3 not found on PATH — install Python 3.8+ then try again${RESET}`);
+    return;
+  }
+  const { existsSync } = await import("node:fs");
+  const { homedir: _hd } = await import("node:os");
+  const venv = _hd() + "/.starreckon/.venv-search";
+  if (existsSync(venv + "/bin/python") || existsSync(venv + "/Scripts/python.exe")) {
+    console.log(`  ${DIM}models already installed at ~/.starreckon/.venv-search${RESET}`);
+    console.log(`  ${DIM}run: starreckon search "your query"${RESET}`);
+    return;
+  }
+  console.log(`\n  downloading Cisco SecureBERT models (~600 MB) — this takes a few minutes…\n`);
+  const code = await runSearch(["setup"], { python: py });
+  if (code === 0) {
+    console.log(`\n  ${DIM}models installed. run: starreckon search "your query"${RESET}`);
+  } else {
+    console.log(`\n  ${DIM}setup exited ${code} — re-run: starreckon search --search-setup${RESET}`);
+  }
+}
+
+/**
+ * Show the consent screen for one door, take one of exactly two answers, and
+ * act on it. Returns "agree" or "without" — never a third thing, because there
+ * is no third answer.
+ *
+ * `ask` is null when there is no terminal to ask on. That case does not hang and
+ * does not assume consent: the screen is still printed (so a piped log records
+ * what was offered), the answer defaults to "use without", and it is said on
+ * STDERR — passing a flag is a request to be asked, not an answer.
+ *
+ * An unrecognised answer is re-asked ONCE and then falls to "use without". A
+ * loop with no bound would hang on a closed pipe, which is the same failure the
+ * non-TTY branch exists to prevent.
+ */
+async function openDoor(doorKey, ask) {
+  // Measured once, and the SAME states drive the screen and the dispatch below.
+  // Two reads could disagree — the screen promising what the dispatch then
+  // skips is the entire defect this guard exists for, and re-measuring after
+  // the answer would reintroduce it in a narrower window.
+  const layers = layerStates();
+  const plan = doorPlan(doorKey, layers);
+  if (plan.start.length === 0) {
+    // Nothing to consent to. Say the state and ask nothing — a question whose
+    // only honest outcome is "nothing happens" teaches the reader to skip the
+    // next one. Flags land here too: --with-both on a machine that is already
+    // set up is answered, not silently ignored.
+    console.log(nothingToStartNotice(doorKey, layers));
+    return "without";
+  }
+  console.log(consentScreen(doorKey, { color: !PLAIN, layers }));
+  if (!ask) {
+    console.error(nonTtyNotice(doorKey));
+    return "without";
+  }
+  let answer = null;
+  for (let attempt = 0; attempt < 2 && answer === null; attempt += 1) {
+    answer = parseConsent(await ask("  > "));
+    if (answer === null) console.log(`  ${DIM}${UNRECOGNISED_LINE}${RESET}`);
+  }
+  if (answer !== "agree") {
+    console.log(`  ${DIM}${withoutLine(doorKey)}${RESET}`);
+    return "without";
+  }
+  // Daemon first: it is instant and local, so a reader who agreed to `both`
+  // has the cheap half done before the long download starts.
+  //
+  // Driven by the PLAN, not by the door name: what runs is exactly the set the
+  // screen just promised, which is what makes the screen true.
+  if (plan.start.includes("daemon")) installDaemonLayer();
+  if (plan.start.includes("models")) await installModelsLayer();
+  return "agree";
+}
+
 async function main() {
   // Banner honesty: this process cannot prove its own no-egress claim (see
   // README "Privacy model" #2), so it states only what it can back and hands
@@ -941,6 +1218,28 @@ async function main() {
     if (resetLog)
       console.log(`${DIM}run log:   ${maskPath(resetLog)} — this run, chained onto the genesis above${RESET}`);
     process.exit(0);
+  }
+
+  // ---- the optional-layer flags: consent BEFORE anything happens ----------
+  // Placed here on purpose — after the banner, before a single session file is
+  // discovered or read. "Shown before ANYTHING happens" is the requirement, and
+  // a screen that appears after the scan has already walked the disk would be
+  // asking permission for something already done. Whichever answer is given,
+  // execution falls through to the scan below: neither answer is a dead end.
+  if (consentDoor) {
+    const canAsk = process.stdin.isTTY || process.env.STARRECKON_FORCE_INTERACTIVE === "1";
+    let rl = null;
+    const ask = canAsk
+      ? async (prompt) => {
+          rl ??= createInterface({ input: process.stdin, output: process.stdout });
+          return rl.question(prompt);
+        }
+      : null;
+    try {
+      await openDoor(consentDoor, ask);
+    } finally {
+      rl?.close();
+    }
   }
 
   // Contact info — read once, used by the QR and the [C] menu.
@@ -1047,8 +1346,13 @@ async function main() {
   for (const src of sources) {
     try {
       auditRead(audit, src.source);
-      if (src.source === "codex") await parseCodexFile(src.path, stats, { excluded });
-      else await parseClaudeFile(src.path, stats, { excluded });
+      // `cli` names the STORE a session's rows came from, for the per-session
+      // export. discoverSources says "claude_code"; the sibling counter this
+      // export is compared against spells that one "claude", so the translation
+      // happens here rather than in every consumer downstream.
+      const cli = src.source === "claude_code" ? "claude" : src.source;
+      if (src.source === "codex") await parseCodexFile(src.path, stats, { excluded, cli });
+      else await parseClaudeFile(src.path, stats, { excluded, cli });
     } catch {}
     done += 1;
     // Throttled by TIME, not by file count. `done % 5` meant a 20,217-file
@@ -1254,9 +1558,12 @@ async function main() {
   // in this function would quietly break.
   if (flag("--star") || flag("--dual")) {
     const color = !process.env.NO_COLOR;
+    // TERMINAL PATH — the width follows the window. Every renderStar() that
+    // ends up in a FILE goes through buildCompareReport(), which pins 78.
+    const width = terminalStarWidth();
     const star = (lv, status) => {
       console.log("");
-      console.log(renderStar(lv, { color, status }));
+      console.log(renderStar(lv, { color, status, width }));
     };
     if (flag("--dual")) {
       // Stacked, not side by side: one star is 78 columns wide, so a pair would
@@ -1356,6 +1663,7 @@ async function main() {
       renderStar(life.levels, {
         color: !process.env.NO_COLOR,
         status: `lifetime · ${life.months} month(s)`,
+        width: terminalStarWidth(),
       })
     );
   }
@@ -1394,12 +1702,49 @@ async function main() {
   const models = Object.entries(agg.models).sort((a, b) => b[1] - a[1]).slice(0, 4);
   if (models.length) console.log(`models          ${models.map(([m]) => m).join(", ")}`);
 
-  // Undated sessions: counted in the total above but invisible in every dated
-  // breakdown (months, streaks, active days). Surface the gap explicitly so it
-  // is never silently hidden — deadreckon publishes this and starreckon should too.
-  if ((agg.sessions_without_date ?? 0) > 0) {
-    const tokStr = agg.tokens_without_date > 0 ? ` (${fmt(agg.tokens_without_date)} tokens)` : "";
-    console.log(`${DIM}⚠ ${agg.sessions_without_date} session${agg.sessions_without_date === 1 ? "" : "s"}${tokStr} have no date — counted in total, not in any month or streak${RESET}`);
+  // ---- sessions with no usable date ----------------------------------------
+  //
+  // Their tokens are inside a published total — the corpus totals above for the
+  // ones here, the every-CLI totals below for the rest — and they belong to no
+  // month: no star, no snapshot, and nothing in any lifetime figure built from
+  // the timeline. The same session is therefore inside one published number and
+  // outside another, and until this line there was nothing on screen saying so.
+  //
+  // Two sources, kept apart because they are different facts. `undated_sessions`
+  // is this machine's transcripts (scan.mjs). The other CLIs' figure counts the
+  // provider sessions the ported readers emit with `start: null` — a vanished
+  // session has no turn to take a date from, which is a property of the thing,
+  // not a gap in the reader.
+  //
+  // PRINTED EVEN AT ZERO, and `--no-providers` says NOT SCANNED rather than 0.
+  // A silent line cannot be told apart from a build that never looked, and a 0
+  // for a store nobody opened is the "absent looks exactly like zero" defect
+  // this program has shipped more times than any other.
+  {
+    const here = (agg.undated_sessions ?? 0) + (agg.dropped_sessions ?? 0);
+    const other = providers ? (providers.perSession ?? []).filter((x) => !x.month).length : null;
+    const where = other === null
+      ? `${DIM}here · other CLIs not scanned (--no-providers)${RESET}`
+      : `${DIM}(${fmt(here)} here, ${fmt(other)} in other CLIs)${RESET}`;
+    const total = here + (other ?? 0);
+    console.log(`undated         ${fmt(total)}  ${where}`);
+    if (total > 0) {
+      // The author's addition: how many tokens those sessions carry. "98
+      // undated" reads very differently at 4 tokens than at 4 billion, and the
+      // tokens ARE in the grand totals above — this is the size of the slice
+      // that no month can account for.
+      const tokStr = (agg.undated_tokens ?? 0) > 0 ? ` — ${fmt(agg.undated_tokens)} tokens` : "";
+      console.log(`${DIM}                in no month, star, snapshot or lifetime figure${tokStr}${RESET}`);
+    }
+    // A DROPPED SESSION IS WORSE THAN AN UNDATED ONE AND MUST NOT READ THE SAME.
+    //
+    // The rest are counted somewhere and merely unplaced in time. These were
+    // discarded whole — every row naming them had a timestamp that would not
+    // parse, so their tokens are in NO total this program prints. Said on its
+    // own line because "97 undated" and "3 of them are missing entirely" are
+    // not the same sentence.
+    if ((agg.dropped_sessions ?? 0) > 0)
+      console.log(`${DIM}                ${fmt(agg.dropped_sessions)} of those were dropped ENTIRELY — unparseable timestamps; their tokens are in no total above${RESET}`);
   }
 
   if (providers) {
@@ -1667,13 +2012,24 @@ async function main() {
   // ---- outputs -------------------------------------------------------------
   const outDir = join(homedir(), ".starreckon", "reports");
   const stamp = new Date().toISOString().slice(0, 10);
-  const name = opt("name");
+  const name = displayName();
 
   if (flag("--json")) {
     mkdirSync(outDir, { recursive: true });
     const baseline = {
       generated_at: new Date().toISOString(),
       total_sessions: agg.total_sessions,
+      // Baseline already carries total_sessions AND monthly_buckets, so it
+      // already contains the discrepancy; without this field the difference
+      // between them has no name and reads as an arithmetic fault. With it the
+      // file reconciles against itself:
+      //   total_sessions === sum(monthly_buckets[].sessions) + undated_sessions
+      // The expanded report gets it for free — it spreads `...agg`.
+      undated_sessions: agg.undated_sessions ?? 0,
+      // NOT part of that identity — a dropped session is in no total in this
+      // file at all. Carried here so a reader can see the scan lost something
+      // without having to notice it did not.
+      dropped_sessions: agg.dropped_sessions ?? 0,
       active_days: agg.active_days,
       total_duration_hours: agg.total_duration_hours,
       total_input_tokens: agg.total_input_tokens,
@@ -1729,6 +2085,56 @@ async function main() {
           ? `your projects as proj-<hash> pseudonyms (--no-projects; ${agg.projects.length} of them)`
           : `your PROJECTS (${agg.projects.length} two-segment labels — pass --no-projects for proj-<hash> instead)`
       } and this machine's hostname (in timeline/snapshots)${accounts ? (showAccounts ? ", plus RAW account email addresses (--show-accounts)" : ", and acct-<hash> pseudonyms, not addresses") : ""}. Read one before you sync or share it.${RESET}`
+    );
+  }
+
+  // ---- --sessions: the per-session export ----------------------------------
+  // Same directory, same stamp, same auditWrite and the same forFiles() masking
+  // as the reports above — this is another report, not a new convention.
+  //
+  // It exists to be COMPARED. Every other artifact this program writes is a
+  // grand total or a monthly roll-up, and a differential built on those passes
+  // whenever a corruption preserves the sum: two sessions' tokens swapped, one
+  // session's tokens moved into its neighbour, input moved into output. Joining
+  // this file to another counter's per-session records catches all three.
+  //
+  // `totals` is summed from the records in this file, not copied from agg, so
+  // the file can be checked against the headline numbers by anyone holding both
+  // — a totals line copied from the same variable the headline came from would
+  // agree with it no matter what the records said.
+  if (flag("--sessions")) {
+    mkdirSync(outDir, { recursive: true });
+    const records = sessionRecords(stats, { noProjects });
+    const totals = { input_tokens: 0, cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0, output_tokens: 0 };
+    for (const r of records)
+      for (const k of Object.keys(totals)) totals[k] += r.tokens[k];
+    const payload = {
+      program: "starreckon",
+      // null when it cannot be computed — never the string "unknown", which
+      // would compare equal between two machines running different code.
+      scanner_version: scannerVersion(),
+      generated: new Date().toISOString(),
+      // What was done to the two readable fields, in the file, so a reader does
+      // not have to know which flags the run was given.
+      masking: {
+        projects: noProjects ? "proj-<hash> pseudonyms (--no-projects)" : "two-segment labels",
+        session_ids:
+          "id_source=row ids are verbatim (the join key); id_source=path ids were "
+          + (noProjects ? "replaced with proj-<hash>" : "masked with maskPath")
+          + " because this scanner derived them from a working-directory path",
+      },
+      total_sessions: records.length,
+      totals,
+      sessions: records,
+    };
+    const p3 = join(outDir, `sessions-${stamp}.json`);
+    writeFileSync(p3, auditWrite(audit, p3, JSON.stringify(forFiles(payload), null, 2)));
+    console.log(`\nper-session export: ${maskPath(p3)}`);
+    console.log(
+      `${DIM}         ${records.length} sessions, four token counters kept apart per session. ${
+        noProjects ? "Projects are proj-<hash>" : "This names your PROJECTS (pass --no-projects for proj-<hash>)"
+      }.${RESET}`
     );
   }
 
@@ -1834,7 +2240,7 @@ async function main() {
     const saveFullReport = () => {
       mkdirSync(outDir, { recursive: true });
       const p = join(outDir, `report-${stamp}.txt`);
-      const body = buildCompareReport({ mine: _reportMine(), fleet: _reportFleet(), label: opt("name") ?? hostname() });
+      const body = buildCompareReport({ mine: _reportMine(), fleet: _reportFleet(), label: displayName() ?? hostname() });
       writeFileSync(p, auditWrite(audit, p, body));
       console.log(`  report saved ${maskPath(p)}`);
       return p;
@@ -1867,11 +2273,14 @@ async function main() {
         mkdirSync(dayDir, { recursive: true });
 
         // report.txt — stars + compare bars
-        const body = buildCompareReport({ mine: _reportMine(), fleet: _reportFleet(), label: opt("name") ?? hostname() });
+        // The author's date hierarchy (data/YYYY/YYYY-MM/week-NN/) carries the
+        // file; displayName() carries the label — contact.json name first, so
+        // the name in the report is the one the [R] button set, not a flag.
+        const body = buildCompareReport({ mine: _reportMine(), fleet: _reportFleet(), label: displayName() ?? hostname() });
         writeFileSync(join(dayDir, "report.txt"), body);
 
         // star.svg — SVG card (always, regardless of --card flag)
-        const svg = renderCard(levels, agg, vel, { name: opt("name") ?? "SKILL SCREEN" });
+        const svg = renderCard(levels, agg, vel, { name: displayName() ?? "SKILL SCREEN" });
         writeFileSync(join(dayDir, "star.svg"), svg);
 
         // F3e: copy snapshots for this month into data/YYYY/YYYY-MM/snapshots/
@@ -2144,6 +2553,7 @@ async function main() {
       console.log(renderStar(combinedLevels, {
         color: !process.env.NO_COLOR,
         status: `${allMachines.length} machines · combined floor`,
+        width: terminalStarWidth(),
       }));
     } else {
       console.log(`${DIM}\nno other machines were seen during this session${RESET}`);
@@ -2201,15 +2611,30 @@ async function main() {
       console.log(`\n${BOLD}${CYAN}before you go${RESET}`);
       console.log(`  ${BOLD}[P]${RESET} prove it      ${DIM}ask the kernel whether anything can leave${RESET}`);
       console.log(`  ${BOLD}[T]${RESET} transparency  ${DIM}every field this tool KEPT, read from the bytes on disk${RESET}`);
+      // [G] history — the series view, reachable without knowing a subcommand
+      // exists. Both builds of that view shipped without a menu key, and both
+      // reviewers said the same thing about it: a witness only a person who
+      // already knows its name can reach is not one that will be read.
+      console.log(`  ${BOLD}[G]${RESET} history       ${DIM}how many months of history exist, and how many a forecast needs${RESET}`);
       if (timeline.length)
         console.log(`  ${BOLD}[C]${RESET} compare      ${DIM}[M] mine · ${fleetStars?.lifetime ? "[F] fleet · " : ""}[S] save${RESET}`);
-      const dst0 = daemonStatus();
-      if (dst0.supported && !dst0.installed)
+      // Which optional doors are real on THIS machine, right now — re-measured
+      // each time round the loop, because pressing [D] changes the answer for
+      // [D] and for [A].
+      //
+      // [A] used to print unconditionally while [D] gated itself, so on a
+      // platform with no schedule format "all extras" offered a daemon, its
+      // screen announced schedule files, and it wrote none. The rule for all
+      // three doors now lives in offeredDoors() beside the text it gates.
+      const offered = offeredDoors(layerStates());
+      if (offered.daemon)
         console.log(`  ${BOLD}[D]${RESET} daemon       ${DIM}schedule monthly re-scans so history outlives the logs${RESET}`);
       console.log(`  ${BOLD}[E]${RESET} exclusions   ${DIM}add or remove paths never scanned${RESET}`);
       console.log(`  ${BOLD}[R]${RESET} reach out    ${DIM}set contact info shown in the QR (github, email, phone…)${RESET}`);
       console.log(`  ${BOLD}[X]${RESET} copy link    ${DIM}copy share URL to clipboard (paste on any social platform)${RESET}`);
       console.log(`  ${BOLD}[I]${RESET} install models ${DIM}download Cisco SecureBERT for semantic search (one-time ~600 MB)${RESET}`);
+      if (offered.both)
+        console.log(`  ${BOLD}[A]${RESET} all extras   ${DIM}models AND daemon in ONE press — one screen, one answer${RESET}`);
       console.log(`  ${BOLD}[B]${RESET} beacon       ${DIM}broadcast on LAN · collect peer stars (8s)${RESET}`);
       console.log(`  ${BOLD}[Z]${RESET} re-run        ${DIM}run a fresh scan now${RESET}`);
       console.log(`  ${BOLD}[H]${RESET} help          ${DIM}all flags and subcommands${RESET}`);
@@ -2237,6 +2662,13 @@ async function main() {
       } else if (key === "T") {
         console.log("");
         console.log(renderReceipt(buildReceipt(), { color: !process.env.NO_COLOR }));
+      } else if (key === "G") {
+        // Same call the `series` subcommand makes, and deliberately the same
+        // one: two renderings of one question drift apart, and this view exists
+        // to keep three states apart rather than to invent a fourth.
+        const { surveySeries, renderSeries } = await import("./series.mjs");
+        console.log("");
+        console.log(renderSeries(surveySeries(), { color: !process.env.NO_COLOR }));
       } else if (key === "C" && timeline.length) {
         // Compare sub-menu: [M] mine · [F] fleet · [S] save
         const thisMonth = timeline[timeline.length - 1];
@@ -2248,7 +2680,7 @@ async function main() {
         const saveReport = async (tag, mine, fleet) => {
           mkdirSync(outDir, { recursive: true });
           const p = join(outDir, `compare-${stamp}-${tag}.txt`);
-          const body = buildCompareReport({ mine, fleet, label: opt("name") ?? hostname() });
+          const body = buildCompareReport({ mine, fleet, label: displayName() ?? hostname() });
           writeFileSync(p, auditWrite(audit, p, body));
           console.log(`  saved ${maskPath(p)}`);
         };
@@ -2323,9 +2755,13 @@ async function main() {
         while (!rDone) {
           console.log(`
 ${BOLD}${CYAN}── reach out (shown in QR) ──────────────────${RESET}`);
-          const fieldKeys = ["G","E","P","W","L","T"];
-          const fieldMap  = { G:"github", E:"email", P:"phone", W:"website", L:"linkedin", T:"twitter" };
-          const labelMap  = { G:"GitHub", E:"Email", P:"Phone", W:"Website", L:"LinkedIn", T:"Twitter/X" };
+          // Derived from contact.mjs, not restated. This block used to carry its
+          // own copy of the field list, so adding a field here and there were
+          // two edits and one of them was always forgotten.
+          const fieldMap  = CONTACT_KEYS;
+          const fieldKeys = Object.keys(fieldMap);
+          const labelMap  = Object.fromEntries(
+            fieldKeys.map((k) => [k, CONTACT_LABELS[fieldMap[k]]]));
           for (const k of fieldKeys) {
             const f = fieldMap[k];
             const val = ct[f] ? `${BOLD}${ct[f]}${RESET}` : `${DIM}(not set)${RESET}`;
@@ -2369,14 +2805,16 @@ ${BOLD}${CYAN}── reach out (shown in QR) ───────────�
         // Refresh contact so the QR on any subsequent re-render is current
         Object.assign(contact, readContact());
       } else if (key === "D") {
-        const { files, activate } = writeSchedule();
-        console.log("");
-        for (const f of files) console.log(`wrote ${maskPath(f)}`);
-        console.log(`${BOLD}read it, then load it yourself:${RESET}\n  ${activate}`);
-        console.log(`${DIM}this tool does not load it for you.${RESET}`);
+        // The button and the --with-daemon flag are the SAME door: same screen,
+        // same two answers, same dispatch. Nothing is written until the reader
+        // answers "agree".
+        await openDoor("daemon", ask);
       } else if (key === "X") {
         // [X] copy share link — build the GitHub Pages URL and copy to clipboard
-        const shareUrl = buildShareUrl(levels, agg, opt("name"));
+        // The contact FILE, not a flag. `--name` was retyped every run, never
+        // appeared on the [R] screen that claims to list what is shared, and
+        // bypassed contact.json's opt-in contract. One place owns identity.
+        const shareUrl = buildShareUrl(levels, agg, readContact());
         if (!shareUrl) {
           console.log(`  ${DIM}could not build share URL — run with --name=NAME to include a label${RESET}`);
         } else {
@@ -2401,28 +2839,14 @@ ${BOLD}${CYAN}── reach out (shown in QR) ───────────�
           console.log(`  ${DIM}the page renders your star from the URL fragment — no server needed${RESET}`);
           }
         } else if (key === "I") {
-          // [I] install Cisco SecureBERT models for semantic search
-          const { checkPython, runSearch } = await import("./search.mjs");
-          const py = checkPython("python3") ? "python3" : null;
-          if (!py) {
-            console.log(`  ${DIM}python3 not found on PATH — install Python 3.8+ then press [I] again${RESET}`);
-          } else {
-            const { existsSync } = await import("node:fs");
-            const { homedir: _hd } = await import("node:os");
-            const venv = _hd() + "/.starreckon/.venv-search";
-            if (existsSync(venv + "/bin/python") || existsSync(venv + "/Scripts/python.exe")) {
-              console.log(`  ${DIM}models already installed at ~/.starreckon/.venv-search${RESET}`);
-              console.log(`  ${DIM}run: starreckon search "your query"${RESET}`);
-            } else {
-              console.log(`\n  downloading Cisco SecureBERT models (~600 MB) — this takes a few minutes…\n`);
-              const code = await runSearch(["setup"], { python: py });
-              if (code === 0) {
-                console.log(`\n  ${DIM}models installed. run: starreckon search "your query"${RESET}`);
-              } else {
-                console.log(`\n  ${DIM}setup exited ${code} — re-run: starreckon search --search-setup${RESET}`);
-              }
-            }
-          }
+          // [I] install Cisco SecureBERT models — same door as --with-models.
+          // The download used to start on the keypress; now the screen comes
+          // first and nothing is fetched until the reader answers "agree".
+          await openDoor("models", ask);
+        } else if (key === "A") {
+          // [A] the third door — models AND daemon in ONE press. Same menu
+          // level as [D] and [I], one screen, one answer, both layers.
+          await openDoor("both", ask);
         } else if (key === "B") {
           // [B] beacon — broadcast this machine's result and collect peers
           await runBeacon(8000);

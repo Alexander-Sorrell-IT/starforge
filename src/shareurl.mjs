@@ -26,8 +26,20 @@
 
 import { AXES, ARMS, MAX_LEVEL } from "./starsvg.mjs";
 import { archetype, rating } from "./archetype.mjs";
+import { FIELDS as CONTACT_FIELDS } from "./contact.mjs";
 
 export const PAGES_BASE = "https://alexander-sorrell-it.github.io/starreckon/";
+
+// The QR payload cap. contact.mjs documents the same 260 bytes for the raw-text
+// payload; the URL is held to it too so a scannable code stays scannable.
+export const QR_BUDGET_BYTES = 260;
+
+// Short URL keys for the contact fields. Deliberately terse: every byte spent
+// on a key name is a byte not available for a value inside the QR budget.
+const URL_KEYS = {
+  name: "n", github: "gh", email: "em", phone: "tel",
+  website: "web", linkedin: "li", twitter: "tw",
+};
 
 /**
  * Build the share URL for a set of scan results.
@@ -35,9 +47,12 @@ export const PAGES_BASE = "https://alexander-sorrell-it.github.io/starreckon/";
  *
  * levels  — array of ARMS numbers (0..MAX_LEVEL)
  * agg     — the finalize() aggregate object
- * name    — optional display name string
+ * contact — the contact object from contact.json (a bare string is
+ *           accepted and treated as the name). Only fields that are set
+ *           are added, in priority order, within the byte budget.
+ * budget  — max URL bytes. Defaults to the QR cap.
  */
-export function buildShareUrl(levels, agg, name) {
+export function buildShareUrl(levels, agg, contact, budget = QR_BUDGET_BYTES) {
   if (!levels || !levels.length) return null;
   const lv = levels.map((v) => Math.min(MAX_LEVEL, Math.max(0, +v || 0)));
   const total = +lv.reduce((a, b) => a + b, 0).toFixed(1);
@@ -56,8 +71,47 @@ export function buildShareUrl(levels, agg, name) {
     params.set("d", String(a.active_days ?? 0));
     if (a.longest_streak_days) params.set("k", String(a.longest_streak_days));
   }
-  if (name && typeof name === "string" && name.trim()) {
-    params.set("n", name.trim().slice(0, 32));
+  // CONTACT RIDES IN THE URL, so the QR stays a clickable link a phone can
+  // open AND carries what the [R] screen says it carries. Before this, the
+  // contact block was only reachable through `sharePayload`, and that call
+  // (wrapped.mjs) was DEAD: it sat behind `buildShareUrl(...) ?? sharePayload(...)`
+  // and buildShareUrl only returns null for an empty levels array, which lv5()
+  // can never produce. So every field typed into "reach out (shown in QR)" was
+  // written to disk and shown nowhere.
+  //
+  // A string is still accepted for `contact` and treated as the name, so older
+  // callers keep working.
+  //
+  // BUDGET: fields are added in CONTACT_FIELDS priority order (name first) and a
+  // field whose param would push the URL past `budget` bytes is SKIPPED, never
+  // truncated — the same rule contactLines() uses. Half an email address is
+  // worse than no email address.
+  const ct = typeof contact === "string" ? { name: contact } : (contact ?? {});
+  for (const f of CONTACT_FIELDS) {
+    const raw = ct[f];
+    if (!raw || typeof raw !== "string" || !raw.trim()) continue;
+    const key = URL_KEYS[f];
+    if (!key) continue;
+    // 32, matching the name cap this file already had and shareurl.test.mjs
+    // asserts. Uniform across fields: one number is easier to reason about
+    // against the byte budget than a per-field table.
+    const val = raw.trim().slice(0, 32);
+    // MEASURE WHAT IS ACTUALLY WRITTEN. This estimated the cost with
+    // encodeURIComponent and then wrote with params.set(), and the two do not
+    // agree: encodeURIComponent leaves ! ( ) ~ \' unescaped at 1 byte each while
+    // URLSearchParams percent-encodes them at 3. The estimate UNDER-counted, so
+    // a name like O\'Brien (Alex) could push the URL past a cap the check said
+    // it was under. Set it, measure the real string, and take it back out if it
+    // does not fit — the only number that cannot drift from the output is the
+    // output.
+    params.set(key, val);
+    if (Buffer.byteLength(PAGES_BASE + "#" + params.toString(), "utf8") > budget) {
+      params.delete(key);
+      // continue, not break: this matches contactLines() in contact.mjs, which
+      // also skips an over-budget field and keeps going. A short later field
+      // still fits where a long earlier one did not, so the QR carries more.
+      continue;
+    }
   }
   return PAGES_BASE + "#" + params.toString();
 }
@@ -85,6 +139,16 @@ export function parseShareUrl(url) {
       days:     parseInt(p.get("d") ?? "0", 10),
       streak:   parseInt(p.get("k") ?? "0", 10),
       name:     p.get("n") ?? null,
+      // A URL that encodes six contact fields and parses back one is not a
+      // round trip. This returned only `name`, so github/email/phone/website/
+      // linkedin/twitter were silently dropped by every consumer that reads a
+      // shared link back. Derived from URL_KEYS so adding a field cannot
+      // desynchronise the two halves again.
+      contact:  Object.fromEntries(
+        Object.entries(URL_KEYS)
+          .map(([field, key]) => [field, p.get(key)])
+          .filter(([, val]) => val != null && val !== "")
+      ),
     };
   } catch {
     return null;

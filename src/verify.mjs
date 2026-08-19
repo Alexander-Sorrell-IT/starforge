@@ -269,6 +269,15 @@ export const ALLOWLIST_REQUIREMENTS = Object.freeze({
     markers: [
       { label: "spawns only the bundled search.py", re: /SEARCH_PY/ },
       { label: "spawn call (the single child_process use)", re: /\bspawn\s*\(/ },
+      // This matches a COMMENT in search.mjs. The guarantee it stands for is one
+      // assignment in src/search.py, a file this scan never opens — so renaming
+      // the variable, popping it after setting it, or deleting the line leaves
+      // this marker matching while every query resolves models over the network.
+      // Kept because it still catches the comment being removed wholesale; it is
+      // not evidence about behaviour. tests/offline-inference.test.mjs supplies
+      // that: it runs inference under `docker --network none`, shows the same
+      // code reaching the network once the flag is renamed, and shows this very
+      // marker passing on the sabotaged tree.
       { label: "HF_HUB_OFFLINE comment (offline-at-inference guarantee)", re: /HF_HUB_OFFLINE/ },
     ],
     allowedApis: [API_NODE_BUILTIN],

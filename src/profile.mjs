@@ -25,7 +25,8 @@ import { redactSecrets, maskPath, projectLabel } from "./redact.mjs";
 // scan.mjs next to `"model_sessions": {"/home/<person>/private/models": 6}`
 // from here, and the raw path went on to the HTML page. A second copy of a
 // redaction rule is a rule that will be fixed once.
-import { sanitizeModel, localDayKey, creditUsage, streamLines } from "./scan.mjs";
+import { sanitizeModel, localDayKey, creditUsage, streamLines,
+         byCountThenKey } from "./scan.mjs";
 
 const MAX_ACTIVE_GAP_MIN = 15;
 const MIN_PROMPT_CHARS = 16; // Standout's low-signal floor
@@ -536,7 +537,7 @@ export function computeToolRelationship(sessions) {
     const row = monthMap.get(month);
     const total = [...row.values()].reduce((a, b) => a + b, 0);
     if (total === 0) continue;
-    const sorted = [...row.entries()].sort(([, a], [, b]) => b - a);
+    const sorted = [...row.entries()].sort(byCountThenKey);
     const [topTool, topCount] = sorted[0];
     timeline.push({ month, dominant: topTool, share: topCount / total });
   }
@@ -580,7 +581,7 @@ export function computeToolRelationship(sessions) {
     for (const [tool, n] of row) totalsByTool.set(tool, (totalsByTool.get(tool) ?? 0) + n);
   const grandTotal = [...totalsByTool.values()].reduce((a, b) => a + b, 0);
   const tools = [...totalsByTool.entries()]
-    .sort(([, a], [, b]) => b - a)
+    .sort(byCountThenKey)
     .map(([tool, n]) => ({
       tool: SOURCE_LABELS[tool] ?? tool,
       share: grandTotal > 0 ? +(n / grandTotal).toFixed(2) : 0,
