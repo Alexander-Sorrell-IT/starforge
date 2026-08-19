@@ -2,7 +2,8 @@
 // All fixtures live in a temp dir; nothing depends on machine-specific data.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync,
+         existsSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -590,5 +591,112 @@ test("an archived session is the same session, and its mirror is the same accoun
     + "invent `unknown (<dirname>)` — nine of those were published on the real machine");
   assert.ok(![...accounts].some((a) => String(a).startsWith("unknown (")),
     `phantom account: ${[...accounts]}`);
+  rmSync(home, { recursive: true, force: true });
+});
+
+// ── the second counter, cross-checked against the first ──────────────────────
+//
+// TWO PROGRAMS IN ONE REPOSITORY COUNT THE SAME TRANSCRIPTS. scan.mjs walks
+// them with parseClaudeFile for the star and the reports; accounts.mjs walks
+// them again with scanProfile for the ledger, the per-account tables,
+// --join-fleet and the MACHINE TOTAL FLOOR. They share creditUsage and nothing
+// else — separate walkers, separate line filters, separate accumulators.
+//
+// NOTHING HELD THEM TO EACH OTHER. discoverAccounts builds its own seen-map
+// (accounts.mjs:655) on every call; there is no parameter for a shared one and
+// no caller passes one, so this path has always counted independently. When it
+// deduped on rec.uuid instead of message.id it read 1,409,787,623 against
+// scan.mjs's 520,497,793 — a 2.71x inflation in the number that feeds the
+// floor — and the way that was found was a person copying a profile to a
+// scratch home and running both by hand (accounts.mjs:449-454). No test could
+// see it, because each program was only ever asked whether it agreed with
+// itself.
+//
+// A CROSS-CHECK, NOT A REFUSAL. Refusing to run standalone was the other
+// option and it is the wrong one: standalone IS the calling convention —
+// cli.mjs:1125 is the only caller and it passes no map — so a refusal would
+// delete the feature rather than guard it. What was missing is the comparison.
+//
+// The fixture carries the exact shape the 2.71x came from: one assistant
+// message re-emitted three times by a streaming write, each row with a FRESH
+// uuid and the SAME message.id and counters that only grow. Dedup on uuid
+// credits all three (600/600); dedup on message.id credits the last (300/300).
+test("scanProfile and parseClaudeFile agree, token for token, on the same files", async () => {
+  const { emptyStats, parseClaudeFile } = await import("../src/scan.mjs");
+  const home = mkdtempSync(join(tmpdir(), "starreckon-agree-"));
+  writeFileSync(join(home, ".claude.json"),
+    JSON.stringify({ oauthAccount: { emailAddress: "owner@example.com" } }));
+
+  const row = (uuid, id, n) => JSON.stringify({
+    uuid, sessionId: "sess-A", timestamp: "2026-03-01T09:00:00.000Z",
+    type: "assistant", cwd: "/home/owner/work/api",
+    message: { id, role: "assistant", model: "claude-opus-5",
+      usage: { input_tokens: n, output_tokens: n * 2,
+               cache_read_input_tokens: n * 3, cache_creation_input_tokens: n * 4 } },
+  });
+
+  const p1 = join(home, ".claude", "projects", "-home-owner-work-api");
+  mkdirSync(p1, { recursive: true });
+  writeFileSync(join(p1, "sess-A.jsonl"), [
+    row("uuid-1", "msg-1", 100),   // a streaming write, emitted three times:
+    row("uuid-2", "msg-1", 200),   // fresh uuid, same message.id, growing
+    row("uuid-3", "msg-1", 300),   // counters. Only the last is the message.
+    row("uuid-4", "msg-2", 7),
+  ].join("\n") + "\n");
+
+  // A SECOND PROFILE HOLDING THE SAME SESSION. Both programs dedup
+  // machine-wide, so this must credit nothing in either — and if only one of
+  // them scopes its map per profile, the totals part company here.
+  const alt = join(home, ".claude-alt");
+  mkdirSync(join(alt, "projects", "-home-owner-work-api"), { recursive: true });
+  writeFileSync(join(alt, ".claude.json"),
+    JSON.stringify({ oauthAccount: { emailAddress: "owner@example.com" } }));
+  writeFileSync(join(alt, "projects", "-home-owner-work-api", "sess-A.jsonl"),
+    row("uuid-5", "msg-1", 300) + "\n");
+
+  // Path 1 — accounts.mjs, exactly as cli.mjs calls it: no shared state.
+  const rows = await discoverAccounts({ home });
+  const A = tok();
+  for (const r of rows) {
+    A.input += r.onDisk.input; A.output += r.onDisk.output;
+    A.cacheRead += r.onDisk.cacheRead; A.cacheWrite += r.onDisk.cacheWrite;
+  }
+
+  // Path 2 — scan.mjs, over THE SAME FILES, found by accounts.mjs's own
+  // discovery so the comparison is of the two COUNTERS and not of two
+  // different file lists.
+  const files = [];
+  const walk = (d) => {
+    for (const e of readdirSync(d).sort()) {
+      const p = join(d, e);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (e.endsWith(".jsonl")) files.push(p);
+    }
+  };
+  for (const dir of findConfigDirs(home)) {
+    const root = join(dir, "projects");
+    if (existsSync(root)) walk(root);
+  }
+  assert.ok(files.length >= 2, `the fixture must give both paths files: ${files.length}`);
+  const stats = emptyStats();
+  for (const f of files) await parseClaudeFile(f, stats);
+  const B = tok();
+  for (const s of stats.sessions.values()) {
+    B.input += s.tok.in; B.output += s.tok.out;
+    B.cacheRead += s.tok.cr; B.cacheWrite += s.tok.cw;
+  }
+
+  // PER BUCKET, NOT PER TOTAL. Two counters that disagree by a swap agree on
+  // every sum, and this file's whole subject is a counter nothing checked.
+  for (const k of ["input", "output", "cacheRead", "cacheWrite"])
+    assert.equal(A[k], B[k],
+      `${k}: accounts.mjs says ${A[k]}, scan.mjs says ${B[k]}. These read the ` +
+      `same bytes; a disagreement is one of them being wrong about the machine.`);
+
+  // And the value both must arrive at, worked out by hand rather than taken
+  // from either program: msg-1 credits its maximum ONCE across both profiles
+  // (300 · 600 · 900 · 1200), msg-2 credits 7 · 14 · 21 · 28.
+  assert.deepEqual(A, tok(307, 614, 921, 1228),
+    "measured: uuid dedup gives 907/1814/2721/3628 — the 2.71x, in miniature");
   rmSync(home, { recursive: true, force: true });
 });

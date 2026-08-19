@@ -261,6 +261,65 @@ test("lmstudio: counters are read from the exact documented path", () => {
     + "account — a fact about where it ran, not about money");
 });
 
+// ── every bucket, for every reader, against the hand-authored literal ────────
+//
+// A TOTAL CANNOT SEE A SWAP. Every reader here maps named fields out of its
+// store into four named buckets, and swapping two of those buckets leaves the
+// sum untouched — so `r.total` agrees, the fleet total agrees, and two buckets
+// are wrong. That is the exact shape of the five sum-preserving corruptions
+// that passed 22 checks in this project's history.
+//
+// MEASURED, not argued. Swapping cacheRead and cacheWrite in readBob fails one
+// existing assertion (sources.test.mjs, task A's cacheRead 600 read as 300).
+// Swapping total_input_tokens and total_output_tokens in readClawspring failed
+// NOTHING: 729 tests, same 718 passes, because clawspring's only per-bucket
+// assertion was `cacheRead === 0` and its 800/30 split was never looked at.
+// The literals were already in EXPECTED.json. Nothing read them.
+//
+// This holds all three token readers to all four buckets, so the gap cannot
+// reopen in the one that happens to be least exercised.
+const BUCKETS = [
+  ["input", "input_tokens"],
+  ["cacheWrite", "cache_creation_input_tokens"],
+  ["cacheRead", "cache_read_input_tokens"],
+  ["output", "output_tokens"],
+];
+
+test("every reader: all four buckets, not just the sum they add up to", () => {
+  const cases = [
+    ["claude_orphans", () => readClaudeOrphans(HOME, new Set(["claude-1"]))],
+    ["clawspring", () => readClawspring(HOME)],
+    ["lmstudio", () => readLmstudio(HOME)],
+  ];
+  for (const [name, run] of cases) {
+    const e = EXPECTED[name]._all;
+    const r = run();
+    for (const [bucket, key] of BUCKETS) {
+      assert.equal(r.tokens[bucket], e[key],
+        `${name}.${bucket}: EXPECTED.json says ${e[key]}, the reader says ` +
+        `${r.tokens[bucket]}. A wrong bucket that keeps the total is still wrong.`);
+    }
+    assert.equal(r.total, e.total, `${name}: total`);
+    assert.equal(r.sessions.length, e.sessions, `${name}: session count`);
+  }
+});
+
+// THE ASSERTION ABOVE IS ONLY WORTH ITS RUNTIME IF THE NUMBERS DIFFER. Two
+// buckets holding the same value cannot tell a swap from a correct read, so a
+// fixture drifting toward equal counters would quietly disarm it — the way a
+// suite that cannot fail is usually built. Zeroes are exempt: clawspring's two
+// cache buckets are 0 because the format has no such field, and there is no
+// mapping there to get backwards.
+test("the conformance fixture can actually tell one bucket from another", () => {
+  for (const name of ["claude_orphans", "clawspring", "lmstudio"]) {
+    const e = EXPECTED[name]._all;
+    const nonzero = BUCKETS.map(([, key]) => e[key]).filter((v) => v > 0);
+    assert.equal(new Set(nonzero).size, nonzero.length,
+      `${name}: two non-zero buckets share a value, so swapping them would ` +
+      `pass the per-bucket check as well as the total`);
+  }
+});
+
 // FOUR STATES, NOT TWO. absent, empty and unreadable all total zero, and they
 // are three different facts about the machine.
 test("readers: an absent store says absent, not zero", async () => {
