@@ -40,10 +40,12 @@
 //                                 into the reports/page/fleet folder (the
 //                                 terminal still shows the real names)
 //   starreckon --no-providers  skip the multi-CLI scan (Gemini/Copilot/…)
-//   starreckon --fleet=DIR     read a token-usage checkout, show fleet rollup
-//   starreckon --join-fleet=DIR [--machine=NAME] [--label=LABEL]
+//   starreckon --fleet[=DIR]   read a token-usage checkout, show fleet rollup
+//                                 (DIR defaults to ~/Desktop/starreckon/fleet)
+//   starreckon --join-fleet[=DIR] [--machine=NAME] [--label=LABEL]
 //                                 write this machine's folder into the fleet
-//                                 (--machine/--label default to this machine's
+//                                 (DIR defaults to ~/Desktop/starreckon/fleet;
+//                                 --machine/--label default to this machine's
 //                                 hostname)
 //   starreckon --no-snapshot   don't update ~/.starreckon/snapshots (which
 //                                 also skips the per-month stars in
@@ -54,6 +56,10 @@
 //                                 share link (GitHub Pages URL) to clipboard
 //                                 (github, email, phone, website, linkedin, twitter)
 //                                 omit FILE to use ~/.starreckon/contact.json
+//   starreckon scoreboard        sign your skill summary and show the submission
+//                                 URL; paste the signed payload into the GitHub
+//                                 Issue template to appear on the leaderboard.
+//                                 Nothing is uploaded automatically.
 //   starreckon serve             start a LAN HTTP server to share your stats page
 //                                 on the same WiFi; prints a QR pointing to it
 //   starreckon serve --serve-port=N  TCP port (default 3141)
@@ -61,6 +67,12 @@
 //   starreckon serve --serve-visits=N   auto-shutdown after N visits (default 3)
 //   starreckon serve --serve-collect=DIR  accept POST /submit from other machines
 //                                 and write each submission as a machine folder in DIR
+//   starreckon serve --serve-discover     listen 8s for broadcast peers on LAN,
+//                                 pull their machine folders, merge into fleet view
+//   starreckon broadcast          scan + serve machine folder on LAN via HTTP;
+//                                 peers running `serve --serve-discover` find it
+//   starreckon broadcast --broadcast-port=N   HTTP port (default 3142)
+//   starreckon broadcast --broadcast-timeout=N  stop after N minutes (default 10)
 //   starreckon search QUERY      semantic search over your sessions (SecureBERT)
 //   starreckon search --search-setup   download models (~600 MB, one-time)
 //   starreckon search --search-index   embed sessions into FAISS index
@@ -112,15 +124,17 @@
 // FLAG_SPEC appears above (a test asserts both directions). An unregistered
 // flag EXITS 2 instead of being ignored — see the comment on FLAG_SPEC.
 import { createInterface } from "node:readline/promises";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, copyFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   discoverSources,
   emptyStats,
   parseClaudeFile,
   parseCodexFile,
   finalize,
+  localDayKey,
 } from "./scan.mjs";
 import { LiveStar, computeLevels, explainLevels, renderCompare, renderStar, buildCompareReport, AXES } from "./star.mjs";
 import {
@@ -143,8 +157,9 @@ import { readContact, writeContact, FIELDS as CONTACT_FIELDS, KEYS as CONTACT_KE
 import { readExclusions, addExclusion, removeExclusion, EXCLUDE_FILE } from "./exclude.mjs";
 import { buildShareUrl, PAGES_BASE } from "./shareurl.mjs";
 import { readFleet, writeMachineFolder } from "./fleet.mjs";
+import { loadOrCreateFleetKey } from "./fleetkey.mjs";
 import { tick as protectTick, needsProtection } from "./protect.mjs";
-import { record as ledgerRecord } from "./ledger.mjs";
+import { record as ledgerRecord, lifetime as ledgerLifetime } from "./ledger.mjs";
 import { effectiveRoots } from "./config.mjs";
 import { startServe } from "./serve.mjs";
 import { fleetAggregates, FLEET_MEASURES, FLEET_MEASURES_MONTH } from "./fleetstar.mjs";
@@ -184,6 +199,13 @@ const opt = (name) => {
   const hit = args.find((a) => a.startsWith(`--${name}=`));
   return hit ? hit.split("=").slice(1).join("=") : null;
 };
+// optOrFlag: for "opt"-type flags that can be used as --name or --name=value.
+// Returns the value string, or "" (empty string) when passed bare, or null when absent.
+const optOrFlag = (name) => {
+  const val = opt(name);
+  if (val !== null) return val;
+  return args.includes(`--${name}`) ? "" : null;
+};
 const fmt = (n) => (n ?? 0).toLocaleString("en-US");
 // --star / --dual: the star is the whole output. Read once, here, because it
 // gates three separate things (the scan animation, the scan's own star, and
@@ -207,7 +229,7 @@ import { clipboardCmds } from "./clipboard.mjs";
 // Subcommands are explicit. An unknown positional argument EXITS NON-ZERO
 // rather than falling through to a scan — a proof command that silently runs
 // something else and prints success would be worse than having none.
-const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove", "daemon", "protect", "receipt", "serve", "search", "addons", "sources"]);
+const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove", "daemon", "protect", "receipt", "serve", "search", "addons", "sources", "scoreboard", "broadcast"]);
 const positional = args.filter((a) => !a.startsWith("-"));
 const subcommand = positional[0] ?? "scan";
 if (!KNOWN_SUBCOMMANDS.has(subcommand)) {
@@ -250,8 +272,8 @@ const FLAG_SPEC = Object.freeze({
   "--contact": "opt",
   "--roots": "value",
   "--name": "value",
-  "--fleet": "value",
-  "--join-fleet": "value",
+  "--fleet": "opt",
+  "--join-fleet": "opt",
   "--machine": "value",
   "--label": "value",
   "--reset-audit": "opt",
@@ -267,6 +289,9 @@ const FLAG_SPEC = Object.freeze({
   "--live": "bool",
   "--ledger": "bool",
   "--report": "bool",
+  "--serve-discover": "bool",
+  "--broadcast-port": "value",
+  "--broadcast-timeout": "value",
 });
 const KNOWN_FLAGS = Object.freeze(Object.keys(FLAG_SPEC));
 
@@ -323,7 +348,7 @@ for (const a of args) {
   // subcommand would be the same silent-ignore this block exists to end — just
   // with a flag that happens to be spelled correctly. The one exception is
   // declared, not inferred: `receipt --json` emits the machine-readable pack.
-  const SUBCOMMAND_FLAGS = { receipt: new Set(["--json"]), serve: new Set(["--serve-port", "--serve-timeout", "--serve-visits", "--serve-collect"]), search: new Set(["--search-top", "--search-index", "--search-setup", "--search-status", "--roots"]), protect: new Set(), addons: new Set(), sources: new Set() };
+  const SUBCOMMAND_FLAGS = { receipt: new Set(["--json"]), serve: new Set(["--serve-port", "--serve-timeout", "--serve-visits", "--serve-collect", "--serve-discover"]), search: new Set(["--search-top", "--search-index", "--search-setup", "--search-status", "--roots"]), protect: new Set(), addons: new Set(), sources: new Set(), scoreboard: new Set(), broadcast: new Set(["--broadcast-port", "--broadcast-timeout", "--machine", "--label", "--roots"]) };
   if (subcommand !== "scan" && !SUBCOMMAND_FLAGS[subcommand]?.has(base))
     flagError(
       `\`${subcommand}\` takes no flags, and ${base} would have been ignored. Run \`starreckon ${subcommand}\` on its own (to re-pin the allowlist manifest: node src/verify.mjs --update-pins).`
@@ -440,7 +465,7 @@ if (subcommand === "daemon") {
   }
   const st = daemonStatus();
   if (!st.supported) {
-    console.log(`starreckon daemon: no scheduler wired for ${st.platform}. Run the scan from your own cron/timer:\n  ${process.execPath} ${new URL("./cli.mjs", import.meta.url).pathname} --yes --no-wrapped --no-pace`);
+    console.log(`starreckon daemon: no scheduler wired for ${st.platform}. Run the scan from your own cron/timer:\n  ${process.execPath} ${fileURLToPath(new URL("./cli.mjs", import.meta.url))} --yes --no-wrapped --no-pace`);
     process.exit(0);
   }
 
@@ -501,7 +526,7 @@ if (subcommand === "prove") {
     console.log(`\nno OS confinement available here: ${maskText(e.message)}`);
   }
   console.log(
-    `\nfull scripted proof (scan in-sandbox + positive control):\n  sh ${maskPath(new URL("../bin/starreckon-proof.sh", import.meta.url).pathname)}`
+    `\nfull scripted proof (scan in-sandbox + positive control):\n  sh ${maskPath(fileURLToPath(new URL("../bin/starreckon-proof.sh", import.meta.url)))}`
   );
   process.exit(0);
 }
@@ -547,16 +572,268 @@ if (subcommand === "addons") {
   process.exit(0);
 }
 
-// `starreckon serve` — LAN HTTP server. Generates the stats page and serves it
-// on the local network so another device on the same WiFi can view it.
-// Zero external calls — binds to LAN only. Auto-shuts after a timeout.
+// `starreckon scoreboard` — self-submit, manual, signed.
+// Runs a quick scan, builds a privacy-safe payload (counts + levels, NO paths
+// or addresses), signs it with the fleet key, and shows the result.
+// The user decides whether to submit it. Nothing is uploaded automatically.
+if (subcommand === "scoreboard") {
+  const { buildPayload, signScorecard, renderScorecard, SUBMISSION_URL, LEADERBOARD_URL } = await import("./scorecard.mjs");
+  const { loadOrCreateFleetKey }  = await import("./fleetkey.mjs");
+  const { discoverSources, emptyStats, parseClaudeFile, parseCodexFile, finalize } = await import("./scan.mjs");
+  const { computeLevels } = await import("./star.mjs");
+  const { effectiveRoots } = await import("./config.mjs");
+
+  // Run a minimal inline scan (no prompts, no snapshots, no providers).
+  const scRoots   = effectiveRoots(opt("roots")?.split(",").filter(Boolean) ?? []);
+  const scSources = discoverSources(scRoots);
+  const scStats   = emptyStats();
+  process.stdout.write(`${DIM}scanning ${scSources.length} file(s)…${RESET}\n`);
+  for (const src of scSources) {
+    try {
+      if (src.source === "codex") await parseCodexFile(src.path, scStats, {});
+      else await parseClaudeFile(src.path, scStats, {});
+    } catch {}
+  }
+  const scAgg    = finalize(scStats);
+  const scLevels = computeLevels(scAgg);
+
+  // Load (or create) the fleet key for signing.
+  let fleetKey = null;
+  try { fleetKey = loadOrCreateFleetKey(); } catch (e) {
+    console.error(`scoreboard: fleet key unavailable: ${maskText(e.message)} — entry will be unsigned`);
+  }
+  const payloadObj = buildPayload(scLevels, scAgg, fleetKey?.publicKeyBytes ?? null);
+
+  let sig = null;
+  let payloadB64 = null;
+  if (fleetKey) {
+    const signed = signScorecard(payloadObj, fleetKey.privateKeyObj);
+    payloadB64 = signed.payload;
+    sig = signed.sig;
+  }
+
+  console.log(`\n${renderScorecard(payloadObj, sig)}\n`);
+  console.log(`${BOLD}leaderboard${RESET}  ${LEADERBOARD_URL}`);
+  console.log(`${BOLD}submit${RESET}       ${SUBMISSION_URL}\n`);
+
+  if (payloadB64 && sig) {
+    const entry = JSON.stringify({ payload: payloadB64, sig }, null, 2);
+    console.log(`${DIM}— paste this into the GitHub Issue body: ───────────────────${RESET}`);
+    console.log(entry);
+    console.log(`${DIM}─────────────────────────────────────────────────────────────${RESET}`);
+  } else {
+    console.log(`${DIM}(unsigned — no fleet key available; entry cannot be verified on the leaderboard)${RESET}`);
+  }
+  process.exit(0);
+}
+
+// `starreckon broadcast` — scan + serve full machine folder over HTTP on the
+// LAN, announced via UDP so peers running `serve --serve-discover` can find it.
+// Runs as a child process (needs UDP + HTTP, same reason as beacon.mjs).
+if (subcommand === "broadcast") {
+  const bPort    = Number(opt("broadcast-port") ?? "3142") || 3142;
+  const bTimeout = Number(opt("broadcast-timeout") ?? "10") || 10;
+
+  // Inline scan to build the machine folder payload.
+  const { discoverSources, emptyStats, parseClaudeFile, parseCodexFile, finalize } = await import("./scan.mjs");
+  const { scanAllProviders, scanPortedReaders, scannerVersion } = await import("./scanners.mjs");
+  const { discoverAccounts } = await import("./accounts.mjs");
+  const { effectiveRoots: bRoots } = await import("./config.mjs");
+  const { writeMachineFolder } = await import("./fleet.mjs");
+
+  const bRootList = bRoots(opt("roots")?.split(",").filter(Boolean) ?? []);
+  const bSources  = discoverSources(bRootList);
+  process.stdout.write(`${DIM}scanning ${bSources.length} file(s) for broadcast…${RESET}\n`);
+  const bStats = emptyStats();
+  for (const src of bSources) {
+    try {
+      if (src.source === "codex") await parseCodexFile(src.path, bStats, {});
+      else await parseClaudeFile(src.path, bStats, {});
+    } catch {}
+  }
+  const bAgg = finalize(bStats);
+  let bProviders = null;
+  try { bProviders = scanAllProviders(bRootList); } catch {}
+  try {
+    const extra = await scanPortedReaders(bRootList, { knownClaudeIds: new Set(bStats.sessions.keys()) });
+    if (bProviders) { Object.assign(bProviders.providers, extra.providers); bProviders.perSession.push(...extra.perSession); }
+    else bProviders = { ...extra, scanner_version: scannerVersion() };
+  } catch {}
+
+  // Build minimal machine folder payload (no account scan — fast path).
+  const hostShort = String(hostname() ?? "").split(".")[0].trim();
+  const hostSlug  = hostShort.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "unnamed";
+  const machineName  = opt("machine") ?? hostSlug;
+  const machineLabel = opt("label") ?? (hostShort || hostSlug);
+  const provSessions = (bProviders?.perSession ?? []).map((s) => ({
+    cli: s.provider, session_id: s.session_id, account: "local",
+    turns: s.turns, duration_min: s.duration_min, model: s.model,
+    tokens: { input_tokens: s.input ?? 0, output_tokens: s.output ?? 0,
+              cache_read_input_tokens: s.cacheRead ?? 0, cache_creation_input_tokens: s.cacheWrite ?? 0 },
+  }));
+  const totals = {
+    accounts: [{ account: "local",
+      input_tokens:                bAgg.total_input_tokens ?? 0,
+      cache_creation_input_tokens: bAgg.total_cache_write_tokens ?? 0,
+      cache_read_input_tokens:     bAgg.total_cache_read_tokens ?? 0,
+      output_tokens:               bAgg.total_output_tokens ?? 0,
+    }],
+  };
+
+  const bPayload = {
+    machine: machineName, label: machineLabel,
+    totals, accounts: [], sessions: provSessions,
+  };
+
+  const { spawnSync: _bcast } = await import("node:child_process");
+  const _mdnsPath = fileURLToPath(new URL("./mdns.mjs", import.meta.url));
+  const b64 = Buffer.from(JSON.stringify(bPayload)).toString("base64");
+  process.stdout.write(`\n${BOLD}${CYAN}starreckon broadcast${RESET} ${DIM}— serving machine folder on LAN${RESET}\n`);
+  process.stdout.write(`${DIM}other machines: starreckon serve --serve-discover${RESET}\n`);
+  process.stdout.write(`${DIM}port ${bPort} · stops after ${bTimeout} minutes${RESET}\n\n`);
+  const r = _bcast(process.execPath, [
+    _mdnsPath, "--mode=broadcast",
+    `--port=${bPort}`, `--timeout-min=${bTimeout}`, `--payload=${b64}`,
+  ], { stdio: "inherit", timeout: (bTimeout + 1) * 60 * 1000 });
+  process.exit(r.status ?? 0);
+}
+
+// `starreckon serve` — LAN HTTP server. Runs a fresh inline scan, renders the
+// stats page, then serves it on the local network so another device on the same
+// WiFi can view it. Zero external calls — binds to LAN only. Auto-shuts after
+// a timeout.
 if (subcommand === "serve") {
   const port = Number(opt("serve-port") ?? "3141") || 3141;
   const timeout = Number(opt("serve-timeout") ?? "10") || 10;
   const visits = Number(opt("serve-visits") ?? "3") || 3;
   const collectDir = opt("serve-collect") ?? null;
+
+  // ── inline scan ───────────────────────────────────────────────────────────
+  // Run a minimal scan (no interactivity, no prompts, no snapshots) so serve
+  // never lands on "no page yet" when the user hasn't run --page first.
+  // Scan inputs captured here, renderStatsPage called AFTER discover so fleet
+  // data from peers can be passed in. serveHtml is null until the render below.
+  let serveHtml = null;
+  let _serveAgg = null, _serveLevels = null, _serveProviders = null;
+  let _serveTimeline = null, _serveVel = null, _serveProfile = null;
+  {
+    const serveRoots = effectiveRoots(opt("roots")?.split(",").filter(Boolean) ?? []);
+    const serveSources = discoverSources(serveRoots);
+    if (serveSources.length > 0) {
+      process.stdout.write(`${DIM}scanning ${serveSources.length} file(s) for serve…${RESET}\n`);
+      const serveStats = emptyStats();
+      for (const src of serveSources) {
+        try {
+          if (src.source === "codex") await parseCodexFile(src.path, serveStats, {});
+          else await parseClaudeFile(src.path, serveStats, {});
+        } catch {}
+      }
+      _serveAgg    = finalize(serveStats);
+      _serveLevels = computeLevels(_serveAgg);
+
+      try { _serveProviders = scanAllProviders(serveRoots); } catch {}
+      try {
+        const extra = await scanPortedReaders(serveRoots, {
+          knownClaudeIds: new Set(serveStats.sessions.keys()),
+        });
+        if (_serveProviders) {
+          Object.assign(_serveProviders.providers, extra.providers);
+          _serveProviders.perSession.push(...extra.perSession);
+        } else {
+          _serveProviders = { ...extra, scanner_version: scannerVersion() };
+        }
+      } catch {}
+
+      _serveTimeline = loadTimeline();
+      _serveVel      = velocity(_serveTimeline);
+
+      try {
+        const signals = await collectProfileSignals(
+          serveSources.map((s) => ({ source: s.source, path: s.path })),
+          {}
+        );
+        _serveProfile = computeProfile(signals);
+      } catch {}
+
+      process.stdout.write(`${DIM}scan complete${RESET}\n`);
+    }
+  }
+
+  // ── --serve-discover: listen for broadcast peers, pull their fleet folders ─
+  // Runs AFTER the local scan (so discover time doesn't stall the scan) but
+  // BEFORE renderStatsPage, so the pulled fleet data lands in the HTML.
+  let serveDiscoverFleet = null;
+  if (flag("--serve-discover")) {
+    const { spawnSync: _sdSpawn } = await import("node:child_process");
+    const { mkdtempSync, writeFileSync: _sdWrite, mkdirSync: _sdMkdir } = await import("node:fs");
+    const { tmpdir: _sdTmpdir } = await import("node:os");
+    const nodeHttp = await import("node:http");
+    const _mdnsPath2 = fileURLToPath(new URL("./mdns.mjs", import.meta.url));
+    process.stdout.write(`${DIM}discover: listening 8s for broadcast peers…${RESET}\n`);
+    const _sdResult = _sdSpawn(process.execPath, [
+      _mdnsPath2, "--mode=discover", "--listen-ms=8000",
+    ], { stdio: ["ignore", "pipe", "inherit"], timeout: 12000 });
+    let peers = [];
+    try {
+      const raw = _sdResult.stdout?.toString("utf8").trim();
+      if (raw) peers = JSON.parse(raw);
+    } catch { /* no peers found */ }
+    if (peers.length) {
+      process.stdout.write(`${DIM}discover: found ${peers.length} peer(s) — fetching machine folders…${RESET}\n`);
+      const tmpFleetDir = mkdtempSync(join(_sdTmpdir(), "starreckon-fleet-"));
+      for (const peer of peers) {
+        try {
+          const folderJson = await new Promise((res, rej) => {
+            const req2 = nodeHttp.default.get(peer.url, (resp) => {
+              let body = "";
+              resp.on("data", (c) => { body += c; });
+              resp.on("end", () => { try { res(JSON.parse(body)); } catch { rej(new Error("bad JSON")); } });
+            });
+            req2.on("error", rej);
+            req2.setTimeout(5000, () => { req2.destroy(); rej(new Error("timeout")); });
+          });
+          const slug = String(peer.machine ?? peer.label ?? "peer").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 48) || "peer";
+          const peerDir = join(tmpFleetDir, slug);
+          _sdMkdir(peerDir, { recursive: true });
+          _sdWrite(join(peerDir, "totals.json"), JSON.stringify(folderJson.totals ?? {}));
+          _sdWrite(join(peerDir, "sessions.json"), JSON.stringify(folderJson.sessions ?? []));
+          process.stdout.write(`${DIM}  pulled ${slug} (${peer.url})${RESET}\n`);
+        } catch (e) {
+          process.stdout.write(`${DIM}  skipped ${peer.machine ?? peer.url}: ${maskText(e.message)}${RESET}\n`);
+        }
+      }
+      serveDiscoverFleet = tmpFleetDir;
+    } else {
+      process.stdout.write(`${DIM}discover: no broadcast peers found on LAN${RESET}\n`);
+    }
+  }
+
+  // ── render HTML (now we have both local scan + any discovered fleet) ────────
+  if (_serveAgg) {
+    let serveFleetStars = null;
+    if (serveDiscoverFleet) {
+      try { serveFleetStars = fleetAggregates(serveDiscoverFleet); } catch {}
+    }
+    const serveCardSvg = renderCard(_serveLevels, _serveAgg, _serveVel, { name: opt("name") ?? "SKILL SCREEN" });
+    serveHtml = renderStatsPage({
+      profile: _serveProfile,
+      agg: _serveAgg,
+      accounts: null,
+      fleet: serveFleetStars,
+      providers: _serveProviders?.providers ?? null,
+      starSvg: serveCardSvg,
+      timeline: _serveTimeline,
+      velocity: _serveVel,
+      name: opt("name") ?? null,
+      showAccounts: false,
+      noProjects: flag("--no-projects"),
+      shareUrl: buildShareUrl(_serveLevels, _serveAgg, opt("name") ?? null),
+    });
+    process.stdout.write(`${DIM}page ready — starting server${RESET}\n`);
+  }
+
   try {
-    await startServe({ port, timeoutMin: timeout, maxVisits: visits, collectDir });
+    await startServe({ port, timeoutMin: timeout, maxVisits: visits, collectDir, html: serveHtml || undefined });
   } catch (e) {
     console.error(`starreckon serve: ${maskText(e.message)}`);
     process.exit(1);
@@ -622,6 +899,11 @@ function starOf(agg, available = null) {
   };
 }
 
+// Default Desktop base and fleet directory, computed once at startup so every
+// place that needs them reads the same value.
+const DESKTOP_BASE      = join(homedir(), "Desktop", "starreckon");
+const DESKTOP_FLEET_DIR = join(DESKTOP_BASE, "fleet");
+
 async function main() {
   // Banner honesty: this process cannot prove its own no-egress claim (see
   // README "Privacy model" #2), so it states only what it can back and hands
@@ -684,6 +966,21 @@ async function main() {
     console.log(
       `${DIM}nothing to scan is not a failure: exiting 0 with a complete, empty run log (no files were read, none written).${RESET}`
     );
+    // Show the ledger's durable history even when no logs are on disk.
+    // Logs rotate every ~30 days; the ledger outlasts them. Without this a
+    // user returning after a log-rotation gap would see "no logs found" with
+    // no indication of their accumulated total — exactly the gap the ledger
+    // exists to close.
+    {
+      const lt = ledgerLifetime();
+      if (lt.total > 0) {
+        const byCli = Object.entries(lt.by_cli_marked)
+          .sort((a, b) => b[1].total - a[1].total)
+          .map(([cli, v]) => `${cli}${v.marker} ${fmt(v.total)}`)
+          .join(", ");
+        console.log(`\nledger lifetime ${fmt(lt.total)} total (${lt.sessions} sessions${byCli ? " · " + byCli : ""}) — this total survives log rotation`);
+      }
+    }
     const emptyLog = finishAudit(audit);
     if (emptyLog)
       console.log(
@@ -744,7 +1041,8 @@ async function main() {
   // worse than one — you cannot tell which is which, and the footers alone did
   // not say: the first read "scan complete", a progress message, not an
   // identity. Each star gets a heading stating what it was computed FROM.
-  if (!starOnly) starHeading("from the logs on disk right now", `${sources.length} files`);
+  const thisMonth = localDayKey(new Date()).slice(0, 7);
+  if (!starOnly) starHeading("this month", `${thisMonth} · ${sources.length} files`);
   star.draw(computeLevels(finalize(stats)), `scanning 0/${sources.length}`);
   for (const src of sources) {
     try {
@@ -777,7 +1075,7 @@ async function main() {
   // The star-only modes print their own star, deliberately labelled and drawn
   // from the LIFETIME numbers. Letting finish() land here too would leave the
   // scan's star sitting above it — two stars for --star, three for --dual.
-  if (!starOnly) star.finish(levels, "logs on disk now");
+  if (!starOnly) star.finish(levels, `this month · ${thisMonth}`);
 
   // ---- multi-CLI providers (fast, on by default) ---------------------------
   let providers = null;
@@ -878,11 +1176,12 @@ async function main() {
   const forFiles = (obj) => (noProjects ? maskProjects(obj) : obj);
   let accounts = null;
   let fleetJoin = null;
-  const joinDir = opt("join-fleet");
+  const _joinRaw = optOrFlag("join-fleet");
+  const joinDir  = _joinRaw === null ? null : (_joinRaw || DESKTOP_FLEET_DIR);
   if (flag("--accounts") || joinDir) {
     console.log(`\n${DIM}account scan: walking every Claude profile on this machine (can take minutes on big trees)…${RESET}`);
     try {
-      const res = await discoverAccounts({ fleet: true, showAccounts });
+      const res = await discoverAccounts({ fleet: true, showAccounts, seen: stats.seenMessageIds });
       accounts = res.rows;
       fleetJoin = res;
     } catch (e) {
@@ -931,7 +1230,9 @@ async function main() {
   // Computed once here, silently. The full fleet summary (per-machine table,
   // floor totals) is printed only in the default run below. Star-only modes
   // just need the levels; they exit before the summary ever prints.
-  const fleetDir = opt("fleet");
+  // --fleet / --join-fleet without =DIR default to ~/Desktop/starreckon/fleet/
+  const _fleetRaw   = optOrFlag("fleet");
+  const fleetDir    = _fleetRaw === null ? null : (_fleetRaw || DESKTOP_FLEET_DIR);
   let fleetStars = null;
   if (fleetDir) {
     try { fleetStars = fleetAggregates(fleetDir); } catch {}
@@ -994,20 +1295,39 @@ async function main() {
         }
       }
     } else {
-      // Prefer the accumulated lifetime over this scan. They are not the same
-      // thing: the logs are retained for about a month, so the scan alone is
-      // "recently", and calling that "lifetime" would overstate a shrinking
-      // window as a total. Snapshots are what outlive the logs.
+      // --star: corpus lifetime (or this scan when no history), then fleet pair
+      // when --fleet=DIR is also passed.
       const life = timeline.length ? lifetimeFromTimeline(timeline) : null;
-      if (life) star(life.levels, `lifetime · ${life.months} month(s)`);
-      else star(levels, "this scan · no snapshot history yet");
-      // Fleet star — appended when --fleet=DIR is passed.
-      if (fleetStars?.lifetime) {
-        const flife = fleetStars.lifetime;
-        const nFleetMonths = fleetStars.months.length;
+      if (fleetStars?.lifetime && timeline.length > 1) {
+        // 4-star layout: corpus month / corpus lifetime / fleet month / fleet lifetime
+        const month = timeline[timeline.length - 1] ?? null;
+        starHeading("corpus this month", month?.month ?? "");
+        star(month?.levels ?? computeLevels(month ?? {}), `corpus · this month · ${month?.month ?? ""}`.trimEnd());
+        starHeading("corpus lifetime", `${life.months} months of snapshots`);
+        star(life.levels, `corpus · lifetime · ${life.months} month(s)`);
         const fleetLevels = (agg, avail) => explainLevels(agg, { available: avail }).map((r) => r.level);
+        const nFleetMonths = fleetStars.months.length;
         starHeading("fleet lifetime", `${nFleetMonths} months · floor — no languages or tool calls`);
-        star(fleetLevels(flife, FLEET_MEASURES), `fleet · ${nFleetMonths} month(s) · floor`);
+        star(fleetLevels(fleetStars.lifetime, FLEET_MEASURES), `fleet · lifetime · ${nFleetMonths} month(s) · floor`);
+        if (nFleetMonths) {
+          const fm = fleetStars.months[nFleetMonths - 1];
+          starHeading("fleet this month", `${fm.month ?? ""} · floor`);
+          star(fleetLevels(fm, FLEET_MEASURES_MONTH), `fleet · this month · floor`);
+        }
+      } else {
+        // No fleet, or first run: single corpus star.
+        // Prefer the accumulated lifetime — logs are retained ~30 days, so the
+        // scan alone is "recently", not "lifetime".
+        if (life) star(life.levels, `lifetime · ${life.months} month(s)`);
+        else star(levels, "this scan · no snapshot history yet");
+        // Fleet lifetime appended when --fleet=DIR is passed but no corpus history.
+        if (fleetStars?.lifetime) {
+          const flife = fleetStars.lifetime;
+          const nFleetMonths = fleetStars.months.length;
+          const fleetLevels = (agg, avail) => explainLevels(agg, { available: avail }).map((r) => r.level);
+          starHeading("fleet lifetime", `${nFleetMonths} months · floor — no languages or tool calls`);
+          star(fleetLevels(flife, FLEET_MEASURES), `fleet · ${nFleetMonths} month(s) · floor`);
+        }
       }
     }
     console.log("");
@@ -1044,6 +1364,19 @@ async function main() {
   console.log(`\n${BOLD}── profile ─────────────────────────────${RESET}`);
   console.log(`sessions        ${fmt(agg.total_sessions)}  (${agg.active_days} active days, ${agg.total_duration_hours}h active)`);
   console.log(`tokens          ${fmt(agg.total_input_tokens + agg.total_output_tokens)} in+out, ${fmt(agg.total_cache_read_tokens + agg.total_cache_write_tokens)} cache`);
+  {
+    // Durable ledger total — survives log rotation and transcript deletion.
+    // Shown only when the ledger has at least one record (i.e. --ledger ran at
+    // least once, whether from a manual scan or the daemon).
+    const lt = ledgerLifetime();
+    if (lt.total > 0) {
+      const byCli = Object.entries(lt.by_cli_marked)
+        .sort((a, b) => b[1].total - a[1].total)
+        .map(([cli, v]) => `${cli}${v.marker} ${fmt(v.total)}`)
+        .join(", ");
+      console.log(`ledger lifetime ${fmt(lt.total)} total (${lt.sessions} sessions${byCli ? " · " + byCli : ""}) — survives log rotation`);
+    }
+  }
   console.log(`streak          ${agg.longest_streak_days}d longest, ${agg.current_streak_days}d current`);
   const topLangs = Object.entries(agg.languages).sort((a, b) => b[1] - a[1]).slice(0, 5);
   if (topLangs.length) console.log(`languages       ${topLangs.map(([l, n]) => `${l}(${n})`).join(" ")}`);
@@ -1060,6 +1393,14 @@ async function main() {
   }
   const models = Object.entries(agg.models).sort((a, b) => b[1] - a[1]).slice(0, 4);
   if (models.length) console.log(`models          ${models.map(([m]) => m).join(", ")}`);
+
+  // Undated sessions: counted in the total above but invisible in every dated
+  // breakdown (months, streaks, active days). Surface the gap explicitly so it
+  // is never silently hidden — deadreckon publishes this and starreckon should too.
+  if ((agg.sessions_without_date ?? 0) > 0) {
+    const tokStr = agg.tokens_without_date > 0 ? ` (${fmt(agg.tokens_without_date)} tokens)` : "";
+    console.log(`${DIM}⚠ ${agg.sessions_without_date} session${agg.sessions_without_date === 1 ? "" : "s"}${tokStr} have no date — counted in total, not in any month or streak${RESET}`);
+  }
 
   if (providers) {
     const rows = Object.entries(providers.providers);
@@ -1263,6 +1604,52 @@ async function main() {
     }
   }
 
+  // ---- F3a: auto-write Desktop fleet folder on every run that has fleetJoin --
+  // When --accounts or --join-fleet=<custom-dir> is used, and the target is NOT
+  // already the Desktop fleet dir, silently mirror to ~/Desktop/starreckon/fleet/
+  // so the Desktop tree stays up-to-date without an extra flag.
+  if (fleetJoin && joinDir !== DESKTOP_FLEET_DIR) {
+    try {
+      const providerSessions = (providers?.perSession ?? []).map((s) => ({
+        cli: s.provider,
+        session_id: s.session_id,
+        account: showAccounts ? s.account : maskIdentities(String(s.account ?? "")),
+        project: s.project,
+        turns: s.turns,
+        duration_min: s.duration_min,
+        duration_tight_min: s.duration_tight_min,
+        model: s.model,
+        billed: s.billed,
+        tokens: {
+          input_tokens: s.input,
+          output_tokens: s.output,
+          cache_read_input_tokens: s.cacheRead,
+          cache_creation_input_tokens: s.cacheWrite,
+        },
+      }));
+      const hostShort2 = String(hostname() ?? "").split(".")[0].trim();
+      const hostSlug2 =
+        hostShort2.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) ||
+        "unnamed-machine";
+      const mn2 = opt("machine") ?? hostSlug2;
+      const ml2 = opt("label") ?? (hostShort2 || hostSlug2);
+      mkdirSync(DESKTOP_FLEET_DIR, { recursive: true });
+      writeMachineFolder(
+        DESKTOP_FLEET_DIR,
+        mn2,
+        forFiles({
+          label: ml2,
+          accounts: fleetJoin.fleetAccounts,
+          sessions: [...fleetJoin.fleetSessions, ...providerSessions],
+          statsCache: fleetJoin.fleetStatsCache,
+          scannerFeatures: ["claude", ...Object.keys(providers?.providers ?? {})],
+        })
+      );
+    } catch {
+      // Silent — Desktop may not exist in CI / headless / containers.
+    }
+  }
+
   // ---- profile + stats page ------------------------------------------------
   let profile = null;
   if (flag("--page") || flag("--profile")) {
@@ -1373,6 +1760,12 @@ async function main() {
         name,
         showAccounts,
         noProjects,
+        // The same URL menu [X] copies to the clipboard, so the page's QR and
+        // the pasted link are the same destination. Built here rather than in
+        // statspage.mjs because levels/agg live here and the page renders from
+        // whatever it is handed. buildShareUrl returns null with no levels;
+        // the page drops the section rather than printing a broken code.
+        shareUrl: buildShareUrl(levels, agg, name),
       })
     );
     const pagePath = join(outDir, `stats-${stamp}.html`);
@@ -1382,7 +1775,7 @@ async function main() {
     // checkable — the page was rendered here, from local logs, and contains no
     // remote references — and hand over the check for the rest.
     console.log(
-      `page: ${maskPath(pagePath)} (open in any browser — rendered on this machine from your local logs, with no remote references in it; no process can prove its own no-egress claim, see PROVE-IT.md §1)`
+      `page: ${maskPath(pagePath)} (open in any browser — rendered on this machine from your local logs; it fetches nothing when opened, and the only link in it is your own share URL, which you choose to follow; no process can prove its own no-egress claim, see PROVE-IT.md §1)`
     );
   }
 
@@ -1447,32 +1840,53 @@ async function main() {
       return p;
     };
 
-    // Helper: write a dated Desktop snapshot folder.
+    // Helper: write a dated Desktop snapshot folder into a hierarchical layout.
     //
-    //   ~/Desktop/starreckon/<YYYY-MM-DD_HH-MM>/        no fleet
-    //   ~/Desktop/starreckon/<YYYY-MM-DD_HH-MM>-fleet/  with --fleet=DIR
+    //   ~/Desktop/starreckon/data/YYYY/YYYY-MM/week-NN/YYYY-MM-DD/
+    //     report.txt   — stars + compare bars
+    //     star.svg     — SVG card
+    //
+    //   ~/Desktop/starreckon/data/YYYY/YYYY-MM/snapshots/
+    //     YYYY-MM.json — copy of ~/.starreckon/snapshots/YYYY-MM.json
     //
     // Always written — no flag needed. The Desktop is the browseable history;
     // ~/.starreckon/reports/ is the audited archive. Both exist for different reasons.
     // Never throws: a missing Desktop (headless server, container) is not an error.
     const writeDesktopReport = () => {
       try {
-        const desktopBase = join(homedir(), "Desktop", "starreckon");
-        const suffix = fleetStars?.lifetime ? "-fleet" : "";
-        const folderName = `${stamp}${suffix}`;
-        const destDir = join(desktopBase, folderName);
-        mkdirSync(destDir, { recursive: true });
+        // ISO week number (1-based)
+        const _d = new Date(stamp);
+        const _jan4 = new Date(_d.getFullYear(), 0, 4);
+        const _startW1 = new Date(_jan4.getTime() - (((_jan4.getDay() || 7) - 1) * 86400000));
+        const _weekNum = String(Math.round((_d - _startW1) / (7 * 86400000)) + 1).padStart(2, "0");
+        const _year    = stamp.slice(0, 4);
+        const _month   = stamp.slice(0, 7); // YYYY-MM
+
+        // Day folder: data/YYYY/YYYY-MM/week-NN/YYYY-MM-DD/
+        const dayDir = join(DESKTOP_BASE, "data", _year, _month, `week-${_weekNum}`, stamp);
+        mkdirSync(dayDir, { recursive: true });
 
         // report.txt — stars + compare bars
         const body = buildCompareReport({ mine: _reportMine(), fleet: _reportFleet(), label: opt("name") ?? hostname() });
-        writeFileSync(join(destDir, "report.txt"), body);
+        writeFileSync(join(dayDir, "report.txt"), body);
 
         // star.svg — SVG card (always, regardless of --card flag)
         const svg = renderCard(levels, agg, vel, { name: opt("name") ?? "SKILL SCREEN" });
-        writeFileSync(join(destDir, "star.svg"), svg);
+        writeFileSync(join(dayDir, "star.svg"), svg);
 
-        console.log(`  desktop ${maskPath(destDir)}`);
-        return destDir;
+        // F3e: copy snapshots for this month into data/YYYY/YYYY-MM/snapshots/
+        // Non-fatal: if the source does not exist (first run), skip silently.
+        try {
+          const snapSrc = join(SNAP_DIR, `${_month}.json`);
+          if (existsSync(snapSrc)) {
+            const snapDst = join(DESKTOP_BASE, "data", _year, _month, "snapshots");
+            mkdirSync(snapDst, { recursive: true });
+            copyFileSync(snapSrc, join(snapDst, `${_month}.json`));
+          }
+        } catch {}
+
+        console.log(`  desktop ${maskPath(dayDir)}`);
+        return dayDir;
       } catch {
         // Silent — Desktop may not exist in CI / headless / containers.
       }
@@ -1513,7 +1927,13 @@ async function main() {
   // beacon.mjs runs as a CHILD PROCESS — dgram.createSocket is patched to throw
   // in this process. child_process is lazy-imported (same pattern as [Z] re-run).
   // buildBeaconPayload packages the scan result into the compact fleet format.
-  const _beaconPath = new URL("./beacon.mjs", import.meta.url).pathname;
+  const _beaconPath = fileURLToPath(new URL("./beacon.mjs", import.meta.url));
+  // Load (or generate) the fleet key once — used to sign outbound beacon packets
+  // and passed to child processes so they can verify inbound ones.
+  let _fleetKey = null;
+  try { _fleetKey = loadOrCreateFleetKey(); } catch (e) {
+    console.error(`${DIM}fleet key unavailable: ${maskText(e.message)} — beacon will run unsigned${RESET}`);
+  }
   const buildBeaconPayload = () => {
     const machineName = opt("machine") ?? hostname();
     const label = opt("label") ?? machineName;
@@ -1548,7 +1968,49 @@ async function main() {
       output_tokens: m.output_tokens ?? 0,
       active_days: m.active_days ?? 0,
     }));
-    return { machine: machineName, label, totals, months };
+    const payload = { machine: machineName, label, totals, months };
+    if (_fleetKey) payload.pub = _fleetKey.publicKeyBytes.toString("base64");
+    return payload;
+  };
+
+  // Helper: write a beacon peer's data into the Desktop fleet folder.
+  // Peer payload = { machine, label, totals: { accounts: [{account, input_tokens, ...}] }, months }
+  // Constructs the minimal account + session shape writeMachineFolder accepts.
+  // Never throws — fleet writes are always best-effort.
+  const writePeerFleetFolder = (peer) => {
+    try {
+      const peerSlug = String(peer.machine ?? "unknown")
+        .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) ||
+        "unknown-peer";
+      const peerLabel = peer.label ?? peer.machine ?? peerSlug;
+      // Build accounts from totals.accounts — each has by_day, by_model (may be empty).
+      const peerAccounts = (peer.totals?.accounts ?? []).map((a) => {
+        const model = Object.keys(a.by_model ?? {})[0] ?? "claude-3-5-sonnet-20241022";
+        const totals = {
+          input_tokens:                  a.input_tokens ?? 0,
+          cache_creation_input_tokens:   a.cache_creation_input_tokens ?? 0,
+          cache_read_input_tokens:       a.cache_read_input_tokens ?? 0,
+          output_tokens:                 a.output_tokens ?? 0,
+        };
+        const grand = Object.values(totals).reduce((s, v) => s + v, 0);
+        return {
+          account: a.account ?? "local",
+          totals,
+          by_model: a.by_model && Object.keys(a.by_model).length ? a.by_model : { [model]: totals },
+          by_day:  a.by_day ?? {},
+          grand_total: grand,
+          sessions: a.sessions ?? 0,
+        };
+      }).filter((a) => Object.values(a.totals).reduce((s, v) => s + v, 0) >= 0);
+      mkdirSync(DESKTOP_FLEET_DIR, { recursive: true });
+      writeMachineFolder(DESKTOP_FLEET_DIR, peerSlug, {
+        label: peerLabel,
+        accounts: peerAccounts,
+        sessions: [],
+      });
+    } catch {
+      // Silent
+    }
   };
 
   // runBeacon: spawn beacon.mjs, collect peers, render combined fleet star.
@@ -1557,12 +2019,14 @@ async function main() {
     const payload = buildBeaconPayload();
     const b64 = Buffer.from(JSON.stringify(payload)).toString("base64");
     console.log(`\n${DIM}broadcasting on LAN… listening ${listenMs / 1000}s for peers${RESET}`);
-    const r = _bss(process.execPath, [
+    const beaconArgs = [
       _beaconPath,
       "--mode=announce",
       `--payload=${b64}`,
       `--listen-ms=${listenMs}`,
-    ], { encoding: "utf8", timeout: listenMs + 5000 });
+    ];
+    if (_fleetKey) beaconArgs.push(`--fleet-pub=${_fleetKey.publicKeyBytes.toString("base64")}`);
+    const r = _bss(process.execPath, beaconArgs, { encoding: "utf8", timeout: listenMs + 5000 });
     if (r.status !== 0) {
       console.log(`${DIM}beacon exited ${r.status} — ${r.stderr?.trim() || "no output"}${RESET}`);
       return [];
@@ -1588,7 +2052,9 @@ async function main() {
   };
 
   if (flag("--beacon")) {
-    await runBeacon(8000);
+    const beaconPeers = await runBeacon(8000);
+    // F3f: write each discovered peer's data into the Desktop fleet folder.
+    for (const p of beaconPeers) writePeerFleetFolder(p);
   }
 
   if (flag("--live")) {
@@ -1605,9 +2071,9 @@ async function main() {
     let liveCoord = null;
     let ndjsonBuf = "";
 
-    const beaconChild = _lspawn(process.execPath, [
-      _beaconPath, "--mode=live", `--payload=${b64}`, "--coordinator",
-    ], { stdio: ["ignore", "pipe", "inherit"] });
+    const liveArgs = [_beaconPath, "--mode=live", `--payload=${b64}`, "--coordinator"];
+    if (_fleetKey) liveArgs.push(`--fleet-pub=${_fleetKey.publicKeyBytes.toString("base64")}`);
+    const beaconChild = _lspawn(process.execPath, liveArgs, { stdio: ["ignore", "pipe", "inherit"] });
 
     await new Promise((resolve) => {
       beaconChild.stdout.on("data", (chunk) => {
@@ -1626,6 +2092,8 @@ async function main() {
           if (evt.type === "join") {
             livePeers.set(evt.peer.machine, evt.peer);
             console.log(`  ${BOLD}${CYAN}+${RESET} ${evt.peer.label ?? evt.peer.machine} joined  ${DIM}(${livePeers.size} total)${RESET}`);
+            // F3g: write/overwrite peer's Desktop fleet folder on join
+            writePeerFleetFolder(evt.peer);
           } else if (evt.type === "leave") {
             livePeers.delete(evt.peer.machine);
             console.log(`  ${DIM}− ${evt.peer.label ?? evt.peer.machine} left  (${livePeers.size} remaining)${RESET}`);
@@ -1964,7 +2432,7 @@ ${BOLD}${CYAN}── reach out (shown in QR) ───────────�
           if (rl) rl.close();
           const { spawnSync: _ss } = await import("node:child_process");
           const rerunArgv = args.filter((a) => a !== "-h" && a !== "--help");
-          _ss(process.execPath, [new URL(import.meta.url).pathname, ...rerunArgv], {
+          _ss(process.execPath, [fileURLToPath(new URL(import.meta.url)), ...rerunArgv], {
             stdio: "inherit",
             env: { ...process.env },
           });
@@ -1988,7 +2456,7 @@ ${BOLD}${CYAN}── reach out (shown in QR) ───────────�
   console.log(`${DIM}from this one. run either of these and let the kernel answer:${RESET}`);
   console.log(`  ${CYAN}npx starreckon prove${RESET}${DIM}      print the sandbox command, run nothing${RESET}`);
   try {
-    const script = maskPath(new URL("../bin/starreckon-proof.sh", import.meta.url).pathname);
+    const script = maskPath(fileURLToPath(new URL("../bin/starreckon-proof.sh", import.meta.url)));
     console.log(`  ${CYAN}sh ${script}${RESET}`);
     console.log(`${DIM}    runs this scan inside a deny-network sandbox and fires a real TCP${RESET}`);
     console.log(`${DIM}    probe on both sides of the wall: outside it connects, inside the${RESET}`);
