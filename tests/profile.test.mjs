@@ -183,6 +183,28 @@ test("computeToolRelationship: polyglot shares are the fraction of ALL sessions"
   assert.ok(Math.abs(rel.tools.reduce((a, t) => a + t.share, 0) - 1) < 0.02);
 });
 
+// Two machines with the same sessions must publish the same tool_relationship.
+// Both tool sorts ranked on count alone, so a tie was broken by whatever order
+// the sessions arrived in — and session order comes from directory enumeration,
+// which differs between machines. scan.mjs exports byCountThenKey for exactly
+// this and uses it in four places; these two were ranking on count alone.
+test("computeToolRelationship: ties break by name, not by arrival order", () => {
+  const mk = (month, source) => ({ start_ts: Date.parse(`${month}-05T10:00:00Z`), source });
+  // The same multiset of sessions — three codex, three claude_code, tied in
+  // every month — presented in two different orders.
+  const a = computeToolRelationship([
+    mk("2026-05", "codex"), mk("2026-05", "claude_code"),
+    mk("2026-06", "claude_code"), mk("2026-06", "codex"),
+    mk("2026-07", "codex"), mk("2026-07", "claude_code"),
+  ]);
+  const b = computeToolRelationship([
+    mk("2026-05", "claude_code"), mk("2026-05", "codex"),
+    mk("2026-06", "codex"), mk("2026-06", "claude_code"),
+    mk("2026-07", "claude_code"), mk("2026-07", "codex"),
+  ]);
+  assert.deepEqual(a, b, "the published verdict must not depend on arrival order");
+});
+
 // ---- collectProfileSignals on temp fixtures --------------------------------
 
 test("collectProfileSignals: counts prompts, filters low-signal, dedups usage, no text stored", async () => {
@@ -363,6 +385,18 @@ test("computeProfile: tokens split, records, streak override", () => {
   assert.equal(p.tokens.cache_write, 1e6);
   assert.equal(p.tokens.new_content, 1.6e6 + 1e6 + 1.6e6);
   assert.equal(p.tokens.work_tokens, 3.2e6);
+  // The four buckets above were asserted individually, but nothing asserted the
+  // total they roll up into or the percentages derived from it. Dropping
+  // cache_read from tokTotal left every one of the 813 tests green while
+  // publishing shares_pct.cache_read as 228.6% — a share over 100.
+  assert.equal(p.tokens.total, 1.6e6 + 1.6e6 + 4e6 + 1e6);
+  assert.equal(
+    p.tokens.total,
+    p.tokens.fresh_input + p.tokens.output + p.tokens.cache_read + p.tokens.cache_write
+  );
+  const shares = Object.values(p.tokens.shares_pct);
+  assert.ok(shares.every((v) => v >= 0 && v <= 100), "a share is a fraction of the whole");
+  assert.ok(Math.abs(shares.reduce((a, b) => a + b, 0) - 100) < 0.5, "the shares partition the total");
   // month 2026-08 dominant model = sonnet (2 sessions vs 1 opus):
   // (1.6M*3 + 1.6M*15 + 4M*0.3 + 1M*3.75)/1M = 4.8+24+1.2+3.75 = 33.75
   // records: longest session by DURATION
