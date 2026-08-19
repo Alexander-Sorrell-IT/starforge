@@ -170,6 +170,11 @@ export function emptyStats() {
     // directories into 104. A project is a place work happened, not a property
     // of a session id.
     projectsSeen: new Map(), // encoded dir name -> that directory's project label
+    // Session ids seen on a row that had to be DROPPED for an unusable
+    // timestamp. A row that declares an identity and cannot be dated is not a
+    // row this scanner may pretend it never read; finalize() reports the ones
+    // that never turned up on a dated row as undated_sessions.
+    undatedSessions: new Set(),
   };
 }
 
@@ -544,7 +549,17 @@ export async function parseClaudeFile(filePath, stats, opts = {}) {
     // all give undefined on property access and fall out at the isNaN below.
     if (d === null || typeof d !== "object" || Array.isArray(d)) return;
     const ts = typeof d.timestamp === "string" ? Date.parse(d.timestamp) : NaN;
-    if (isNaN(ts)) return;
+    if (isNaN(ts)) {
+      // DROPPED, BUT NOT UNSEEN. Every temporal figure this scanner produces is
+      // keyed on a parsed timestamp, so a row without one cannot be credited to
+      // a day, a month or a star — that part is right and is not changed here.
+      // What was wrong is that the row left no trace at all: a half-written
+      // final line from a killed process, or a clock that came back wrong, took
+      // its usage block with it and total_sessions never knew. Keep the
+      // identity; finalize() reports it only if no dated row ever carried it.
+      if (typeof d.sessionId === "string") stats.undatedSessions?.add(d.sessionId);
+      return;
+    }
     if (typeof d.sessionId === "string") {
       sessionId = d.sessionId;
       idFromRow = true;
@@ -693,7 +708,13 @@ export async function parseCodexFile(filePath, stats, opts = {}) {
     // all give undefined on property access and fall out at the isNaN below.
     if (d === null || typeof d !== "object" || Array.isArray(d)) return;
     const ts = typeof d.timestamp === "string" ? Date.parse(d.timestamp) : NaN;
-    if (isNaN(ts)) return;
+    if (isNaN(ts)) {
+      // Same rule as the Claude parser above; here the identity lives on the
+      // session_meta row's payload.
+      if (d?.type === "session_meta" && typeof d?.payload?.id === "string")
+        stats.undatedSessions?.add(d.payload.id);
+      return;
+    }
     const payload = d.payload;
     if (d.type === "session_meta" && payload) {
       if (typeof payload.id === "string") {
@@ -831,6 +852,9 @@ export function finalize(stats) {
   const projects = new Map();
   const models = new Map();
   const monthly = new Map();
+  // Sessions that reached NO monthly bucket, counted rather than dropped. See
+  // undated_sessions below.
+  let undated = 0;
   for (const [, s] of sessions) {
     const dur = activeDurationMs(s.minutes);
     durationMs += dur;
@@ -876,11 +900,60 @@ export function finalize(stats) {
         }
       }
       monthly.set(key, b);
+    } else {
+      undated += 1;
     }
   }
+  // COUNTED SEPARATELY FROM `undated`, BECAUSE IT IS A DIFFERENT FACT.
+  //
+  // `undated` above is a session that IS in total_sessions and reached no
+  // month, so it is the term that makes total_sessions reconcile against the
+  // monthly buckets. These never reached total_sessions at all — every row
+  // carrying the identity was dropped for an unusable timestamp, so the session
+  // is not in stats.sessions and not in any total on this object. Adding the
+  // two together would destroy the reconciliation the first one exists for.
+  //
+  // A session with even ONE dated row is NOT counted here: it is in
+  // stats.sessions, it has a month, and counting it would make the number read
+  // non-zero for boring reasons. Measured on 246 real transcripts (132,614
+  // rows, 131 sessions): 22,281 rows declare an id with no usable timestamp and
+  // every one of those sessions also has dated rows, so this filter leaves 0 —
+  // while a transcript whose clock is broken throughout still gets counted.
+  let dropped = 0;
+  for (const id of stats.undatedSessions ?? [])
+    if (!stats.sessions.has(id)) dropped += 1;
   const streaks = computeStreaks(stats.activeDays);
   return {
     total_sessions: stats.sessions.size,
+    // A SESSION IN ONE FIGURE AND INVISIBLE IN ANOTHER.
+    //
+    // The loop above files a session into the month it STARTED in, and only if
+    // that start is a finite timestamp. A session without one still counts in
+    // total_sessions and its tokens are still in the grand totals above — but
+    // it reaches no monthly bucket, so it is in no month's star, no snapshot,
+    // and no lifetime figure derived from the timeline. Before this the gap had
+    // no name and read as an arithmetic fault in the tool.
+    //
+    // The invariant this field exists to make checkable, from the report alone:
+    //
+    //   total_sessions === sum(monthly_buckets[].sessions) + undated_sessions
+    //
+    // ZERO IS A MEASUREMENT. Both transcript parsers drop a row whose timestamp
+    // will not parse before a session is ever built, so on a healthy corpus
+    // this is 0 — and that is worth printing, because "nothing is undated" and
+    // "this build never looked" are the same blank line otherwise. The undated
+    // sessions that actually carry tokens on a real machine come from the
+    // ported readers, which emit `start: null` on purpose for a session whose
+    // transcript is gone; cli.mjs counts those, and dropped_sessions below,
+    // alongside this number.
+    undated_sessions: undated,
+    // Sessions this scan dropped ENTIRELY: every row that named them had a
+    // timestamp that would not parse, so they are in no figure on this object —
+    // not total_sessions, not the token totals, not a month. Outside the
+    // reconciliation above on purpose; a fabricated broken-clock row took
+    // 999,999 input tokens and a whole session out of a scan with nothing
+    // anywhere saying so, which is what this counts.
+    dropped_sessions: dropped,
     active_days: stats.activeDays.size,
     total_duration_hours: +(durationMs / 3.6e6).toFixed(1),
     total_input_tokens: totIn,

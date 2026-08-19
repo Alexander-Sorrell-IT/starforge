@@ -157,7 +157,7 @@ import {
   finalize,
   sessionRecords,
 } from "./scan.mjs";
-import { LiveStar, computeLevels, explainLevels, renderCompare, renderStar, buildCompareReport, AXES } from "./star.mjs";
+import { LiveStar, computeLevels, explainLevels, renderCompare, renderStar, buildCompareReport, terminalStarWidth, AXES } from "./star.mjs";
 import {
   writeSnapshots,
   writeSnapshotStars,
@@ -1258,9 +1258,12 @@ async function main() {
   // in this function would quietly break.
   if (flag("--star") || flag("--dual")) {
     const color = !process.env.NO_COLOR;
+    // TERMINAL PATH — the width follows the window. Every renderStar() that
+    // ends up in a FILE goes through buildCompareReport(), which pins 78.
+    const width = terminalStarWidth();
     const star = (lv, status) => {
       console.log("");
-      console.log(renderStar(lv, { color, status }));
+      console.log(renderStar(lv, { color, status, width }));
     };
     if (flag("--dual")) {
       // Stacked, not side by side: one star is 78 columns wide, so a pair would
@@ -1341,6 +1344,7 @@ async function main() {
       renderStar(life.levels, {
         color: !process.env.NO_COLOR,
         status: `lifetime · ${life.months} month(s)`,
+        width: terminalStarWidth(),
       })
     );
   }
@@ -1365,6 +1369,45 @@ async function main() {
   }
   const models = Object.entries(agg.models).sort((a, b) => b[1] - a[1]).slice(0, 4);
   if (models.length) console.log(`models          ${models.map(([m]) => m).join(", ")}`);
+
+  // ---- sessions with no usable date ----------------------------------------
+  //
+  // Their tokens are inside a published total — the corpus totals above for the
+  // ones here, the every-CLI totals below for the rest — and they belong to no
+  // month: no star, no snapshot, and nothing in any lifetime figure built from
+  // the timeline. The same session is therefore inside one published number and
+  // outside another, and until this line there was nothing on screen saying so.
+  //
+  // Two sources, kept apart because they are different facts. `undated_sessions`
+  // is this machine's transcripts (scan.mjs). The other CLIs' figure counts the
+  // provider sessions the ported readers emit with `start: null` — a vanished
+  // session has no turn to take a date from, which is a property of the thing,
+  // not a gap in the reader.
+  //
+  // PRINTED EVEN AT ZERO, and `--no-providers` says NOT SCANNED rather than 0.
+  // A silent line cannot be told apart from a build that never looked, and a 0
+  // for a store nobody opened is the "absent looks exactly like zero" defect
+  // this program has shipped more times than any other.
+  {
+    const here = (agg.undated_sessions ?? 0) + (agg.dropped_sessions ?? 0);
+    const other = providers ? (providers.perSession ?? []).filter((x) => !x.month).length : null;
+    const where = other === null
+      ? `${DIM}here · other CLIs not scanned (--no-providers)${RESET}`
+      : `${DIM}(${fmt(here)} here, ${fmt(other)} in other CLIs)${RESET}`;
+    const total = here + (other ?? 0);
+    console.log(`undated         ${fmt(total)}  ${where}`);
+    if (total > 0)
+      console.log(`${DIM}                in no month, star, snapshot or lifetime figure${RESET}`);
+    // A DROPPED SESSION IS WORSE THAN AN UNDATED ONE AND MUST NOT READ THE SAME.
+    //
+    // The rest are counted somewhere and merely unplaced in time. These were
+    // discarded whole — every row naming them had a timestamp that would not
+    // parse, so their tokens are in NO total this program prints. Said on its
+    // own line because "97 undated" and "3 of them are missing entirely" are
+    // not the same sentence.
+    if ((agg.dropped_sessions ?? 0) > 0)
+      console.log(`${DIM}                ${fmt(agg.dropped_sessions)} of those were dropped ENTIRELY — unparseable timestamps; their tokens are in no total above${RESET}`);
+  }
 
   if (providers) {
     const rows = Object.entries(providers.providers);
@@ -1592,6 +1635,17 @@ async function main() {
     const baseline = {
       generated_at: new Date().toISOString(),
       total_sessions: agg.total_sessions,
+      // Baseline already carries total_sessions AND monthly_buckets, so it
+      // already contains the discrepancy; without this field the difference
+      // between them has no name and reads as an arithmetic fault. With it the
+      // file reconciles against itself:
+      //   total_sessions === sum(monthly_buckets[].sessions) + undated_sessions
+      // The expanded report gets it for free — it spreads `...agg`.
+      undated_sessions: agg.undated_sessions ?? 0,
+      // NOT part of that identity — a dropped session is in no total in this
+      // file at all. Carried here so a reader can see the scan lost something
+      // without having to notice it did not.
+      dropped_sessions: agg.dropped_sessions ?? 0,
       active_days: agg.active_days,
       total_duration_hours: agg.total_duration_hours,
       total_input_tokens: agg.total_input_tokens,
@@ -2031,6 +2085,7 @@ async function main() {
       console.log(renderStar(combinedLevels, {
         color: !process.env.NO_COLOR,
         status: `${allMachines.length} machines · combined floor`,
+        width: terminalStarWidth(),
       }));
     } else {
       console.log(`${DIM}\nno other machines were seen during this session${RESET}`);
