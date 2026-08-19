@@ -372,6 +372,11 @@ starreckon --dual           # ONLY two stars: this month, then lifetime
 starreckon --card           # write the Porter-Grade SVG card
 starreckon --page           # write the full HTML stats page (runs the deeper profile pass)
 starreckon --json           # write both a compact baseline and the full expanded JSON report
+starreckon --sessions       # write the per-session export: one record per session, its four
+                               # token counters kept apart, plus start/end, CLI and project.
+                               # For comparing against another counter session by session —
+                               # a grand-total check survives a swap between two sessions.
+                               # Obeys --no-projects; project names are readable without it.
 starreckon --profile        # run the deeper profile pass without writing the HTML page
                                # (it lands in the expanded JSON report)
 starreckon --accounts       # per-account split + floor (files get acct-<hash>, not addresses)

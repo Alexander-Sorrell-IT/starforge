@@ -36,6 +36,13 @@
 //                                 total. the daemon scan passes this by default.
 //   starreckon --roots=a,b     extra home roots (other accounts/machines)
 //   starreckon --json          write baseline + expanded JSON reports
+//   starreckon --sessions      write the PER-SESSION export: one record per
+//                                 session with its four token counters kept
+//                                 apart, its start/end, its CLI and its project.
+//                                 Exists so another counter can be compared
+//                                 session by session instead of only on grand
+//                                 totals, which a swap between two sessions
+//                                 survives. Obeys --no-projects.
 //   starreckon --report        auto-save full report (stars + compare) to
 //                                 ~/.starreckon/reports/report-<date>.txt
 //   starreckon --card          write the Porter-Grade SVG card
@@ -148,6 +155,7 @@ import {
   parseClaudeFile,
   parseCodexFile,
   finalize,
+  sessionRecords,
 } from "./scan.mjs";
 import { LiveStar, computeLevels, explainLevels, renderCompare, renderStar, buildCompareReport, AXES } from "./star.mjs";
 import {
@@ -299,6 +307,7 @@ const FLAG_SPEC = Object.freeze({
   "--star": "bool",
   "--dual": "bool",
   "--json": "bool",
+  "--sessions": "bool",
   "--card": "bool",
   "--wrapped": "bool",
   "--no-wrapped": "bool",
@@ -989,8 +998,13 @@ async function main() {
   for (const src of sources) {
     try {
       auditRead(audit, src.source);
-      if (src.source === "codex") await parseCodexFile(src.path, stats, { excluded });
-      else await parseClaudeFile(src.path, stats, { excluded });
+      // `cli` names the STORE a session's rows came from, for the per-session
+      // export. discoverSources says "claude_code"; the sibling counter this
+      // export is compared against spells that one "claude", so the translation
+      // happens here rather than in every consumer downstream.
+      const cli = src.source === "claude_code" ? "claude" : src.source;
+      if (src.source === "codex") await parseCodexFile(src.path, stats, { excluded, cli });
+      else await parseClaudeFile(src.path, stats, { excluded, cli });
     } catch {}
     done += 1;
     // Throttled by TIME, not by file count. `done % 5` meant a 20,217-file
@@ -1582,6 +1596,56 @@ async function main() {
           ? `your projects as proj-<hash> pseudonyms (--no-projects; ${agg.projects.length} of them)`
           : `your PROJECTS (${agg.projects.length} two-segment labels — pass --no-projects for proj-<hash> instead)`
       } and this machine's hostname (in timeline/snapshots)${accounts ? (showAccounts ? ", plus RAW account email addresses (--show-accounts)" : ", and acct-<hash> pseudonyms, not addresses") : ""}. Read one before you sync or share it.${RESET}`
+    );
+  }
+
+  // ---- --sessions: the per-session export ----------------------------------
+  // Same directory, same stamp, same auditWrite and the same forFiles() masking
+  // as the reports above — this is another report, not a new convention.
+  //
+  // It exists to be COMPARED. Every other artifact this program writes is a
+  // grand total or a monthly roll-up, and a differential built on those passes
+  // whenever a corruption preserves the sum: two sessions' tokens swapped, one
+  // session's tokens moved into its neighbour, input moved into output. Joining
+  // this file to another counter's per-session records catches all three.
+  //
+  // `totals` is summed from the records in this file, not copied from agg, so
+  // the file can be checked against the headline numbers by anyone holding both
+  // — a totals line copied from the same variable the headline came from would
+  // agree with it no matter what the records said.
+  if (flag("--sessions")) {
+    mkdirSync(outDir, { recursive: true });
+    const records = sessionRecords(stats, { noProjects });
+    const totals = { input_tokens: 0, cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0, output_tokens: 0 };
+    for (const r of records)
+      for (const k of Object.keys(totals)) totals[k] += r.tokens[k];
+    const payload = {
+      program: "starreckon",
+      // null when it cannot be computed — never the string "unknown", which
+      // would compare equal between two machines running different code.
+      scanner_version: scannerVersion(),
+      generated: new Date().toISOString(),
+      // What was done to the two readable fields, in the file, so a reader does
+      // not have to know which flags the run was given.
+      masking: {
+        projects: noProjects ? "proj-<hash> pseudonyms (--no-projects)" : "two-segment labels",
+        session_ids:
+          "id_source=row ids are verbatim (the join key); id_source=path ids were "
+          + (noProjects ? "replaced with proj-<hash>" : "masked with maskPath")
+          + " because this scanner derived them from a working-directory path",
+      },
+      total_sessions: records.length,
+      totals,
+      sessions: records,
+    };
+    const p3 = join(outDir, `sessions-${stamp}.json`);
+    writeFileSync(p3, auditWrite(audit, p3, JSON.stringify(forFiles(payload), null, 2)));
+    console.log(`\nper-session export: ${maskPath(p3)}`);
+    console.log(
+      `${DIM}         ${records.length} sessions, four token counters kept apart per session. ${
+        noProjects ? "Projects are proj-<hash>" : "This names your PROJECTS (pass --no-projects for proj-<hash>)"
+      }.${RESET}`
     );
   }
 
