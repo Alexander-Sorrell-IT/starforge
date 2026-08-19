@@ -5,8 +5,8 @@
     "tripwire.mjs": "8d3ef1c6d85450eff8a818c45ee0a0871d5dab1da858fddbe0fc64efb478d7d9",
     "confine.mjs": "d87b7c2524b972d5e8e47828ad98eb59fc23c8def5bb8a26f6902df9b3659efb",
     "serve.mjs": "a2377a6c6f9bde67330f1dbc32ee0a9728af5a06d505aac2bd1e29701b4a2327",
-    "search.mjs": "eaa6122f011ece99bd3908df829bfa2062deaaf657f23d2b672fb0685bef090a",
+    "search.mjs": "890804da8c8cfab9b17333cf45b1efc4ceb02619a63259a4ad2dc5cd7d046009",
     "beacon.mjs": "954d430a80775bd6b4d92a93bfd2827973de26245ee62f412d4aa9bcce1a22f8",
-    "cli.mjs": "b56af996c99992b77c0fccd1c6ce21a0f3f92e61bff88350fb4306896c467c10"
+    "cli.mjs": "6f092e778f530045de70af9385036ddea576a1ae2f3e6709085b3395d9536a2c"
   }
 }

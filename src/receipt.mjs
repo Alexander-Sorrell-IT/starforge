@@ -24,6 +24,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync, lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
+import { LOGS_SUBDIR, summariseLayerLogs } from "./layerlog.mjs";
 
 export const DATA_DIR = () => join(homedir(), ".starreckon");
 
@@ -138,6 +139,7 @@ export function buildReceipt({ dir = DATA_DIR() } = {}) {
     skipped: { symlinks: 0, too_large: 0, unreadable: 0, binary: 0 },
     reads: null,
     daemon: null,
+    layer_logs: null,
   };
   if (!result.exists) return result;
 
@@ -240,6 +242,23 @@ export function buildReceipt({ dir = DATA_DIR() } = {}) {
     }
   } catch {}
 
+  // The optional layers' own tree. The consent screen promises a log for every
+  // run of a layer someone turned on; this is where the reader gets to check
+  // that the promise was kept, and it belongs in the receipt for the same
+  // reason the daemon block above does — a scheduled run shows you nothing at
+  // the time it happens.
+  //
+  // DERIVED FROM THE RUN RECORDS, NOT READ OFF THE LEDGER. The tree carries a
+  // ledger.json at every level, and repeating one of those numbers here would
+  // make this receipt as trustworthy as the least trustworthy file in the tree.
+  // summariseLayerLogs re-tallies the records and reports whether the stored
+  // root ledger agrees, so a stale or edited view shows up as a disagreement
+  // instead of as the answer.
+  try {
+    const logs = summariseLayerLogs(join(root, LOGS_SUBDIR));
+    if (logs.exists) result.layer_logs = { ...logs, dir: relative(root, logs.dir) };
+  } catch {}
+
   return result;
 }
 
@@ -264,7 +283,9 @@ export function renderReceipt(r, { color = true } = {}) {
     if (r.reads.argv) out.push(`${c(D, "           argv: " + (Array.isArray(r.reads.argv) ? r.reads.argv.join(" ") : r.reads.argv))}`);
   }
   out.push("");
-  out.push(c(B, "longest free text in STORED DATA (snapshots, audit, reports json)"));
+  // This heading ENUMERATES the stores it covers, so a new store that lands in
+  // the walk without landing in this line makes the sentence quietly wrong.
+  out.push(c(B, "longest free text in STORED DATA (snapshots, audit, layer logs, reports json)"));
   if (!r.longest_text) out.push("  " + c(G, "none — the stored data contains no readable prose at all"));
   else {
     const t = r.longest_text;
@@ -301,6 +322,35 @@ export function renderReceipt(r, { color = true } = {}) {
     if (!r.daemon.files.length) out.push(c(D, "  no background run has written output yet"));
     for (const f of r.daemon.files)
       out.push(`  ${c(D, `${f.name} — ${kb(f.bytes)} (a background run prints here; read it)`)}`);
+    out.push("");
+  }
+  if (r.layer_logs) {
+    const L = r.layer_logs;
+    out.push(c(B, "optional layer runs"));
+    out.push(`  ${L.dir}/<year>/<month>/<day>/ — ${L.runs} run(s) over ${L.days} day(s)`);
+    if (!L.runs) {
+      out.push(c(D, "  the tree exists but holds no run record — a layer was turned on and"));
+      out.push(c(D, "  has not run yet, or something removed the records"));
+    } else {
+      const fmt = (o) => Object.entries(o).map(([k, v]) => `${k} ${v}`).join(", ");
+      out.push(c(D, `  by layer: ${fmt(L.by_layer)}`));
+      out.push(c(D, `  outcome:  ${fmt(L.by_outcome)}`));
+      if (L.first_at) out.push(c(D, `  first ${L.first_at} · last ${L.last_at}`));
+    }
+    // The ledgers are views. Saying so here is what stops a reader treating the
+    // stored number as a second, independent confirmation of the same fact.
+    out.push(
+      c(D, `  ${L.ledger_files} ledger file(s) — each one a VIEW recomputed from these records, not a counter`)
+    );
+    if (L.ledger_agrees === false)
+      out.push(
+        c(Y, `  the root ledger says ${L.ledger_runs} and the records say ${L.runs}. The RECORDS are`) +
+          "\n" +
+          c(Y, "  the truth; the next run of a layer rewrites the view from them.")
+      );
+    if (L.unreadable)
+      out.push(c(Y, `  ${L.unreadable} record(s) could not be read — counted as unreadable, never as zero`));
+    if (L.foreign) out.push(c(D, `  ${L.foreign} file(s) in the tree are not run records and were not counted`));
     out.push("");
   }
   const sk = r.skipped;

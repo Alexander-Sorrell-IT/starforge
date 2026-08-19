@@ -39,9 +39,12 @@ export const MODELS_DEST = "~/.starreckon/.venv-search";
 // inside of that computer's folder", organised year / month / day, so that a
 // ledger exists at every level of the architecture rather than only at the leaf.
 //
-// !! NOTHING WRITES THIS YET. This constant is the promise the screen makes and
-// the single place the writer will hook into. See the note at the bottom of this
-// file for what is still missing before the sentence on the screen is true.
+// This constant is the promise the screen makes. src/layerlog.mjs is what keeps
+// it, and tests/layerlog.test.mjs parses THIS STRING and requires the path the
+// writer actually produces to match it — so the sentence and the bytes cannot
+// drift apart without a test failing. The shape lives here, on the screen side,
+// because consent.mjs must do no I/O (see the header) and importing the writer
+// would drag node:fs into a file whose whole value is not having it.
 export const LOG_DIR_SHAPE = "~/.starreckon/logs/<year>/<month>/<day>/";
 
 /**
@@ -304,11 +307,13 @@ export function consentScreen(doorKey, { color = true, layers = null } = {}) {
   //     writes a record without saying so is the opposite of this program's
   //     claim, and the daemon-only case is the one an earlier draft dropped.
   L.push(`${B}a log file will be saved${R}`);
-  // Tense is load-bearing here. NOTHING WRITES A LOG YET (see the closing note
-  // in this file), so "writes one" would be a false statement of present fact,
-  // read by the user before they answer. "will write one" is what this is: a
-  // commitment not yet kept. One word, and it is the difference between the
-  // screen promising something and the screen lying about something.
+  // Tense is load-bearing, and it is now RIGHT for the second reason rather
+  // than the first. It was written as "will write one" because nothing wrote a
+  // log at all and "writes one" would have been a false statement of present
+  // fact. src/layerlog.mjs writes them now — and the future tense is still the
+  // true one, because this screen is printed BEFORE the layer runs and it is
+  // describing runs that have not happened. Unchanged, deliberately: the words
+  // the reader agreed to are the same words, and now they are backed.
   L.push(`  every run of this layer will write one, under`);
   L.push(`  ${LOG_DIR_SHAPE} — inside THIS machine's own folder,`);
   L.push(`  by year / month / day. that log is what makes the layer auditable`);
@@ -384,19 +389,27 @@ export function nonTtyNotice(doorKey) {
   );
 }
 
-// ── WHAT IS STILL MISSING ────────────────────────────────────────────────────
-// The screen promises a log file. NOTHING WRITES ONE YET. For that sentence to
-// be true, three things have to land, and until they do the promise is the only
-// part of §3 of the spec that exists:
+// ── WHERE THE PROMISE IS KEPT ────────────────────────────────────────────────
+// The screen promises a log file. Three things had to land for that sentence to
+// be true, and all three are in the tree now:
 //
-//   1. a writer that appends one record per layer run under LOG_DIR_SHAPE,
-//      resolved against the real home — model runs AND daemon runs, both.
-//   2. the daemon's two scheduled jobs calling it, since a scheduled run is
-//      precisely the run with no terminal to account for it.
-//   3. `starreckon receipt` reading that tree, so the log shows up in the list
-//      of what this program has KEPT about you. A record the receipt cannot see
-//      is a record the reader has no way to audit, which defeats the point.
+//   1. the writer — src/layerlog.mjs. One immutable record per layer run under
+//      LOG_DIR_SHAPE, resolved against the real home (it handles the literal-"~"
+//      $HOME that snapshots.mjs:20-27 records an npx run dying on).
+//   2. the callers — src/search.mjs's runSearch() records every MODEL run, and
+//      src/cli.mjs arms a record for every SCHEDULED daemon run above the
+//      subcommand dispatch, since a scheduled run is precisely the run with no
+//      terminal to account for it. The schedule files carry the marker that
+//      says which job they are (src/daemon.mjs, STARRECKON_LAYER_RUN).
+//   3. the reader — src/receipt.mjs surfaces the tree, so the log appears in
+//      the list of what this program has KEPT about you.
 //
-// The spec also requires the per-level ledger to be a VIEW filtered from one
-// append-only record per machine, never a second counter — two counters that
-// must agree are two counters that will disagree.
+// The per-level ledger is a VIEW recomputed from the run records on every
+// write, never a second counter — two counters that must agree are two counters
+// that will disagree. The cheap check that it stayed one: delete every
+// ledger.json in the tree and the next layer run must rebuild them identically.
+//
+// What is still open, and is the author's to answer (SPEC-optional-layers.md
+// §6): whether a MODEL record should carry the full three-statement protocol
+// (your claim / the model's band / the outcome) rather than the run's shape
+// alone. Today it carries the run.
