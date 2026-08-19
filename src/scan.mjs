@@ -384,6 +384,14 @@ function session(stats, id, ts) {
       exts: new Map(),
       hours: new Array(24).fill(0),
       days: new Set(),
+      // Which store this session's rows came out of, and whether its ID is an
+      // identity a row DECLARED or one this scanner INVENTED from the file
+      // path. Both exist for sessionRecords() — see the comment there. A SET
+      // rather than a single value because a session id can legitimately appear
+      // in files from two stores, and picking whichever was read first would
+      // make the answer depend on directory order.
+      sources: new Set(),
+      idFromRow: false,
     };
     stats.sessions.set(id, s);
   }
@@ -511,6 +519,14 @@ export async function parseClaudeFile(filePath, stats, opts = {}) {
   // is set once and the first directory seen wins.
   const parts = filePath.split(/[/\\]/).filter(Boolean);
   let sessionId = parts.slice(-2).join("/").replace(/\.jsonl$/, "");
+  // Cowork stores Claude-format transcripts, so it is parsed by this function
+  // and is still a different tool. The caller names the store; "claude" is the
+  // default because that is what every caller that does not care is reading.
+  const cli = opts.cli ?? "claude";
+  // Sticky, exactly as `sessionId` above is sticky: once a row has declared the
+  // id, every later row of this file belongs to that declared session even if
+  // the row itself carries no sessionId.
+  let idFromRow = false;
   await streamLines(filePath, (line) => {
     let d;
     try {
@@ -529,9 +545,14 @@ export async function parseClaudeFile(filePath, stats, opts = {}) {
     if (d === null || typeof d !== "object" || Array.isArray(d)) return;
     const ts = typeof d.timestamp === "string" ? Date.parse(d.timestamp) : NaN;
     if (isNaN(ts)) return;
-    if (typeof d.sessionId === "string") sessionId = d.sessionId;
+    if (typeof d.sessionId === "string") {
+      sessionId = d.sessionId;
+      idFromRow = true;
+    }
     temporal(stats, ts);
     const s = session(stats, sessionId, ts);
+    s.sources.add(cli);
+    if (idFromRow) s.idFromRow = true;
     if (typeof d.cwd === "string" && !s.project) {
       const label = projectLabel(d.cwd);
       if (opts.excluded?.(d.cwd)) s.project = "[excluded]";
@@ -644,6 +665,9 @@ export async function parseClaudeFile(filePath, stats, opts = {}) {
 
 export async function parseCodexFile(filePath, stats, opts = {}) {
   let sessionId = filePath.split("/").pop();
+  const cli = opts.cli ?? "codex";
+  // See parseClaudeFile: sticky, and false until session_meta declares an id.
+  let idFromRow = false;
   let model = null;
   // Per FILE, not per session: the inherited prefix belongs to this rollout.
   // [input, cached_input, output] throughout. See the comment at the
@@ -672,11 +696,16 @@ export async function parseCodexFile(filePath, stats, opts = {}) {
     if (isNaN(ts)) return;
     const payload = d.payload;
     if (d.type === "session_meta" && payload) {
-      if (typeof payload.id === "string") sessionId = payload.id;
+      if (typeof payload.id === "string") {
+        sessionId = payload.id;
+        idFromRow = true;
+      }
       if (typeof payload.model === "string") model = sanitizeModel(payload.model);
     }
     temporal(stats, ts);
     const s = session(stats, sessionId, ts);
+    s.sources.add(cli);
+    if (idFromRow) s.idFromRow = true;
     if (d.type === "session_meta" && typeof payload?.cwd === "string" && !s.project) {
       s.project = opts.excluded?.(payload.cwd) ? "[excluded]" : projectLabel(payload.cwd);
     }
@@ -940,6 +969,98 @@ export function finalize(stats) {
         longest_streak_days: computeStreaks(b.days).longest,
       })),
   };
+}
+
+// ---- per-session export ----------------------------------------------------
+//
+// finalize() SUMS stats.sessions and then drops the Map, so every figure that
+// leaves this process is a grand total. Five sum-preserving corruptions have
+// already passed a differential built on grand totals — swap two sessions'
+// tokens, move a session's tokens into its neighbour, move input into output,
+// and every total still reconciles. A differential against the sibling program
+// (deadreckon, which exports per-session records of its own) can only catch
+// those if BOTH sides can be joined session by session, so this hands over the
+// Map before it is thrown away.
+//
+// PER FIELD, NOT PER TOTAL. A single `total` per session hides a swap between
+// two of the four counters — which is the one corruption class a token counter
+// is most likely to actually have. The four field names are ledger.mjs's FIELDS,
+// which were ported from deadreckon, so the two programs' records already agree
+// on spelling and the join needs no translation table.
+//
+// MASKING. Every other file this program writes goes out masked, so this one
+// does too, and the two fields that carry anything readable are handled here
+// rather than left to the caller:
+//
+//   project — already reduced to a two-segment projectLabel() at scan time, and
+//     the caller's forFiles()/maskProjects() swaps it for proj-<hash> under
+//     --no-projects. Nothing more to do here; the key is literally `project`,
+//     which is one of the shapes collectProjectLabels() looks for.
+//
+//   session_id — maskProjects CANNOT see this one, and it is not always a UUID.
+//     When no row declared an id, parseClaudeFile falls back to
+//     <parent-dir>/<file-stem>, and a Claude project directory name is the
+//     user's working path with the slashes rewritten to dashes: the home dir,
+//     the username and every project name, in one string. Writing that raw
+//     would put into a NEW file exactly what maskPath() strips from every old
+//     one, and under --no-projects it would leak the project names the flag
+//     promises to hash — a privacy flag failing open, which is the defect class
+//     cli-ux.test.mjs exists for. So:
+//       * an id a ROW declared is emitted byte for byte. It is the join key,
+//         the counting path uses it, and it is a vendor UUID, not a path.
+//       * an id this scanner INVENTED from a path is masked (redactSecrets +
+//         maskPath), and pseudonymised outright under --no-projects.
+//     `id_source` says which of the two every record is, so the other side can
+//     tell a joinable identity from this program's local fallback instead of
+//     guessing from whether it sees a slash.
+//
+// The identity itself is NOT recomputed here: the key of stats.sessions is
+// whatever parseClaudeFile last read out of d.sessionId (or the path fallback),
+// which is the same identity every token in the record was credited under.
+export function sessionRecords(stats, opts = {}) {
+  const out = [];
+  for (const [id, s] of stats.sessions) {
+    const fromRow = s.idFromRow === true;
+    let sid = id;
+    if (!fromRow) {
+      sid = opts.noProjects
+        ? projectPseudonym(id)
+        : maskPath(redactSecrets(id));
+    }
+    const iso = (ts) => (isFinite(ts) ? new Date(ts).toISOString() : null);
+    out.push({
+      // "claude", "codex", "cowork" — or "claude+codex" when one id really did
+      // appear in two stores. Joined rather than reduced to one value: a hybrid
+      // is a fact about the corpus, and hiding it behind whichever file was read
+      // first is how a directory-order dependency gets into a comparison.
+      cli: [...(s.sources ?? [])].sort().join("+") || "unknown",
+      session_id: sid,
+      id_source: fromRow ? "row" : "path",
+      project: s.project ?? null,
+      start: iso(s.firstTs),
+      end: iso(s.lastTs),
+      tokens: {
+        input_tokens: s.tok.in,
+        cache_creation_input_tokens: s.tok.cw,
+        cache_read_input_tokens: s.tok.cr,
+        output_tokens: s.tok.out,
+      },
+      total: s.tok.in + s.tok.cw + s.tok.cr + s.tok.out,
+    });
+  }
+  // Sorted, for the same reason listJsonl() sorts: two machines holding the same
+  // corpus must produce the same bytes, and Map order is insertion order, which
+  // is filesystem order one layer up. Two DIFFERENT fallback ids can mask to one
+  // string, so the id alone is not a total order — `start` breaks the tie rather
+  // than leaving those rows in whatever order the directory walk produced.
+  const cmp = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+  out.sort(
+    (a, b) =>
+      cmp(a.session_id, b.session_id) ||
+      cmp(a.start ?? "", b.start ?? "") ||
+      cmp(a.cli, b.cli)
+  );
+  return out;
 }
 
 // __proto__: null because these lookups are keyed by an attacker-influenced
