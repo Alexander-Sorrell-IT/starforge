@@ -293,7 +293,12 @@ test("[H] in the menu prints help and stays in the menu loop", () => {
   const r = run(home, SCAN_ARGS, { input: "H\nQ\n", interactive: true });
   assert.equal(r.status, 0, r.stderr);
   // MUTATION observation: if printHelp() was stubbed out, "BASIC" never appeared.
-  assert.match(r.stdout, /BASIC|SUBCOMMANDS|before you go/i, "[H] printed nothing recognisable");
+  // TIGHTENED. `before you go` is the menu HEADER, printed before any key is
+  // pressed, so the old alternation passed with the [H] branch deleted.
+  // Verified. The help text is what [H] prints; assert that.
+  const afterMenu = r.stdout.slice(r.stdout.indexOf("before you go"));
+  assert.match(afterMenu, /BASIC|SUBCOMMANDS|starreckon\s+scan/i,
+               "[H] printed nothing that only the help text contains");
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -477,9 +482,18 @@ test("[Z] re-run spawns a new scan and returns without hanging", () => {
     timeout: 30000,
     env: { ...process.env, HOME: home, ...NO_COLOR, ...FORCE_INTERACTIVE },
   });
-  // MUTATION observation: busy loop → spawnSync killed the child → signal set.
+  // TIGHTENED. This asserted only `signal === null` and `status === 0`, both of
+  // which are true of a key that does NOTHING — verified by deleting the [Z]
+  // branch and watching the test still pass. Not hanging is necessary and says
+  // nothing about a re-run having happened.
   assert.equal(r.signal, null, "[Z] caused the parent to hang");
   assert.equal(r.status, 0, `${r.stderr}`);
+  // A re-run prints the scan's own banner a SECOND time. One occurrence is the
+  // first scan; two is the child.
+  const banner = (r.stdout.match(/Found:/g) || []).length;
+  assert.ok(banner >= 2,
+    `[Z] did not spawn a second scan — the scan banner appears ${banner} time(s), `
+    + "so nothing ran after the keypress");
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -497,8 +511,12 @@ test("[P] prove-it: pressing P in the menu runs the confinement steps and prints
   // MUTATION observation: no proof output, just the menu again.
   // The proof always prints something about the three steps, even on an
   // unsupported platform where everything is INCONCLUSIVE.
-  assert.match(r.stdout, /1\/3|2\/3|3\/3|PASS|INCONCLUSIVE|sandbox|confinement/i,
-    "[P] printed nothing about the proof steps");
+  // TIGHTENED. The old alternation included `sandbox` and `confinement`, words
+  // this program prints outside the proof as well, so it matched with the [P]
+  // branch deleted. The proof's own STEP COUNTER is the thing only [P] emits.
+  const afterMenu = r.stdout.slice(r.stdout.indexOf("[P]") + 3);
+  assert.match(afterMenu, /[123]\/3|\bPASS\b|INCONCLUSIVE/,
+    "[P] printed no proof step and no verdict — only words that appear anyway");
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -522,7 +540,15 @@ test("[X] copy link: prints the share URL even when no clipboard command is avai
   // MUTATION observation: no URL in stdout when branch was removed.
   // The URL is a GitHub Pages https:// link; either it printed the URL or
   // it printed "could not build share URL".
-  const printed = /https?:\/\/|could not build|copy the URL|share URL/i.test(r.stdout);
+  // TIGHTENED. This read /https?:\/\/|could not build|copy the URL|share URL/i,
+  // and the MENU LABEL itself prints "copy share URL to clipboard" — so the
+  // assertion matched whether or not [X] did anything. Verified by deleting the
+  // [X] branch: the test still passed. Now it must find evidence of the key
+  // having RUN: the URL itself, or one of the two outcomes it prints.
+  // FIRST occurrence, not last: the menu reprints after the key returns, so
+  // slicing from the last one lands PAST the output being asserted.
+  const afterMenu = r.stdout.slice(r.stdout.indexOf("[X]") + 3);
+  const printed = /https?:\/\/[^\s]+#|copied to clipboard|clipboard copy failed|could not build/i.test(afterMenu);
   assert.ok(printed, "[X] printed neither a URL nor a failure message");
   rmSync(home, { recursive: true, force: true });
 });
