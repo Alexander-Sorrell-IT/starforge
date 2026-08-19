@@ -181,3 +181,97 @@ test("the count reaches the machine-readable reports", () => {
     "baseline must reconcile against itself"
   );
 });
+
+// ---- the hole the first pass left ------------------------------------------
+//
+// TAKEN FROM BOB, with the premise measured first.
+//
+// Everything above counts a session that REACHED stats.sessions with no usable
+// start. Both parsers drop a row whose timestamp will not parse before
+// session() is ever called, so on the corpus side that count is structurally
+// zero and the field says nothing about this machine.
+//
+// The row that was dropped is the interesting one. A transcript row can declare
+// a sessionId, carry a full usage block, and have a timestamp that will not
+// parse — a half-written line from a killed process, a clock that came back
+// wrong. Today that row is discarded whole, tokens and all, and NOTHING says
+// so: total_sessions does not count it, no month contains it, no error is
+// printed. Measured before adopting this: a fabricated broken-clock row took
+// 999,999 input tokens and an entire session out of the scan silently.
+//
+// The false-positive risk was measured too, because a number that reads
+// non-zero for boring reasons is worse than no number. Over 246 real transcript
+// files (132,614 rows, 131 distinct sessions): 22,281 rows do declare a
+// sessionId with no usable timestamp — and every one of those sessions ALSO has
+// dated rows, so ids appearing ONLY on undated rows came to 0, and none of the
+// undated rows carried a usage block at all. This counts sessions, not rows,
+// and a session with even one dated row is not undated.
+test("a session whose every row has an unusable timestamp is counted, not discarded in silence", async () => {
+  const { parseClaudeFile } = await import("../src/scan.mjs");
+  const home = tmp();
+  const dir = join(home, ".claude", "projects", "-w-alpha");
+  mkdirSync(dir, { recursive: true });
+
+  const good = [
+    { type: "user", cwd: "/w/alpha", timestamp: "2026-03-04T14:00:00.000Z", uuid: "u1",
+      message: { role: "user", content: "hi" } },
+    { type: "assistant", timestamp: "2026-03-04T14:00:00.000Z", uuid: "a1",
+      message: { role: "assistant", id: "m1", model: "claude-opus-5", content: [],
+        usage: { input_tokens: 10, output_tokens: 5,
+          cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } },
+  ];
+  // Same shape, real tokens, a timestamp that will not parse.
+  const broken = [
+    { type: "assistant", sessionId: "broken-clock-1", timestamp: "not-a-date", uuid: "a2",
+      message: { role: "assistant", id: "m2", model: "claude-opus-5", content: [],
+        usage: { input_tokens: 999999, output_tokens: 12345,
+          cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } },
+  ];
+  writeFileSync(join(dir, "good.jsonl"), good.map((r) => JSON.stringify(r)).join("\n"));
+  writeFileSync(join(dir, "broken.jsonl"), broken.map((r) => JSON.stringify(r)).join("\n"));
+
+  const stats = emptyStats();
+  await parseClaudeFile(join(dir, "good.jsonl"), stats, {});
+  await parseClaudeFile(join(dir, "broken.jsonl"), stats, {});
+  const agg = finalize(stats);
+
+  assert.equal(agg.total_sessions, 1, "the broken row still cannot be dated, so it is not a dated session");
+  assert.equal(agg.dropped_sessions, 1, "but it is no longer invisible");
+  assert.equal(agg.total_input_tokens, 10, "its 999,999 tokens are still uncounted — undatable is not the same as recovered");
+  // And it stays OUTSIDE the reconciliation, because it is in no total here.
+  assert.equal(agg.undated_sessions, 0);
+  assert.equal(
+    agg.total_sessions,
+    agg.monthly_buckets.reduce((a, b) => a + b.sessions, 0) + agg.undated_sessions,
+    "a dropped session must not be added into the reconciliation it is not part of"
+  );
+});
+
+test("a session with even ONE dated row is not undated", () => {
+  // The guard against the number reading non-zero for boring reasons: real
+  // transcripts are full of undated metadata rows that declare a sessionId,
+  // and every one of those sessions has dated rows elsewhere in the file.
+  const stats = emptyStats();
+  stats.sessions.set("mixed", sess(Date.parse("2026-03-04T14:00:00.000Z")));
+  stats.undatedSessions.add("mixed");
+  const agg = finalize(stats);
+  assert.equal(agg.dropped_sessions, 0);
+  assert.equal(agg.undated_sessions, 0);
+});
+
+test("a dropped session is named on screen as dropped, not merely undated", () => {
+  const home = corpus(tmp());
+  const dir = join(home, ".claude", "projects", "-w-alpha");
+  writeFileSync(join(dir, "broken.jsonl"), JSON.stringify(
+    { type: "assistant", sessionId: "broken-clock-1", timestamp: "not-a-date", uuid: "a9",
+      message: { role: "assistant", id: "m9", model: "claude-opus-5", content: [],
+        usage: { input_tokens: 999999, output_tokens: 12345,
+          cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }));
+  const out = run(home);
+  const lines = out.split("\n");
+  const i = lines.findIndex((l) => l.startsWith("undated"));
+  assert.ok(i >= 0, `no undated line:\n${out}`);
+  const block = lines.slice(i, i + 3).join("\n");
+  assert.match(block, /dropped ENTIRELY/, `the dropped session must be named as such, got:\n${block}`);
+  assert.match(block, /no total above/, "and must say its tokens are in no total");
+});

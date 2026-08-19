@@ -1368,7 +1368,7 @@ async function main() {
   // for a store nobody opened is the "absent looks exactly like zero" defect
   // this program has shipped more times than any other.
   {
-    const here = agg.undated_sessions ?? 0;
+    const here = (agg.undated_sessions ?? 0) + (agg.dropped_sessions ?? 0);
     const other = providers ? (providers.perSession ?? []).filter((x) => !x.month).length : null;
     const where = other === null
       ? `${DIM}here · other CLIs not scanned (--no-providers)${RESET}`
@@ -1376,7 +1376,16 @@ async function main() {
     const total = here + (other ?? 0);
     console.log(`undated         ${fmt(total)}  ${where}`);
     if (total > 0)
-      console.log(`${DIM}                their tokens ARE counted; no month, star, snapshot or lifetime figure holds them${RESET}`);
+      console.log(`${DIM}                in no month, star, snapshot or lifetime figure${RESET}`);
+    // A DROPPED SESSION IS WORSE THAN AN UNDATED ONE AND MUST NOT READ THE SAME.
+    //
+    // The rest are counted somewhere and merely unplaced in time. These were
+    // discarded whole — every row naming them had a timestamp that would not
+    // parse, so their tokens are in NO total this program prints. Said on its
+    // own line because "97 undated" and "3 of them are missing entirely" are
+    // not the same sentence.
+    if ((agg.dropped_sessions ?? 0) > 0)
+      console.log(`${DIM}                ${fmt(agg.dropped_sessions)} of those were dropped ENTIRELY — unparseable timestamps; their tokens are in no total above${RESET}`);
   }
 
   if (providers) {
@@ -1612,6 +1621,10 @@ async function main() {
       //   total_sessions === sum(monthly_buckets[].sessions) + undated_sessions
       // The expanded report gets it for free — it spreads `...agg`.
       undated_sessions: agg.undated_sessions ?? 0,
+      // NOT part of that identity — a dropped session is in no total in this
+      // file at all. Carried here so a reader can see the scan lost something
+      // without having to notice it did not.
+      dropped_sessions: agg.dropped_sessions ?? 0,
       active_days: agg.active_days,
       total_duration_hours: agg.total_duration_hours,
       total_input_tokens: agg.total_input_tokens,
