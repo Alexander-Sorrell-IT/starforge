@@ -279,7 +279,7 @@ import { clipboardCmds } from "./clipboard.mjs";
 // Subcommands are explicit. An unknown positional argument EXITS NON-ZERO
 // rather than falling through to a scan — a proof command that silently runs
 // something else and prints success would be worse than having none.
-const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove", "daemon", "protect", "receipt", "serve", "search", "addons", "sources"]);
+const KNOWN_SUBCOMMANDS = new Set(["scan", "verify", "prove", "daemon", "protect", "receipt", "serve", "search", "addons", "sources", "series"]);
 const positional = args.filter((a) => !a.startsWith("-"));
 const subcommand = positional[0] ?? "scan";
 if (!KNOWN_SUBCOMMANDS.has(subcommand)) {
@@ -399,7 +399,7 @@ for (const a of args) {
   // subcommand would be the same silent-ignore this block exists to end — just
   // with a flag that happens to be spelled correctly. The one exception is
   // declared, not inferred: `receipt --json` emits the machine-readable pack.
-  const SUBCOMMAND_FLAGS = { receipt: new Set(["--json"]), serve: new Set(["--serve-port", "--serve-timeout", "--serve-visits", "--serve-collect"]), search: new Set(["--search-top", "--search-index", "--search-setup", "--search-status", "--roots"]), protect: new Set(), addons: new Set(), sources: new Set() };
+  const SUBCOMMAND_FLAGS = { receipt: new Set(["--json"]), serve: new Set(["--serve-port", "--serve-timeout", "--serve-visits", "--serve-collect"]), search: new Set(["--search-top", "--search-index", "--search-setup", "--search-status", "--roots"]), protect: new Set(), addons: new Set(), sources: new Set(), series: new Set() };
   if (subcommand !== "scan" && !SUBCOMMAND_FLAGS[subcommand]?.has(base))
     flagError(
       `\`${subcommand}\` takes no flags, and ${base} would have been ignored. Run \`starreckon ${subcommand}\` on its own (to re-pin the allowlist manifest: node src/verify.mjs --update-pins).`
@@ -460,6 +460,8 @@ function printHelp() {
   console.log(`  search --search-setup   download models (~600 MB, one-time)`);
   console.log(`  addons          companion tools and the licence that unlocks them`);
   console.log(`  sources         every place work can happen, and what this machine has`);
+  console.log(`  series          how many months of history each sequence holds, and how`);
+  console.log(`                  many more before a band over it would mean anything`);
   console.log(`\n${B}BEFORE-YOU-GO MENU${R} ${D}(shown after a scan on an interactive terminal)${R}`);
   console.log(`  [P] prove it       [T] transparency   [C] compare     [D] daemon`);
   console.log(`  [E] exclusions     [R] reach out      [X] copy link   [B] beacon`);
@@ -640,6 +642,25 @@ if (subcommand === "sources") {
   let undeclared = null;
   try { undeclared = unknownStores(); } catch { /* the declared list still stands */ }
   console.log(render(survey(), { color: !process.env.NO_COLOR, undeclared }));
+  process.exit(0);
+}
+
+// `starreckon series` — how much ordered history the snapshots hold, and what
+// stands between it and a forecast band that would mean anything.
+//
+// IT IS A COUNT, NOT A WITNESS. deadreckon holds the time-series model; this
+// program holds none, so nothing here predicts, scores or gates and it exits 0
+// whatever the counts are. It exists because "8 months is not enough history
+// yet", "the model ran and recorded nothing" and "there is no model on this
+// machine" are three different facts that every other view in this program
+// would render as the same silence.
+//
+// Reads ~/.starreckon and nothing else — no execution, no network, no writes —
+// so it sits here with sources/addons, before startAudit(): a question about how
+// much history exists should not itself write a run log.
+if (subcommand === "series") {
+  const { surveySeries, renderSeries } = await import("./series.mjs");
+  console.log(renderSeries(surveySeries(), { color: !process.env.NO_COLOR }));
   process.exit(0);
 }
 
