@@ -24,7 +24,7 @@
 //     max(counterTotal + transcript tokens on days strictly after
 //     lastComputedDate, measured on disk). Concatenation is exact; subtraction
 //     is meaningless. dailyModelTokens is never used (input+output only).
-import { sanitizeModel, creditUsage } from "./scan.mjs";
+import { sanitizeModel, creditUsage, streamLines } from "./scan.mjs";
 import {
   existsSync,
   lstatSync,
@@ -80,8 +80,24 @@ const TOK_KEYS = ["input", "output", "cacheRead", "cacheWrite"];
 // program knows about is a copy tree. A name that is meaningless here costs one
 // string compare; a name that is missing costs an entire other machine's
 // history landing in your total.
-const COPY_DIRS = new Set([
+//
+// THEN THE PROGRAMS WERE RENAMED AND A THIRD REPOSITORY APPEARED, and the hole
+// reopened the same way. There are now three: deadreckon-count (the numbers),
+// deadreckon-record (the redacted corpus, formerly token-corpus — the old name
+// stays because checkouts on disk still carry it), and deadreckon-transcripts,
+// whose README says it holds "Raw AI CLI transcripts from every machine in the
+// fleet" over git LFS. deadreckon-transcripts was in NEITHER list. This time it
+// had cost nothing yet, and only because its LFS pointers have not been pulled
+// here — 0 .jsonl beneath it on this machine, against the 59,131 the last
+// missing name was worth. It is added now, before it fills.
+//
+// tests/copydirs.test.mjs is the test that did not exist for either round: it
+// pins this list, and compares it to analyze_tokens.py's whenever a deadreckon
+// checkout is reachable. Adding a name here without adding it there now fails.
+// EXPORTED for that test and nothing else — no other module reads it.
+export const COPY_DIRS = new Set([
   "corpus", "merged", "token-corpus", "deadreckon-record",
+  "deadreckon-transcripts",
   "node_modules", ".git", "archive", "snap", ".cache", ".local", "venv", ".venv",
 ]);
 
@@ -387,17 +403,6 @@ function listJsonl(root) {
   return out;
 }
 
-async function streamLines(filePath, onLine) {
-  const rl = createInterface({
-    input: createReadStream(filePath, { encoding: "utf-8" }),
-    crlfDelay: Infinity,
-  });
-  let n = 0;
-  for await (const line of rl) {
-    if (line) onLine(line);
-    if ((++n & 2047) === 0) await new Promise((r) => setImmediate(r));
-  }
-}
 
 // Aggregate one config dir. `seen` is the machine-wide uuid set, passed IN so
 // dedup spans every config dir — the one thing that makes broad discovery
@@ -652,7 +657,10 @@ export async function discoverAccounts(opts = {}) {
   // session that appears under two profiles (a copy, or the hard-link archive)
   // is credited once, which is why the archive can be read without doubling
   // the tokens.
-  const seen = new Map();
+  // If the main scan already ran, reuse its seen-map so this pass credits
+  // nothing on already-counted message ids — prevents double-counting when
+  // both the main scan and --accounts read the same transcripts.
+  const seen = opts.seen instanceof Map ? opts.seen : new Map();
   // Session identity, machine-wide, for the same reason `seen` is: the archive
   // mirror holds the same sessions as the profile it mirrors.
   const seenSessions = new Set();

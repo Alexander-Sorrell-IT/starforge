@@ -355,7 +355,7 @@ function dedupeByRealpath(files) {
 
 // ---- streaming parse -------------------------------------------------------
 
-async function streamLines(filePath, onLine) {
+export async function streamLines(filePath, onLine) {
   const rl = createInterface({
     input: createReadStream(filePath, { encoding: "utf-8" }),
     crlfDelay: Infinity,
@@ -765,7 +765,7 @@ export function activeDurationMs(minutes) {
   if (sorted.length === 0) return 0;
   if (sorted.length === 1) return 60000;
   const maxGap = MAX_ACTIVE_GAP_MIN * 60000;
-  let total = 0;
+  let total = 60000; // base: the first minute always contributes 60 s
   for (let i = 1; i < sorted.length; i++) {
     const gap = sorted[i] - sorted[i - 1];
     if (gap > 0) total += Math.min(gap, maxGap);
@@ -799,6 +799,12 @@ export function finalize(stats) {
   const sessions = [...stats.sessions.entries()];
   let durationMs = 0;
   let totIn = 0, totOut = 0, totCr = 0, totCw = 0;
+  // Sessions with no timestamp: counted in the totals above but invisible in
+  // every dated breakdown (months, streaks, active days). The count and their
+  // token contribution are surfaced separately so the gap between
+  // "total sessions" and "sessions with a date" is never silently hidden.
+  let undatedCount = 0;
+  let undatedTok = 0;
   const projects = new Map();
   const models = new Map();
   const monthly = new Map();
@@ -847,11 +853,16 @@ export function finalize(stats) {
         }
       }
       monthly.set(key, b);
+    } else {
+      undatedCount += 1;
+      undatedTok += s.tok.in + s.tok.out + s.tok.cr + s.tok.cw;
     }
   }
   const streaks = computeStreaks(stats.activeDays);
   return {
     total_sessions: stats.sessions.size,
+    sessions_without_date: undatedCount,
+    tokens_without_date: undatedTok,
     active_days: stats.activeDays.size,
     total_duration_hours: +(durationMs / 3.6e6).toFixed(1),
     total_input_tokens: totIn,

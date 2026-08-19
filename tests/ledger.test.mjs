@@ -286,3 +286,28 @@ test("compare disk_total sums current on-disk sessions", () => {
   assert.equal(c.disk_total, 1500);
   rmSync(home, { recursive: true, force: true });
 });
+
+// ── lifetime() by_cli_marked — the display code in cli.mjs iterates this ─────
+
+test("lifetime by_cli_marked carries marker per cli", () => {
+  const home = tmp();
+  record([
+    makeSession({ cli: "claude",  session_id: "c1", total: 1000 }),
+    makeSession({ cli: "gemini",  session_id: "g1", total: 500 }),
+  ], "ver-1", home);
+  const lt = lifetime(home);
+  // "claude" has a native lifetime counter → ★; others → †
+  assert.equal(lt.by_cli_marked.claude.marker, "★");
+  assert.equal(lt.by_cli_marked.gemini.marker, "†");
+  assert.equal(lt.by_cli_marked.claude.total, 1000);
+  assert.equal(lt.by_cli_marked.gemini.total, 500);
+  // The cli.mjs display code: Object.entries(lt.by_cli_marked).sort(...)
+  // must not throw on a multi-cli result.
+  const byCli = Object.entries(lt.by_cli_marked)
+    .sort((a, b) => b[1].total - a[1].total)
+    .map(([cli, v]) => `${cli}${v.marker} ${v.total}`)
+    .join(", ");
+  assert.ok(byCli.includes("claude★"));
+  assert.ok(byCli.includes("gemini†"));
+  rmSync(home, { recursive: true, force: true });
+});

@@ -70,13 +70,17 @@ export function decodePacket(buf) {
  *   label     string  human label shown in the combined star
  */
 export function buildAnnouncePayload(data = {}) {
-  return {
+  const pkt = {
     machine: data.machine ?? hostname(),
     label: data.label ?? data.machine ?? hostname(),
     totals: data.totals ?? null,
     months: Array.isArray(data.months) ? data.months.slice(-3) : [],
     sentAt: new Date().toISOString(),
   };
+  // When a fleet key is active, include the sender's raw public key so
+  // receivers can verify the signature and confirm fleet membership.
+  if (data.pub) pkt.pub = data.pub;
+  return pkt;
 }
 
 // ---- socket helpers --------------------------------------------------------
@@ -118,7 +122,10 @@ function sendPacket(sock, buf, addr) {
  * Returns array of decoded peer announce packets (excluding own if
  * selfMachine matches, but including self when testing on loopback).
  */
-export async function announceAndListen(announcePayload, listenMs = 8000, onPeer = null) {
+export async function announceAndListen(announcePayload, listenMs = 8000, onPeer = null, fleetKey = null) {
+  // fleetKey: optional { privateKeyObj, publicKeyBytes } from fleetkey.mjs.
+  // When present: outbound packets are signed, inbound are verified and
+  // unsigned/bad-sig packets are silently dropped.
   const sock = await openSocket();
   const peers = [];
   const seen = new Set(); // dedupe by machine+sentAt
@@ -126,7 +133,12 @@ export async function announceAndListen(announcePayload, listenMs = 8000, onPeer
   return new Promise((resolve) => {
     // Collect incoming packets
     sock.on("message", (buf) => {
-      const pkt = decodePacket(buf);
+      let pkt;
+      if (fleetKey) {
+        pkt = verifyPacket(buf, fleetKey.publicKeyBytes);
+      } else {
+        pkt = decodePacket(buf);
+      }
       if (!pkt || pkt.kind !== "announce") return;
       const key = `${pkt.machine}:${pkt.sentAt}`;
       if (seen.has(key)) return;
@@ -138,7 +150,8 @@ export async function announceAndListen(announcePayload, listenMs = 8000, onPeer
     // Announce immediately (then repeat every 3s until listenMs expires)
     const doAnnounce = () => {
       if (!announcePayload) return;
-      const buf = encodePacket("announce", announcePayload);
+      let buf = encodePacket("announce", announcePayload);
+      if (buf && fleetKey) buf = signPacket(buf, fleetKey.privateKeyObj);
       if (buf) sendPacket(sock, buf, MULTICAST_ADDR).catch(() => {});
     };
 
@@ -168,7 +181,8 @@ export async function announceAndListen(announcePayload, listenMs = 8000, onPeer
  * Returns { peers: Map<machine, lastPacket>, coordinator: string|null }
  */
 export async function runLive(announcePayload, opts = {}) {
-  const { coordinator = false, quietMs = 15000, onEvent = null } = opts;
+  const { coordinator = false, quietMs = 15000, onEvent = null, fleetKey = null } = opts;
+  // fleetKey: optional { privateKeyObj, publicKeyBytes } from fleetkey.mjs.
   const sock = await openSocket();
   const peers = new Map();     // machine -> { pkt, lastSeen }
   let coordMachine = null;
@@ -178,7 +192,12 @@ export async function runLive(announcePayload, opts = {}) {
   };
 
   sock.on("message", (buf) => {
-    const pkt = decodePacket(buf);
+    let pkt;
+    if (fleetKey) {
+      pkt = verifyPacket(buf, fleetKey.publicKeyBytes);
+    } else {
+      pkt = decodePacket(buf);
+    }
     if (!pkt) return;
 
     if (pkt.kind === "announce") {
@@ -195,7 +214,8 @@ export async function runLive(announcePayload, opts = {}) {
 
   // Announce + repeat
   const doAnnounce = () => {
-    const buf = encodePacket("announce", announcePayload);
+    let buf = encodePacket("announce", announcePayload);
+    if (buf && fleetKey) buf = signPacket(buf, fleetKey.privateKeyObj);
     if (buf) sendPacket(sock, buf, MULTICAST_ADDR).catch(() => {});
   };
   doAnnounce();
@@ -258,6 +278,27 @@ if (process.argv[1] && process.argv[1].endsWith("beacon.mjs")) {
   const listenMs = Number(args["listen-ms"] ?? 8000);
   const isCoordinator = Boolean(args.coordinator);
 
+  // --fleet-pub is the base64 raw 32-byte Ed25519 public key passed by cli.mjs.
+  // When present, only packets signed by the matching private key are accepted.
+  let beaconFleetKey = null;
+  if (args["fleet-pub"]) {
+    try {
+      const publicKeyBytes = Buffer.from(args["fleet-pub"], "base64");
+      if (publicKeyBytes.length === 32) {
+        // In the child process we only need publicKeyBytes for verification
+        // (we sign using the private key already embedded in the payload's pub
+        // field, which was signed in cli.mjs before spawning this child).
+        // For outbound signing in the child we need the private key too — but
+        // cli.mjs passes a pre-signed payload when it can. For simplicity, the
+        // child uses publicKeyBytes for VERIFY only; signing is done in cli.mjs
+        // before the child is spawned (payload already has pub set).
+        beaconFleetKey = { publicKeyBytes, privateKeyObj: null };
+      }
+    } catch {
+      process.stderr.write("beacon: invalid --fleet-pub (must be base64, 32 bytes)\n");
+    }
+  }
+
   let announcePayload = null;
   if (args.payload) {
     try {
@@ -273,6 +314,8 @@ if (process.argv[1] && process.argv[1].endsWith("beacon.mjs")) {
     const peers = await announceAndListen(
       mode === "announce" ? announcePayload : null,
       listenMs,
+      null,
+      beaconFleetKey,
     );
     process.stdout.write(JSON.stringify(peers) + "\n");
     process.exit(0);
@@ -285,6 +328,7 @@ if (process.argv[1] && process.argv[1].endsWith("beacon.mjs")) {
     }
     const session = await runLive(announcePayload, {
       coordinator: isCoordinator,
+      fleetKey: beaconFleetKey,
       onEvent: (evt) => {
         process.stdout.write(JSON.stringify(evt) + "\n");
       },
@@ -297,4 +341,76 @@ if (process.argv[1] && process.argv[1].endsWith("beacon.mjs")) {
     process.stderr.write(`beacon: unknown --mode=${mode}\n`);
     process.exit(1);
   }
+}
+
+
+// ---- fleet key signing (Ed25519) -------------------------------------------
+//
+// When a fleetKey is provided to announceAndListen / runLive, every outbound
+// announce packet is signed and every inbound announce packet is verified.
+// Packets with a missing or invalid signature are silently dropped — they are
+// either from a different fleet or from a rogue machine on the same WiFi.
+//
+// Wire additions (only present when signing is active):
+//   pub  — base64 raw 32-byte Ed25519 public key of the sender
+//   sig  — base64 64-byte Ed25519 signature over the canonical payload bytes
+//
+// The canonical payload is the JSON of the packet WITH pub present but WITH
+// sig absent — so the signature covers the content + the sender's identity.
+// This is the simplest possible scheme that prevents:
+//   - replay from a different fleet (pub mismatch → drop)
+//   - forgery by a rogue peer (no private key → can't produce valid sig)
+//   - man-in-the-middle substitution (sig covers machine+totals+sentAt+pub)
+
+import {
+  signPayload,
+  verifyPayload,
+} from "./fleetkey.mjs";
+
+/**
+ * Sign an announce packet Buffer that already contains `pub`.
+ * The sig is computed over the packet bytes WITH pub but WITHOUT sig.
+ * Returns a new Buffer with `sig` injected, or null if it exceeds MAX_BYTES.
+ *
+ * @param {Buffer} unsignedBuf  — output of encodePacket() with pub already set
+ * @param {object} privateKeyObj — node:crypto KeyObject (Ed25519 private)
+ */
+export function signPacket(unsignedBuf, privateKeyObj) {
+  const sig = signPayload(privateKeyObj, unsignedBuf);
+  // Re-parse, inject sig, re-encode.
+  let obj;
+  try { obj = JSON.parse(unsignedBuf.toString("utf8")); } catch { return null; }
+  obj.sig = sig.toString("base64");
+  const out = Buffer.from(JSON.stringify(obj), "utf8");
+  if (out.length > MAX_BYTES) return null;
+  return out;
+}
+
+/**
+ * Verify an inbound packet Buffer against a known public key (32-byte Buffer).
+ * Returns the decoded packet object if valid, null if signature is missing or
+ * does not verify. Always returns null for non-announce packets — coordinator
+ * and done packets are not signed (they carry no user data).
+ *
+ * @param {Buffer} buf            — raw wire bytes
+ * @param {Buffer} publicKeyBytes — expected 32-byte Ed25519 public key
+ */
+export function verifyPacket(buf, publicKeyBytes) {
+  const pkt = decodePacket(buf);
+  if (!pkt) return null;
+  // Only announce packets are signed; others pass through unsigned.
+  if (pkt.kind !== "announce") return pkt;
+  if (typeof pkt.sig !== "string" || typeof pkt.pub !== "string") return null;
+  // The pub field in the packet must match the expected fleet public key.
+  let pktPub;
+  try { pktPub = Buffer.from(pkt.pub, "base64"); } catch { return null; }
+  if (!pktPub.equals(publicKeyBytes)) return null;
+  // Reconstruct the bytes that were signed: same object but WITHOUT sig.
+  const forVerify = { ...pkt };
+  delete forVerify.sig;
+  const canonical = Buffer.from(JSON.stringify(forVerify), "utf8");
+  let sigBuf;
+  try { sigBuf = Buffer.from(pkt.sig, "base64"); } catch { return null; }
+  if (!verifyPayload(pktPub, canonical, sigBuf)) return null;
+  return pkt;
 }

@@ -142,6 +142,8 @@ test("providerOf matches analyze_tokens.provider_of", () => {
   assert.equal(providerOf(""), "synthetic");
   assert.equal(providerOf(null), "synthetic");
   assert.equal(providerOf("weird-model-x"), "other");
+  assert.equal(providerOf("antigravity-v1"), "antigravity"); // was missing from scanners.mjs
+  assert.equal(providerOf("copilot-gpt-4"), "copilot");
 });
 
 // ---- graceful absence ------------------------------------------------------

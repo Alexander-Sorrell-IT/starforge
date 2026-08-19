@@ -184,6 +184,52 @@ test("stats page carries pseudonyms, never addresses, unless --show-accounts", (
   assert.ok(raw.includes("casey.dev@example.com"), "--show-accounts must actually show them");
 });
 
+// The <title> was the ONE rendered string that skipped clean(). statspage.mjs
+// built it from the raw `name` and the emit site ran esc() and nothing else, so
+// `--name casey.dev@example.com` pseudonymised the <h1> to acct-<hash> while the
+// browser tab, the window title, the bookmark and every screenshot of the page
+// carried the address in full — the body hiding an identity the chrome around it
+// advertised. Exactly the failure the QR panel in the same file already guards
+// against: two renderings of one value must not disagree.
+//
+// Asserted on the <head> <title> specifically, not on the whole page. A
+// whole-page findEmail() (the test above) goes green the moment the <h1> alone
+// is masked, which is precisely the state that shipped this bug.
+test("the page TITLE is masked like the body — a screenshot must not out-leak the page", () => {
+  const addr = "casey.dev@example.com";
+  const headTitle = (html) => {
+    // Anchored to <head>: SVG marks in the body emit their own <title> tooltips,
+    // so an unanchored match would only accidentally be the right element.
+    const m = html.match(/<head>[\s\S]*?<title>([\s\S]*?)<\/title>/);
+    assert.ok(m, "the page has no <head><title>");
+    return m[1];
+  };
+
+  const t = headTitle(renderStatsPage(pageInput({ name: addr })));
+  assert.equal(findEmail(t), null, `an address reached the browser tab: ${t}`);
+  assert.ok(t.includes(accountPseudonym(addr)), `the tab dropped the pseudonym: ${t}`);
+  // the tab and the heading it sits above must say the SAME thing
+  assert.ok(
+    renderStatsPage(pageInput({ name: addr })).includes(`<h1>${accountPseudonym(addr)}</h1>`),
+    "the <h1> and the <title> disagree about who this page belongs to"
+  );
+
+  // --show-accounts is still the opt-in, and it still opts the tab in too.
+  assert.ok(
+    headTitle(renderStatsPage(pageInput({ name: addr, showAccounts: true }))).includes(addr),
+    "--show-accounts must show the address in the tab as well as the body"
+  );
+
+  // A name is free text, so the tab gets the rest of clean() too, not just the
+  // identity pass: secrets redacted, markup escaped, no default-title regression.
+  const nasty = headTitle(
+    renderStatsPage(pageInput({ name: `</title><script>x</script> api_key= sk-ant-abcdefghij0123456789xyz` }))
+  );
+  assert.ok(!nasty.includes("<script"), `markup escaped out of the tab: ${nasty}`);
+  assert.ok(!nasty.includes("sk-ant-abcdefghij"), `a secret reached the tab: ${nasty}`);
+  assert.match(headTitle(renderStatsPage(pageInput())), /starreckon/);
+});
+
 test("the page pseudonymises addresses from ANY blob, including a foreign --fleet file", () => {
   // A fleet folder written by some other tool can carry addresses; the page is
   // the last line of defence, so the sanitising happens at render time, not

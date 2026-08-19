@@ -13,6 +13,7 @@ import {
   computeProfile,
 } from "../src/profile.mjs";
 import { renderStatsPage, human } from "../src/statspage.mjs";
+import { qrToSvg } from "../src/qr.mjs";
 
 // ---- fixtures --------------------------------------------------------------
 
@@ -195,7 +196,7 @@ test("collectProfileSignals: counts prompts, filters low-signal, dedups usage, n
     assert.ok(!JSON.stringify(sig).includes("/Users/someone"));
 
     const codexSess = sig.sessions.find((s) => s.source === "codex");
-    // cumulative counters overwritten, not summed; no cache-write counter
+    // cumulative counters: lineage-aware arithmetic subtracts base prefix; no cache-write counter
     assert.equal(codexSess.tok.in, 4000);
     assert.equal(codexSess.tok.cr, 1000);
     assert.equal(codexSess.tok.out, 400);
@@ -330,6 +331,63 @@ test("renderStatsPage: all-null input renders dashes, never crashes", () => {
   assert.ok(typeof html2 === "string" && html2.length > 500);
 });
 
+// ---- the tappable share QR --------------------------------------------------
+// A QR you cannot tap is useless to the person already holding the screen: come
+// across this page on your own phone and there is no second device to scan it
+// with. So the code IS the link — <a> may wrap <svg> in HTML5.
+//
+// That href is the one and only http(s) string the page is allowed to contain,
+// and this test pins the distinction it rests on. "No external resource" means
+// nothing the browser FETCHES to render the page — src=, <link>, @import,
+// url(http…), <script>. A destination the reader chooses to follow is none of
+// those. Anything that widens that hole should fail here.
+test("renderStatsPage: the share QR is an <a> wrapping an <svg>, and nothing is fetched", () => {
+  const url =
+    // RFC 2606 documentation host, not the live one. verify.mjs staticScan
+    // refuses a shipped test that names a routable host, so that a fixture can
+    // never become a live destination.
+    "https://starreckon.example/#s=23.1&g=MASTERWORK&a=DEEP_BUILDER&v=4.8,4.6,4.5,4.7,4.4&ss=142&h=318&d=89&n=ALEX";
+  const html = renderStatsPage({ agg: { total_sessions: 3 }, name: "ALEX", shareUrl: url });
+
+  const anchor = html.match(/<a href="[^"]*"><svg\b[\s\S]*?<\/svg><\/a>/);
+  assert.ok(anchor, "the page has no <a> wrapping an <svg>");
+
+  // The href and the QR payload must be the SAME destination. A code that goes
+  // somewhere the link does not is the worst possible way for the two halves of
+  // one control to disagree, and nothing else in the page would notice.
+  assert.ok(
+    anchor[0].startsWith(`<a href="${url.replace(/&/g, "&amp;")}">`),
+    "the anchor does not point at the share URL"
+  );
+  assert.ok(anchor[0].includes(qrToSvg(url, { size: 200 })), "the QR encodes something other than the href");
+
+  // Nothing the browser would fetch on load.
+  assert.doesNotMatch(html, /<script/i, "page must have zero JS");
+  assert.doesNotMatch(html, /<link\b/i, "no stylesheet or preload links");
+  assert.doesNotMatch(html, /\ssrc\s*=/i, "no src= anywhere");
+  assert.doesNotMatch(html, /@import/i, "no CSS @import");
+  assert.doesNotMatch(html, /url\(\s*['"]?\s*https?:/i, "no remote url() in CSS");
+
+  // ...and the only remote-looking strings left are the anchor's href and the
+  // SVG xmlns. Blank both out and no scheme may survive.
+  const rest = html
+    .replace(/<a href="[^"]*"/g, "<a")
+    .replace(/https?:\/\/www\.w3\.org[^"']*/g, "");
+  assert.doesNotMatch(rest, /https?:\/\//, "an http(s) reference that is not the share link");
+});
+
+test("renderStatsPage: no share URL means no QR section, not a broken one", () => {
+  // buildShareUrl returns null when there are no levels (cli.mjs passes its
+  // result straight through), and encodeQR THROWS past ~271 bytes. Both must
+  // cost the section and nothing else — same rule as every other panel here.
+  for (const shareUrl of [undefined, null, "", "   ", 42, "x".repeat(400)]) {
+    const html = renderStatsPage({ agg: { total_sessions: 3 }, shareUrl });
+    assert.ok(html.startsWith("<!doctype html>"), `crashed on shareUrl=${String(shareUrl).slice(0, 12)}`);
+    assert.doesNotMatch(html, /<a href=/, `emitted an anchor for shareUrl=${String(shareUrl).slice(0, 12)}`);
+    assert.ok(!html.includes("SHARE<"), "empty SHARE panel rendered");
+  }
+});
+
 test("human formatter: K/M/B/T", () => {
   assert.equal(human(950), "950");
   assert.equal(human(1500), "1.5K");
@@ -337,4 +395,49 @@ test("human formatter: K/M/B/T", () => {
   assert.equal(human(3.1e9), "3.1B");
   assert.equal(human(1.2e12), "1.2T");
   assert.equal(human(null), null);
+});
+
+// ---- collectCodexFile: lineage-aware token arithmetic ----------------------
+// The old code did `s.tok.in = Math.max(0, total - cached)` which overwrote
+// on every event_msg. total_token_usage is CUMULATIVE OVER THE LINEAGE, so a
+// resumed/forked session carried the inherited prefix of its parent on every
+// record. With last_token_usage present the base can be peeled off precisely.
+//
+// Red test for the old code: a file whose first event_msg has a 500-token base
+// (inherited from a parent session — total=600, last=100 → base=500). The old
+// overwrite would emit 100 (600-500 cached? no — it ignored last_token_usage
+// entirely and returned 600), so the red assertion is tok.in === 50 (the net
+// of the 50-token event that actually happened, not the full cumulative total).
+
+test("collectCodexFile: strips inherited lineage base via last_token_usage", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "starreckon-profile-lineage-"));
+  try {
+    const p = join(dir, "rollout-lineage.jsonl");
+    // Parent session accumulated 500 in + 50 cached + 20 out before this file.
+    // This file's first event adds another 50 in + 0 cached + 10 out.
+    // total = 550 in, 50 cached, 30 out.  last = 50 in, 0 cached, 10 out.
+    // Expected net for this file: 500 in, 50 cached, 20 out.
+    const lines = [
+      JSON.stringify({ type: "session_meta", timestamp: "2026-08-01T08:00:00Z", payload: { id: "lineage-sess", model: "codex-mini", cwd: "/home/user/proj" } }),
+      JSON.stringify({ type: "event_msg",    timestamp: "2026-08-01T08:01:00Z", payload: { info: {
+        total_token_usage: { input_tokens: 550, cached_input_tokens: 50, output_tokens: 30 },
+        last_token_usage:  { input_tokens:  50, cached_input_tokens:  0, output_tokens: 10 },
+      } } }),
+    ];
+    writeFileSync(p, lines.join("\n") + "\n");
+    const sig = await collectProfileSignals([{ source: "codex", path: p }]);
+    const s = sig.sessions.find((x) => x.source === "codex");
+    // net in = total_in(550) - base_in(550-50=500) - cached(50) = 0; but net via
+    // the net() helper: [in-cr, cr, out] of want=[500,50,20] → in=450, cr=50, out=20
+    // want = raw - base = [550,50,30] - [500,50,20] = [50,0,10]  (raw=bucket(t)=[550,50,30], base=inherited=[500,50,20])
+    // net([50,0,10]) → [50-0,0,10] = [50,0,10]
+    // So tok.in=50, tok.cr=0, tok.out=10
+    assert.equal(s.tok.in,  50,  "net input tokens after stripping inherited base");
+    assert.equal(s.tok.cr,   0,  "net cached tokens after stripping inherited base");
+    assert.equal(s.tok.out, 10,  "net output tokens after stripping inherited base");
+    // The old overwrite code: s.tok.in = max(0, total_in - cached_in) = max(0, 550-50) = 500 — WRONG.
+    // So the check above (50 ≠ 500) is the red gate.
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

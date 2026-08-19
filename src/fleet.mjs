@@ -17,6 +17,8 @@ import { createHash } from "node:crypto";
 import { basename, join } from "node:path";
 import os from "node:os";
 import { maskPath, maskText } from "./redact.mjs";
+import { providerOf as _providerOf } from "./scanners.mjs";
+export const providerOf = _providerOf;
 
 // The four usage counters, in the order they are reported everywhere.
 export const FIELDS = [
@@ -40,34 +42,6 @@ const NON_MACHINE_DIRS = new Set([
   HUMAN, MACHINE, "archive", "corpus", "merged",
   "digests", "dist", "docker", "__pycache__", "testing-archive",
 ]);
-
-// model-id prefix -> vendor (analyze_tokens.PROVIDER_PREFIXES, same order —
-// first match wins, so "claude" must be tried before nothing else claims it).
-const PROVIDER_PREFIXES = [
-  ["claude", "anthropic"],
-  ["deepseek", "deepseek"],
-  ["gemini", "google"],
-  ["gemma", "google"],
-  ["antigravity", "antigravity"],
-  ["copilot", "copilot"],
-  ["gpt", "openai"],
-  ["o1", "openai"], ["o3", "openai"], ["o4", "openai"], ["codex", "openai"],
-  ["grok", "xai"],
-  ["llama", "meta"],
-  ["mistral", "mistral"], ["mixtral", "mistral"],
-  ["qwen", "qwen"],
-  ["kimi", "moonshot"],
-  ["glm", "zhipu"],
-];
-
-export function providerOf(model) {
-  const m = (model || "").toLowerCase();
-  for (const [prefix, vendor] of PROVIDER_PREFIXES) {
-    if (m.startsWith(prefix)) return vendor;
-  }
-  if (m === "<synthetic>" || m === "unknown" || m === "") return "synthetic";
-  return "other";
-}
 
 // ---- layout (paths.py) -----------------------------------------------------
 

@@ -169,7 +169,7 @@ test("every star in a run says what it was computed FROM", () => {
     heads.length, stars,
     `${stars} star(s) drawn but ${heads.length} heading(s): every star needs one`
   );
-  assert.match(out, /★ from the logs on disk right now/, "the scan star names its source");
+  assert.match(out, /★ this month/, "the scan star names its source as this month");
   assert.match(out, /★ lifetime — from \d+ saved monthly snapshots/, "the lifetime star names its source");
   assert.doesNotMatch(out, /scan complete/, "a progress message is not a label");
 });

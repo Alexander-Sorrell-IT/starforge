@@ -405,3 +405,96 @@ test("the animated star is the same shape, and still has no script in it", () =>
   const firstFrame = vals[1].split(";")[0].trim();
   assert.notEqual(firstFrame, finalFrame, "the animation must start somewhere other than its end state");
 });
+
+test("renderStar uses a wider canvas when opts.columns is large", () => {
+  // opts.columns is the injected terminal width — no process.stdout dependency.
+  const narrow  = renderStar([3, 3, 3, 3, 3], { color: false, columns: 80 });
+  const medium  = renderStar([3, 3, 3, 3, 3], { color: false, columns: 100 });
+  const wide    = renderStar([3, 3, 3, 3, 3], { color: false, columns: 140 });
+
+  const rowLen = (s) => Math.max(...s.split("\n").map((l) => l.length));
+  const rowCnt = (s) => s.split("\n").length;
+
+  // Wider terminal → wider canvas → longer lines.
+  assert.ok(rowLen(medium) > rowLen(narrow),  "100-col canvas must be wider than 80-col");
+  assert.ok(rowLen(wide)   > rowLen(medium),  "140-col canvas must be wider than 100-col");
+
+  // Wider canvas → more rows (star is taller to stay roughly square).
+  assert.ok(rowCnt(medium) > rowCnt(narrow),  "100-col canvas must have more rows than 80-col");
+  assert.ok(rowCnt(wide)   > rowCnt(medium),  "140-col canvas must have more rows than 100-col");
+
+  // All three must still contain all axis labels and the score footer.
+  for (const frame of [narrow, medium, wide]) {
+    for (const ax of AXES) assert.match(frame, new RegExp(ax));
+    assert.match(frame, /SKILL POINTS/);
+  }
+});
+
+test("renderStar defaults to base canvas when columns is absent or narrow", () => {
+  // Narrow or missing columns must not crash and must produce the base canvas.
+  const noCol   = renderStar([2, 2, 2, 2, 2], { color: false });
+  const zeroCol = renderStar([2, 2, 2, 2, 2], { color: false, columns: 0 });
+  const tinyCol = renderStar([2, 2, 2, 2, 2], { color: false, columns: 40 });
+  // All three should produce identical output — same base canvas.
+  assert.equal(noCol, zeroCol, "columns:0 must fall back to base canvas");
+  assert.equal(noCol, tinyCol, "columns:40 must fall back to base canvas");
+  // And it must still be a multi-row frame with labels.
+  assert.ok(noCol.split("\n").length >= 26, "base canvas must have at least 26 rows");
+});
+
+test("colour on/off does not change row count for any canvas size", () => {
+  for (const columns of [80, 100, 140]) {
+    const plain   = renderStar([4, 3, 5, 2, 1], { color: false, columns });
+    const colored = renderStar([4, 3, 5, 2, 1], { color: true,  columns });
+    assert.equal(
+      plain.split("\n").length,
+      colored.split("\n").length,
+      `columns=${columns}: colour must not change the row count`
+    );
+  }
+});
+
+// ── B7: arm-tip animation — opts.progress ────────────────────────────────────
+
+test("renderStar with progress=[1,1,1,1,1] matches rendering with no progress option", () => {
+  const levels = [1, 2, 3, 4, 5];
+  const withFull = renderStar(levels, { color: false, columns: 80, progress: [1, 1, 1, 1, 1] });
+  const normal   = renderStar(levels, { color: false, columns: 80 });
+  assert.equal(withFull, normal, "progress=all-ones must match the default (no progress option)");
+});
+
+test("renderStar with progress=undefined matches rendering with no progress option", () => {
+  const levels = [4, 1, 3, 5, 2];
+  const withUndef = renderStar(levels, { color: false, columns: 80, progress: undefined });
+  const normal    = renderStar(levels, { color: false, columns: 80 });
+  assert.equal(withUndef, normal, "progress=undefined must behave identically to omitting the option");
+});
+
+test("renderStar hull shrinks when progress < 1 for a non-zero arm", () => {
+  // When one arm's progress is 0.5, its effective level is halved, so the
+  // hull polygon differs from the full frame (it's shorter on that arm).
+  // Labels still show the full level (not the partial).
+  const levels = [0, 0, 5, 0, 0]; // only arm 2 populated
+  const full   = renderStar(levels, { color: false, columns: 80 });
+  const half   = renderStar(levels, { color: false, columns: 80, progress: [1, 1, 0.5, 1, 1] });
+  assert.notEqual(half, full, "half-progress arm must produce a different raster than fully-grown");
+});
+
+test("renderStar labels always show the target level, not the animated level", () => {
+  // Even at progress=0.5, labels should show the original level, not level*0.5.
+  const levels = [3, 0, 0, 0, 0];
+  const halfway = renderStar(levels, { color: false, columns: 80, progress: [0.5, 1, 1, 1, 1] });
+  // The label for axis 0 should reference the full level (3), not 1.5
+  assert.match(halfway, /LV\.3/, "arm label must show full target level even at half-progress");
+});
+
+test("renderStar with progress=0 for all arms still shows labels at full target level", () => {
+  // The raster shrinks but labels always pin to the target, so the user can
+  // see where the arm is heading during animation.
+  const levels = [2, 3, 1, 4, 5];
+  const atZeroProgress = renderStar(levels, { color: false, columns: 80, progress: [0, 0, 0, 0, 0] });
+  // All 5 labels must still reference their full target levels, not 0.
+  assert.match(atZeroProgress, /LV\.2/, "arm 0 label must show full level at zero progress");
+  assert.match(atZeroProgress, /LV\.3/, "arm 1 label must show full level at zero progress");
+  assert.match(atZeroProgress, /LV\.5/, "arm 4 label must show full level at zero progress");
+});

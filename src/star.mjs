@@ -27,12 +27,23 @@ const BOLD = "\x1b[1m";
 const DIM = "\x1b[2m";
 
 // Canvas. Pixels are (W) x (ROWS*2); one cell = two vertically stacked pixels.
-const W = 78;
-const ROWS = 26;
-const PH = ROWS * 2;
-const CX = W / 2;
-const CY = PH / 2;
-const R = 16.5;
+// Base dimensions — used when no terminal width is available or terminal is narrow.
+const W_BASE = 78;
+const ROWS_BASE = 26;
+const R_BASE = 16.5;
+
+// Responsive canvas: wider star on wide terminals.
+// Breakpoints chosen so the star fills the screen without exceeding ~2/3 of
+// the width (labels need breathing room on both sides).
+// ROWS scales proportionally — the star is always taller than it is wide
+// because each cell is ~2px tall and 1px wide.
+// opts.columns can be injected by callers / tests without touching process.stdout.
+function canvasFor(columns) {
+  const cols = typeof columns === "number" && columns > 0 ? columns : W_BASE;
+  if (cols >= 140) return { W: 120, ROWS: 40, R: 25.5 };
+  if (cols >= 100) return { W: 96,  ROWS: 32, R: 20.5 };
+  return { W: W_BASE, ROWS: ROWS_BASE, R: R_BASE };
+}
 
 const UPPER = "▀"; // ▀
 
@@ -76,8 +87,9 @@ function minEdgeDist(px, py, pts) {
 }
 
 // Intensity field, 0..1, sampled at one pixel centre. Supersampled by the
-// caller for anti-aliasing.
-function intensityAt(x, y, hull, ghost) {
+// caller for anti-aliasing. CX/CY/R passed in so the function works for any
+// canvas size — removing the dependency on the old module-level constants.
+function intensityAt(x, y, hull, ghost, CX, CY, R) {
   const edge = minEdgeDist(x, y, hull);
   if (edge < 0.85) return 1; // the luminous outline of the silhouette
   if (inPoly(x, y, hull)) {
@@ -94,12 +106,12 @@ function intensityAt(x, y, hull, ghost) {
   return 0;
 }
 
-function shadePixel(x, y, hull, ghost) {
+function shadePixel(x, y, hull, ghost, CX, CY, R) {
   // 2x2 supersample.
   let acc = 0;
   for (let sy = 0; sy < 2; sy++)
     for (let sx = 0; sx < 2; sx++)
-      acc += intensityAt(x + (sx + 0.5) / 2 - 0.5, y + (sy + 0.5) / 2 - 0.5, hull, ghost);
+      acc += intensityAt(x + (sx + 0.5) / 2 - 0.5, y + (sy + 0.5) / 2 - 0.5, hull, ghost, CX, CY, R);
   return acc / 4;
 }
 
@@ -119,17 +131,37 @@ function useColor(stream) {
 
 /**
  * Render one frame. Returns a string of ROWS lines.
- * levels — 5 numbers 0..5 in AXES order.
+ * levels   — 5 numbers 0..5 in AXES order.
+ * opts.columns — terminal width; used to pick the canvas size. Defaults to
+ *   process.stdout.columns when rendering to a live TTY. Pass a number in
+ *   tests or when you want a specific size. Omit for the default 78-col canvas.
  */
 export function renderStar(levels, opts = {}) {
+  // Canvas dimensions — resolved once per frame from the terminal width.
+  // opts.columns lets callers and tests inject a specific width without
+  // touching process.stdout, keeping this function pure and side-effect-free.
+  const termCols = opts.columns ?? process.stdout.columns;
+  const { W, ROWS, R } = canvasFor(termCols);
+  const PH = ROWS * 2;
+  const CX = W / 2;
+  const CY = PH / 2;
+
   const lv = Array.from({ length: ARMS }, (_, i) => clampLevel(levels?.[i] ?? 0));
+  // opts.progress: per-arm growth factor 0→1, used by the arm-tip animation.
+  // Defaults to 1 for every arm (fully grown). When an arm is growing, its
+  // effective level is lv[i] * progress[i], which shrinks its hull polygon
+  // without touching any other state — arms already done stay full.
+  const prog = opts.progress;
+  const effLv = prog
+    ? Array.from({ length: ARMS }, (_, i) => clampLevel(lv[i] * (prog[i] ?? 1)))
+    : lv;
   const color = opts.color ?? true;
-  const hull = starPoints(lv, R, CX, CY);
+  const hull = starPoints(effLv, R, CX, CY);
   const ghost = starPoints(new Array(ARMS).fill(MAX_LEVEL), R, CX, CY);
 
   // Shade the pixel field.
   const px = Array.from({ length: PH }, (_, y) =>
-    Array.from({ length: W }, (_, x) => shadePixel(x, y, hull, ghost))
+    Array.from({ length: W }, (_, x) => shadePixel(x, y, hull, ghost, CX, CY, R))
   );
 
   // Text overlay, in CELL space — a label owns its whole cell, so it is applied
@@ -208,46 +240,65 @@ export class LiveStar {
     this.enabled = Boolean(stream?.isTTY);
     this.color = useColor(stream);
   }
-  draw(levels, status) {
+  draw(levels, status, opts = {}) {
     if (!this.enabled) return;
-    const frame = renderStar(levels, { status, color: this.color });
+    const frame = renderStar(levels, { status, color: this.color, columns: this.stream.columns, ...opts });
     const rows = frame.split("\n");
     if (this.lines > 0) this.stream.write(`\x1b[${this.lines}A`);
     this.stream.write(rows.map((l) => `\x1b[2K${l}`).join("\n") + "\n");
     this.lines = rows.length;
   }
-  // Forge-pulse reveal: arms appear one at a time, longest first, each
-  // brightening from 0 to full over a short pause — like watching a star
-  // being struck into shape. Cross-platform: only cursor-up + line-clear
-  // ANSI, no platform-specific syscalls.
+  // Forge-pulse reveal: arms grow one at a time, tip-first, largest last —
+  // like watching a shape being forged. Each arm grows from nothing to full
+  // length over ~300ms; the next arm starts growing immediately after.
+  // 5 arms × 300ms = ~1.5 s total, 60fps feels smooth even on slow terminals.
+  //
+  // Uses opts.progress so already-finished arms stay full while the current
+  // arm grows — no sudden pops.
   //
   // When the terminal is not a TTY (piped, redirected, CI) the reveal is
-  // skipped and the final frame is printed once — same as before.
+  // skipped and the final frame is printed once.
   async finish(levels, status) {
     if (!this.enabled) {
-      this.stream.write(renderStar(levels, { status, color: this.color }) + "\n");
+      this.stream.write(renderStar(levels, { status, color: this.color, columns: this.stream.columns }) + "\n");
       return;
     }
     const lv = Array.from({ length: ARMS }, (_, i) => clampLevel(levels?.[i] ?? 0));
 
-    // Order arms by size, largest first — the dominant axis lands last and
-    // holds the screen longest. On a tie, axis index breaks it deterministically.
+    // Order arms: smallest first, largest last — the dominant axis lands last
+    // and holds the screen longest. On a tie, axis index breaks deterministically.
     const order = lv
       .map((v, i) => ({ v, i }))
-      .sort((a, b) => b.v - a.v || a.i - b.i)
+      .sort((a, b) => a.v - b.v || b.i - a.i)
       .map((x) => x.i);
 
-    // Build each intermediate frame: show only the arms revealed so far,
-    // all others zeroed. The final frame shows all arms at full.
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-    const frames = order.length;
-    for (let f = 0; f < frames; f++) {
-      const partial = new Array(ARMS).fill(0);
-      for (let k = 0; k <= f; k++) partial[order[k]] = lv[order[k]];
-      this.draw(partial, f < frames - 1 ? "forging…" : status);
-      if (f < frames - 1) await wait(120);
+    const ARM_MS = 300;   // ms for one arm to grow from 0 → 1
+    const FPS    = 60;
+    const STEP   = 1000 / FPS;
+
+    // progress[i]: growth factor 0→1 for each arm. Starts at 0 for all.
+    const progress = new Array(ARMS).fill(0);
+    // Arms that have already finished get progress 1 immediately.
+    // We animate one arm at a time in `order`.
+    for (let f = 0; f < order.length; f++) {
+      const arm = order[f];
+      const steps = Math.max(1, Math.round(ARM_MS / STEP));
+      for (let s = 1; s <= steps; s++) {
+        progress[arm] = s / steps;
+        const isLast = f === order.length - 1 && s === steps;
+        this.draw(
+          lv,
+          isLast ? status : "forging…",
+          // Pass a COPY — draw() must not mutate it
+          { progress: progress.slice() }
+        );
+        if (!isLast) await wait(STEP);
+      }
+      // Arm fully grown: lock it at 1 so it never redraws as partial
+      progress[arm] = 1;
     }
-    // Final draw at true levels (handles rounding from the partial build)
+    // Final draw at true levels with no progress override (clean frame)
     this.draw(lv, status);
   }
 }

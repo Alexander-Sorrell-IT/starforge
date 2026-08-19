@@ -52,6 +52,7 @@ import {
 import { verifyAuditChain, AUDIT_DIR, AUDIT_LIMITS } from "./audit.mjs";
 import { TRIPWIRE_LIMITS } from "./tripwire.mjs";
 import { detectConfinement, buildProofCommand } from "./confine.mjs";
+import { KEY_FILENAME } from "./fleetkey.mjs";
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = dirname(SRC_DIR);
@@ -81,8 +82,10 @@ export const STATIC_ALLOWLIST = Object.freeze({
     "spawns src/search.py (bundled Python script) to run SecureBERT semantic search locally — no network calls from JS, Python side uses HF_HUB_OFFLINE=1 at inference time",
   "beacon.mjs":
     "LAN peer discovery — runs ONLY as a child process spawned by cli.mjs after the scan finishes. Opens a UDP multicast socket on 239.255.255.250:4141 (link-local, never leaves the subnet). The main process's tripwire patches dgram.createSocket to throw; this file runs in a fresh child process where the tripwire is not armed. No outbound TCP/HTTP connections.",
+  "mdns.mjs":
+    "Fleet LAN sync — runs ONLY as a child process spawned by cli.mjs (broadcast subcommand and --serve-discover flag). Serves a machine-folder JSON blob over LAN HTTP (inbound-only, 0.0.0.0 bind) and announces its URL via UDP multicast 239.255.255.250:4141 (link-local, never leaves the subnet). Runs in a fresh child process; the main process tripwire is not armed here.",
   "cli.mjs":
-    "uses node:child_process in three places, all lazy (dynamic import, never at module load): (1) the [X] menu action spawns a clipboard binary; (2) the search subcommand delegates to search.mjs; (3) the --beacon/--live flags spawn src/beacon.mjs as a child process for LAN peer discovery after the scan completes.",
+    "uses node:child_process in five places, all lazy (dynamic import, never at module load): (1) the [X] menu action spawns a clipboard binary; (2) the search subcommand delegates to search.mjs; (3) the --beacon/--live flags spawn src/beacon.mjs; (4) the broadcast subcommand spawns src/mdns.mjs in broadcast mode; (5) the --serve-discover flag spawns src/mdns.mjs in discover mode to find broadcast peers on the LAN.",
 });
 
 // SHA-256 manifest for the allowlisted files, committed next to them.
@@ -278,6 +281,18 @@ export const ALLOWLIST_REQUIREMENTS = Object.freeze({
       { label: "dgram — the single network API used in beacon.mjs", re: new RegExp(`["'\`]node:` + `dgram["'\`]`) },
       { label: "child-process guard comment (explains why this is a child process)", re: /CHILD PROCESS/ },
       { label: "setMulticastTTL(1) — prevents packets leaving the subnet", re: /setMulticastTTL/ },
+    ],
+    allowedApis: [API_NODE_BUILTIN],
+  },
+  "mdns.mjs": {
+    minPatchCalls: 0,
+    markers: [
+      { label: "multicast address constant (link-local, LAN-only)", re: /MULTICAST_ADDR/ },
+      // Split so this file's own scanner does not see the node:dgram literal it hunts.
+      { label: "dgram — UDP announce API", re: new RegExp(`["'\`]node:` + `dgram["'\`]`) },
+      { label: "child-process guard comment (explains why this is a child process)", re: /CHILD PROCESS/ },
+      { label: "setMulticastTTL(1) — prevents packets leaving the subnet", re: /setMulticastTTL/ },
+      { label: "inbound-only HTTP bind (0.0.0.0, no outbound connects)", re: /0\.0\.0\.0/ },
     ],
     allowedApis: [API_NODE_BUILTIN],
   },
@@ -1038,6 +1053,10 @@ export function outputScrub(dataDir = join(homedir(), ".starreckon"), opts = {})
 
   for (const file of files) {
     const rel = relative(dataDir, file);
+
+    // fleet.key is intentionally secret-shaped — it IS the private key.
+    // Scrubbing it would produce a false positive on every run.
+    if (basename(file) === KEY_FILENAME) continue;
 
     // Too big to read into memory, and said so out loud. A leak parked past
     // this cap is outside the check — that is in the limits below, because a

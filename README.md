@@ -389,6 +389,12 @@ starreckon --reset-audit[=WHY]   # retire the run-log history: deletes the logs 
 starreckon verify           # the adversarial self-check, with each check's limits printed
 starreckon prove            # print (don't run) the OS-confinement proof command for this machine
 starreckon addons           # companion tools: what this machine is licensed for, what is installed
+starreckon receipt          # every field starreckon kept, read from disk (--json for machine-readable)
+starreckon serve            # LAN HTTP server — share your stats page over WiFi; prints a QR
+starreckon serve --serve-discover          # pull fleet folders from broadcast peers on the LAN first
+starreckon broadcast        # scan + serve your machine folder over LAN HTTP; peers find you automatically
+starreckon search QUERY     # semantic search over sessions (SecureBERT — needs --search-setup first)
+starreckon scoreboard       # sign your skill summary and show the leaderboard submission URL
 ```
 
 An unknown flag exits 2 and reads nothing: `--no-project` (singular) used to be

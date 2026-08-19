@@ -44,10 +44,11 @@ export function isBilled(cli, provider) {
 const PROVIDER_PREFIXES = [
   ["claude", "anthropic"], ["deepseek", "deepseek"],
   ["gemini", "google"], ["gemma", "google"],
+  ["antigravity", "antigravity"], ["copilot", "copilot"],
   ["gpt", "openai"], ["o1", "openai"], ["o3", "openai"], ["o4", "openai"],
   ["codex", "openai"], ["grok", "xai"], ["llama", "meta"],
   ["mistral", "mistral"], ["mixtral", "mistral"], ["qwen", "qwen"],
-  ["kimi", "moonshot"], ["glm", "zhipu"], ["copilot", "copilot"],
+  ["kimi", "moonshot"], ["glm", "zhipu"],
 ];
 
 export function providerOf(model) {

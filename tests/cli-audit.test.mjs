@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { auditCheck } from "../src/verify.mjs";
+import { ledgerPath, record as ledgerRecord } from "../src/ledger.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = join(HERE, "..", "src");
@@ -121,6 +122,30 @@ test("an early exit still writes a run log, and records the confinement claim", 
   const counter = join(home, ".starreckon", "audit-counter.json");
   assert.ok(existsSync(counter));
   assert.equal(JSON.parse(readFileSync(counter, "utf8")).last_run_index, 0);
+});
+
+test("early-exit with a populated ledger still shows the lifetime total (log rotation safety)", () => {
+  // Simulate: logs have been rotated (no session files), but the ledger has
+  // accumulated history. Without this fix the user would see only "No AI-coding
+  // session logs found" with no trace of their history.
+  const home = mkdtempSync(join(tmpdir(), "sf-ledger-exit-"));
+  // Pre-write one ledger entry so ledgerLifetime().total > 0
+  mkdirSync(join(home, ".starreckon"), { recursive: true });
+  ledgerRecord([{
+    cli: "claude",
+    session_id: "pre-existing-sess",
+    total: 42000,
+    tokens: { input_tokens: 20000, cache_creation_input_tokens: 5000, cache_read_input_tokens: 15000, output_tokens: 2000 },
+    start: "2026-07-15",
+    model: "claude-opus-5",
+  }], "ver-test", home);
+  // No session files → sources.length === 0 → early exit
+  const r = runCli(join(SRC, "cli.mjs"), home, ["--yes", "--no-providers"]);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /No AI-coding session logs found/);
+  // The old code: just printed "nothing to scan" and exited. Would NOT match.
+  assert.match(r.stdout, /ledger lifetime/i, "ledger history must appear even when no logs are on disk");
+  assert.match(r.stdout, /42,000|42000/, "ledger total must be printed");
 });
 
 test("a normal run logs the snapshots it writes (not just --json/--card/--page)", () => {

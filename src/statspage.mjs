@@ -2,10 +2,25 @@
 // only — no external resources, no JS, no network. Aesthetic matches card.mjs
 // (#010409 bg, cyan #7fe0ff data accent, monospace numerals).
 //
+// "No external resource" means nothing the browser FETCHES to render the page:
+// no src=, no <link>, no @import, no url(http…), no <script>. The share QR added
+// below is an <a href> wrapping an inline <svg> — a destination the reader
+// chooses to follow, not a request opening the file makes. Zero requests on load
+// is still the property; profile.test.mjs asserts it on the emitted HTML rather
+// than leaving it to this comment.
+//
 // Every stringy value is escaped AND passed through redactSecrets + maskPath +
 // maskIdentities before it lands in markup. Every section tolerates absent
 // data: a metric that wasn't computed renders as a dash — 0% is a claim,
 // absence is not.
+//
+// "Every" had exactly one exception until it was fixed: the <head> <title> was
+// built from `name` and emitted with esc() alone, so the browser tab kept an
+// address the <h1> in the same page had already pseudonymised. It now goes
+// through clean() like everything else, and privacy.test.mjs asserts it on the
+// emitted <title> rather than leaving it to this sentence — the same treatment
+// the no-fetch claim above gets, and for the same reason: this comment is the
+// thing that was wrong.
 //
 // This page is the output most likely to be shared (screenshot, handed to a
 // recruiter), so it is also the last line of defence for identity: any email
@@ -14,6 +29,7 @@
 // with { showAccounts: true }.
 import { redactSecrets, maskPath, maskIdentities } from "./redact.mjs";
 import { renderStarSvg, AXES } from "./starsvg.mjs";
+import { qrToSvg } from "./qr.mjs";
 
 // ---- palette ---------------------------------------------------------------
 // Data accent (single-series marks) + a 4-slot categorical set for the token
@@ -270,7 +286,7 @@ function genericTable(data) {
 // ---- page ------------------------------------------------------------------
 
 export function renderStatsPage(input = {}) {
-  const { profile, agg, accounts, fleet, providers, starSvg, velocity, name } = input;
+  const { profile, agg, accounts, fleet, providers, starSvg, velocity, name, shareUrl } = input;
   SHOW_ACCOUNTS = input.showAccounts === true;
   const p = profile ?? {};
   const a = agg ?? {};
@@ -283,7 +299,22 @@ export function renderStatsPage(input = {}) {
   const rec = p.records ?? {};
   const mod = p.models ?? {};
 
-  const title = name ? `${name} · starreckon` : "starreckon · stats";
+  // clean(), not esc(). This was esc() only, and it was the single rendered
+  // string in the file that skipped the masking the header above promises: the
+  // title is built from `name`, so `--name casey.dev@example.com` pseudonymised
+  // the <h1> to acct-<hash> and left the address whole in the browser tab, the
+  // window title, the bookmark and every screenshot. The body hid an identity
+  // the chrome around it advertised — and the tab outlives the body, because a
+  // screenshot of a scrolled page still carries it.
+  //
+  // The share QR below already states this rule for the href/payload pair: two
+  // renderings of one value must not disagree. A tab is a rendering.
+  //
+  // Named ...Html because clean() ESCAPES as well as masks. The emit site
+  // interpolates it raw; wrapping it in esc() again turns an "&" in a name into
+  // "&amp;amp;". Pinned by tests/privacy.test.mjs "the page TITLE is masked like
+  // the body".
+  const titleHtml = clean(name ? `${name} · starreckon` : "starreckon · stats");
   const today = (p.generated_at ?? new Date().toISOString()).slice(0, 10);
 
   // -- S1 hero ---------------------------------------------------------------
@@ -484,6 +515,37 @@ export function renderStatsPage(input = {}) {
     })
     .join("");
 
+  // -- share QR --------------------------------------------------------------
+  // Tappable on purpose: <a> may wrap <svg> in HTML5, so the whole code is the
+  // hit target. The requirement was that finding this page ON a phone must not
+  // need a second device to scan it — a QR you cannot tap is useless to the
+  // reader already holding the screen.
+  //
+  // The QR payload and the href are ONE string, masked once and reused. Masking
+  // one and not the other would print a code that goes somewhere the link does
+  // not, which is the worst possible way for these two to disagree.
+  const shareQr = (() => {
+    if (!shareUrl || typeof shareUrl !== "string" || !shareUrl.trim()) return "";
+    const masked = maskPath(redactSecrets(shareUrl.trim()));
+    const url = SHOW_ACCOUNTS ? masked : maskIdentities(masked);
+    let svg;
+    try {
+      svg = qrToSvg(url, { size: 200 });
+    } catch {
+      // encodeQR THROWS past ~271 bytes — a ceiling that already bit once, when
+      // the share card's real payload ran to ~260 and printed "payload too long"
+      // only on real data. A URL this encoder cannot hold costs the QR, never
+      // the page: the same rule every other section here follows.
+      return "";
+    }
+    return panel(
+      "SHARE",
+      `<div class="qr"><a href="${esc(url)}">${svg}</a>` +
+        `<div class="qr-side"><div class="cap">tap it here, or scan it off someone else's screen — same destination either way. your numbers ride in the URL fragment, which a browser never sends to a server.</div></div></div>`,
+      "your star, as a link"
+    );
+  })();
+
   const sourcesLine = (p.sources ?? []).map((s) => clean(s)).join(" · ") || DASH;
 
   return `<!doctype html>
@@ -491,7 +553,7 @@ export function renderStatsPage(input = {}) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)}</title>
+<title>${titleHtml}</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html { color-scheme: dark; }
@@ -548,6 +610,10 @@ export function renderStatsPage(input = {}) {
   .gauge-head b { color: ${C.ink}; }
   .gauge svg { width: 100%; height: 8px; }
   .scroll { overflow-x: auto; }
+  .qr { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+  .qr a { display: block; line-height: 0; border: 1px solid ${C.border}; }
+  .qr svg { display: block; width: 200px; height: 200px; }
+  .qr-side { flex: 1 1 240px; min-width: 200px; }
   table { border-collapse: collapse; width: 100%; font-size: 12px; }
   th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid ${C.grid}; white-space: nowrap; }
   th { color: ${C.muted}; font-weight: normal; letter-spacing: 1px; font-size: 11px; }
@@ -572,6 +638,7 @@ export function renderStatsPage(input = {}) {
   ${s6}
   ${s7}
   ${extra}
+  ${shareQr}
   <footer>
     <div class="priv">computed locally &#183; no page can prove its own no-egress claim</div>
     <div>computed locally from your session logs: this page was rendered on your machine, it references nothing remote, and prompt text was counted in-stream and never stored. It cannot prove that nothing left the machine &#8212; no process can prove that about itself. The kernel-level check is in PROVE-IT.md &#167;1.</div>

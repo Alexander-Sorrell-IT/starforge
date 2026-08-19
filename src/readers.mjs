@@ -487,7 +487,14 @@ export function readCopilotChat(home, pr) {
   }
 
   const seenThinking = new Set();
-  const sessions = [];
+  // Per-session accumulator: keyed on session_id (or filename fallback), keeping
+  // the running max output across every file that carries the same session.
+  // deadreckon deduplicates copilot-chat on session_id across every workspace and
+  // base; starreckon was pushing one session object per FILE, so one session
+  // opened in two VS Code workspaces counted twice. Zero impact today (all 75
+  // real files on this machine have 75 distinct session IDs) but structurally
+  // wrong and will break on any multi-workspace user.
+  const perSession = new Map(); // session_id -> accumulated session object
   for (const f of files) {
     // SIZE IS CHECKED BEFORE READING. The largest real file in this store is
     // 483,631,203 bytes; Node cannot hold a string past MAX_STRING_LENGTH and
@@ -536,24 +543,38 @@ export function readCopilotChat(home, pr) {
     const stamps = (Array.isArray(d.requests) ? d.requests : [])
       .map((r) => r?.timestamp)
       .filter((t) => typeof t === "number" && t > 0);
-    sessions.push({
-      id: (typeof d.sessionId === "string" && d.sessionId)
-        ? d.sessionId : basename(f).replace(/\.json$/, ""),
-      cli: "copilot-chat",
-      account: d.requesterUsername || "copilot-chat",
-      project: basename(dirname(dirname(f))),
-      // Dates come from the store's own fields, with the per-request stamps as
-      // the fallback. `creationDate` was absent from the reader entirely until
-      // recently, which put every one of these sessions in the every-CLI total
-      // and in NO month at all.
-      start: iso(d.creationDate) ?? (stamps.length ? iso(Math.min(...stamps)) : null),
-      end: iso(d.lastMessageDate) ?? (stamps.length ? iso(Math.max(...stamps)) : null),
-      turns,
-      // Reasoning tokens are output. The other three buckets are absent from
-      // this format, not zero in it.
-      tokens: { input: 0, cacheWrite: 0, cacheRead: 0, output: out },
-    });
+    const sid = (typeof d.sessionId === "string" && d.sessionId)
+      ? d.sessionId : basename(f).replace(/\.json$/, "");
+    const start = iso(d.creationDate) ?? (stamps.length ? iso(Math.min(...stamps)) : null);
+    const end   = iso(d.lastMessageDate) ?? (stamps.length ? iso(Math.max(...stamps)) : null);
+    const existing = perSession.get(sid);
+    if (!existing) {
+      perSession.set(sid, {
+        id: sid,
+        cli: "copilot-chat",
+        account: d.requesterUsername || "copilot-chat",
+        project: basename(dirname(dirname(f))),
+        // Dates come from the store's own fields, with the per-request stamps as
+        // the fallback. `creationDate` was absent from the reader entirely until
+        // recently, which put every one of these sessions in the every-CLI total
+        // and in NO month at all.
+        start,
+        end,
+        turns,
+        // Reasoning tokens are output. The other three buckets are absent from
+        // this format, not zero in it.
+        tokens: { input: 0, cacheWrite: 0, cacheRead: 0, output: out },
+      });
+    } else {
+      // Same session in a second workspace: keep the max output (same rule as
+      // the ledger), earliest start, latest end, and sum turns across files.
+      existing.tokens.output = Math.max(existing.tokens.output, out);
+      if (start && (!existing.start || start < existing.start)) existing.start = start;
+      if (end   && (!existing.end   || end   > existing.end))   existing.end   = end;
+      existing.turns += turns;
+    }
   }
+  const sessions = [...perSession.values()];
 
   // A file this reader could not open is unreadable EVEN IF other files
   // counted: the number is then a floor, and a floor presented as a total is

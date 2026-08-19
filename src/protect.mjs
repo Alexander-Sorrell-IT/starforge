@@ -30,6 +30,7 @@ import {
 } from "node:fs";
 import { homedir, platform } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
+import { findConfigDirs } from "./accounts.mjs";
 
 const TARGET_DAYS = 36500; // 100 years — cleanup runs, never matches
 
@@ -140,93 +141,21 @@ function isArchivable(fullPath, relToStore) {
 }
 
 // ---- Claude profile discovery (by SHAPE, not by name) ----------------------
-// Port of analyze_tokens.find_config_dirs + retention_guard.find_profiles.
-// A Claude profile is any directory containing projects/ with at least one
-// .jsonl beneath it. Walked to depth 4 from home.
-
-function looksLikeClaudeProfile(p) {
-  const proj = join(p, "projects");
-  if (!isDir(proj)) return false;
-  // At least one .jsonl anywhere beneath projects/
-  const check = (dir, depth) => {
-    if (depth < 0) return false;
-    let entries;
-    try { entries = readdirSync(dir); } catch { return false; }
-    for (const e of entries) {
-      if (e.endsWith(".jsonl")) return true;
-      const full = join(dir, e);
-      if (isDir(full) && check(full, depth - 1)) return true;
-    }
-    return false;
-  };
-  return check(proj, 4);
-}
-
-/**
- * Profiles under `home`, plus whatever $CLAUDE_CONFIG_DIR points at.
- *
- * `configDir` is a parameter and not a bare `process.env` read because the env
- * read made this function non-hermetic: handed a fresh temp home it still
- * returned the developer's own alternate profile, because the variable was set
- * in that shell and pointed outside the home it was given. Three tests failed,
- * and the failure was the honest half — the dangerous half is that a test
- * asserting "empty home -> []" would have PASSED on any machine where the
- * variable happened to be unset, and failed only on the machines that actually
- * use it. A suite whose verdict depends on ambient environment is not a suite.
- *
- * Production behaviour is unchanged: the default is still the live variable,
- * which is the whole reason it is honoured — CLAUDE_CONFIG_DIR may point
- * anywhere at all, and a scan bounded by `home` would never find it.
- */
-export function findClaudeProfiles(home, { configDir = process.env.CLAUDE_CONFIG_DIR } = {}) {
+// Thin wrapper kept for the test suite. Internal callers use findConfigDirs
+// (accounts.mjs) which uses the dotdir_contains rule and finds ~/.my-claude,
+// ~/.claude-alt and any future alias that this function missed.
+// configDir is forwarded explicitly: findConfigDirs only honours
+// $CLAUDE_CONFIG_DIR on the real home (hermetic), so an injected configDir
+// pointing outside a temp home must be added here.
+export function findClaudeProfiles(home, { configDir } = {}) {
   home = home ?? homedir();
-  const seen = new Set();
-  const out = [];
-
-  const add = (p) => {
-    let key;
-    try {
-      const s = statSync(p);
-      key = s.ino !== 0 ? `${s.dev}:${s.ino}` : p;
-    } catch { return; }
-    if (seen.has(key)) return;
-    if (!looksLikeClaudeProfile(p)) return;
-    seen.add(key);
-    out.push(p);
-  };
-
-  // Fast path: ~/.claude* (common case)
-  let top;
-  try { top = readdirSync(home); } catch { return out; }
-  for (const e of top) {
-    if (e.startsWith(".claude")) {
-      const full = join(home, e);
-      if (isDir(full)) add(full);
-    }
+  const archiveRoot = join(home, ".ai-logs-archive");
+  const dirs = findConfigDirs(home).filter(d => !d.startsWith(archiveRoot + sep) && d !== archiveRoot);
+  if (configDir && !dirs.includes(configDir)) {
+    const proj = join(configDir, "projects");
+    if (isDir(proj)) dirs.push(configDir);
   }
-
-  // $CLAUDE_CONFIG_DIR may point anywhere
-  if (configDir) add(configDir);
-
-  // Deep walk for copies/alternate profiles
-  const walk = (dir, depth) => {
-    if (depth < 0) return;
-    let entries;
-    try { entries = readdirSync(dir); } catch { return; }
-    for (const e of entries) {
-      if (SKIP_WALK.has(e)) continue;
-      const full = join(dir, e);
-      let isD;
-      try { isD = statSync(full).isDirectory(); } catch { continue; }
-      if (!isD) continue;
-      // Skip the archive itself — it holds copies, not live profiles
-      if (full === join(home, ".ai-logs-archive")) continue;
-      if (isDir(join(full, "projects"))) add(full);
-      walk(full, depth - 1);
-    }
-  };
-  walk(home, 4);
-  return out;
+  return dirs;
 }
 
 // ---- Layer 1: raise cleanupPeriodDays --------------------------------------
@@ -500,18 +429,11 @@ export function allStores(home) {
  * tick()  — apply + return a one-line summary string (for daemon log).
  */
 
-// OPTS REACHES THE DISCOVERY, or the injected home is only half honoured.
-// findClaudeProfiles takes {configDir} and defaults it to
-// $CLAUDE_CONFIG_DIR, which is right for production and wrong for a caller
-// that has just built a temp home to ask a question about. check(), apply()
-// and needsProtection() passed the home and dropped the option, so on a
-// developer machine with CLAUDE_CONFIG_DIR set they answered about a profile
-// the caller never mentioned. The three needsProtection tests were green here
-// only because this machine's $CLAUDE_CONFIG_DIR happens to point at an
-// already-raised profile: set it at a 30-day one and they invert.
+// Profile discovery delegates to findConfigDirs (accounts.mjs) which uses
+// the dotdir_contains rule and honours $CLAUDE_CONFIG_DIR hermetically.
 export function check(home, opts = {}) {
   home = home ?? homedir();
-  const profiles = findClaudeProfiles(home, opts);
+  const profiles = findConfigDirs(home);
   const stores = allStores(home);
 
   const profileResults = profiles.map(p => ({
@@ -532,7 +454,7 @@ export function check(home, opts = {}) {
 
 export function apply(home, opts = {}) {
   home = home ?? homedir();
-  const profiles = findClaudeProfiles(home, opts);
+  const profiles = findConfigDirs(home);
   const stores = allStores(home);
 
   const profileResults = profiles.map(p => ({
@@ -593,6 +515,6 @@ export function tick(home) {
  */
 export function needsProtection(home, opts = {}) {
   home = home ?? homedir();
-  const profiles = findClaudeProfiles(home, opts);
+  const profiles = findConfigDirs(home);
   return profiles.some(p => currentPeriod(p) < TARGET_DAYS);
 }

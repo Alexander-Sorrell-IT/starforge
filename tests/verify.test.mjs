@@ -117,6 +117,22 @@ const BEACON_FIXTURE = [
   "",
 ].join("\n");
 
+const MDNS_FIXTURE = [
+  '// THIS FILE RUNS AS A CHILD PROCESS — spawned by cli.mjs for broadcast/discover.',
+  'import dgram from "node:dgram";',
+  'import { createServer } from "node:http";',
+  'export const MULTICAST_ADDR = "239.255.255.250";',
+  'export async function runBroadcast(payload, port, timeoutMs) {',
+  '  const server = createServer((req, res) => res.end("ok"));',
+  '  server.listen(port, "0.0.0.0");',
+  '  const sock = dgram.createSocket({ type: "udp4" });',
+  '  sock.setMulticastTTL(1);',
+  '  await new Promise(r => setTimeout(r, timeoutMs));',
+  '  sock.close(); server.close();',
+  '}',
+  "",
+].join("\n");
+
 const CLI_FIXTURE = [
   '// node:child_process, which the tripwire patches at module load in scan runs.',
   '// xdotool is excluded — it types into the focused window, not the clipboard.',
@@ -146,6 +162,7 @@ function writeAllowlisted(dir, { pins = true, pkg = { name: "fixture", version: 
   writeFileSync(join(dir, "serve.mjs"), SERVE_FIXTURE);
   writeFileSync(join(dir, "search.mjs"), SEARCH_FIXTURE);
   writeFileSync(join(dir, "beacon.mjs"), BEACON_FIXTURE);
+  writeFileSync(join(dir, "mdns.mjs"), MDNS_FIXTURE);
   writeFileSync(join(dir, "cli.mjs"), CLI_FIXTURE);
   if (pkg) writeFileSync(join(dir, "package.json"), JSON.stringify(pkg, null, 2));
   if (pins) updatePins(dir);
@@ -167,12 +184,14 @@ test("staticScan passes on a clean tree with intact, pinned allowlisted files", 
   assert.ok(res.allowlist["serve.mjs"].hits > 0);
   assert.ok(res.allowlist["search.mjs"].hits > 0);
   assert.ok(res.allowlist["beacon.mjs"].hits > 0);
+  assert.ok(res.allowlist["mdns.mjs"].hits > 0);
   assert.ok(res.allowlist["cli.mjs"].hits > 0);
   assert.strictEqual(res.allowlist["tripwire.mjs"].pin, "ok");
   assert.strictEqual(res.allowlist["confine.mjs"].pin, "ok");
   assert.strictEqual(res.allowlist["serve.mjs"].pin, "ok");
   assert.strictEqual(res.allowlist["search.mjs"].pin, "ok");
   assert.strictEqual(res.allowlist["beacon.mjs"].pin, "ok");
+  assert.strictEqual(res.allowlist["mdns.mjs"].pin, "ok");
   assert.strictEqual(res.allowlist["cli.mjs"].pin, "ok");
   assert.ok(res.limits.length >= 3);
   assert.ok(res.inspected > 0, "a scan that read files must report what it read");
