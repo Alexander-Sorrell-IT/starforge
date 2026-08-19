@@ -31,14 +31,18 @@
 // `node src/confine.mjs --probe` (exit 0 = kernel refused, 1 = egress open,
 // 2 = ambiguous); no second probe was invented for this file.
 //
-// The wall is `docker run --network none` because on this platform it is the
-// only one that works: sandbox-exec is macOS-only, `unshare -rn` and
-// `bwrap --unshare-net` are refused under
+// The wall is whichever one this machine actually has, asked for in
+// src/confine.mjs's own order: detectConfinement().recommended first
+// (sandbox-exec on macOS, `unshare -rn` on a permissive Linux kernel), and
+// `docker run --network none` only when that comes back empty — which is what
+// confine.mjs's own note tells the user to do when unshare is refused.
+//
+// On the machine this was written on, only the last one works: sandbox-exec is
+// macOS-only, `unshare -rn` and `bwrap --unshare-net` are refused under
 // apparmor_restrict_unprivileged_userns=1 (Ubuntu 23.10+, the default), and
 // `systemd-run --user -p PrivateNetwork=yes` is worse than refused — it exits
-// 0 and does NOT apply, so the probe inside it connects. src/confine.mjs's own
-// note already names a container with --network none as the Linux remedy.
-// That last case is the reason every wall here is probed before it is trusted.
+// 0 and does NOT apply, so the probe inside it connects. That last case is why
+// every wall here is probed before it is trusted, whichever one was chosen.
 //
 // WHAT STANDS IN FOR THE MODELS
 //
@@ -60,6 +64,7 @@ import { tmpdir, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { staticScan } from "../src/verify.mjs";
+import { detectConfinement, sandboxProfile } from "../src/confine.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SEARCH_PY = join(ROOT, "src", "search.py");
@@ -207,46 +212,88 @@ function dockerStatus() {
   return { ok: true, reason: "" };
 }
 
-// The wall. --network none gives the container no interfaces and no routes, so
-// connect() fails in the kernel before a packet exists. --user keeps files the
-// container writes into the bind mount owned by the test, not by root.
-function wallArgs(record) {
-  return [
-    "run", "--rm",
-    "--network", "none",
-    "--user", `${process.getuid()}:${process.getgid()}`,
-    "-v", `${T}:/t`,
-    "-v", `${ROOT}:/repo:ro`,
-    "-e", "HOME=/t/home",
-    "-e", `STARRECKON_STUB_RECORD=/t/${record}`,
-  ];
+// Environment for a run under test. HF_HUB_OFFLINE is DELETED, never set: the
+// only thing allowed to put it there is src/search.py itself. Handing it in
+// from the caller would make the test pass with search.py:87 deleted — the very
+// mutation this file exists to catch.
+function childEnv(record) {
+  const env = { ...process.env, HOME: join(T, "home"), STARRECKON_STUB_RECORD: join(T, record) };
+  delete env.HF_HUB_OFFLINE;
+  delete env.HF_HOME;
+  return env;
+}
+
+// Pick the wall the way src/confine.mjs would, and fall back to a container
+// only when it says there is nothing on this machine. Every wall returns the
+// same shape: wrap(argv) -> argv to spawn, and the paths the child will see.
+function pickWall() {
+  const det = detectConfinement();
+  const python = spawnSync("python3", ["-V"], { encoding: "utf8" });
+  const hostWall = (kind, wrap) =>
+    python.status === 0
+      ? { ok: true, kind, wrap, node: process.execPath, python: "python3", t: T, repo: ROOT, env: childEnv }
+      : { ok: false, reason: `${kind} is available but python3 is not runnable here` };
+
+  if (det.recommended === "sandbox-exec")
+    return hostWall("sandbox-exec", (argv) => ["/usr/bin/sandbox-exec", "-p", sandboxProfile(), ...argv]);
+  if (det.recommended === "netns") return hostWall("netns", (argv) => ["unshare", "-rn", ...argv]);
+
+  const d = dockerStatus();
+  if (!d.ok) return { ok: false, reason: `${det.notes.at(-1)} — and no container fallback: ${d.reason}` };
+  // --network none gives the container no interfaces and no routes, so connect()
+  // fails in the kernel before a packet exists. --user keeps whatever the
+  // container writes into the bind mount owned by the test, not by root.
+  return {
+    ok: true,
+    kind: "docker",
+    node: "node",
+    python: "python3",
+    t: "/t",
+    repo: "/repo",
+    image: (argv) => (argv[0] === "node" ? NODE_IMAGE : PY_IMAGE),
+    wrap(argv, record) {
+      return [
+        "docker", "run", "--rm",
+        "--network", "none",
+        "--user", `${process.getuid()}:${process.getgid()}`,
+        "-v", `${T}:/t`,
+        "-v", `${ROOT}:/repo:ro`,
+        "-e", "HOME=/t/home",
+        "-e", `STARRECKON_STUB_RECORD=/t/${record}`,
+        this.image(argv),
+        ...argv,
+      ];
+    },
+    env: () => process.env,
+  };
+}
+
+const WALL = pickWall();
+
+// Run argv inside the wall (or on the host when `confined` is false). Both
+// sides get the same argv and the same environment; only the wall differs,
+// which is what makes the two results comparable.
+function run({ argv, confined, record, timeout = 180000 }) {
+  const full = confined && WALL.kind === "docker" ? WALL.wrap(argv, record) : confined ? WALL.wrap(argv) : argv;
+  const env = confined && WALL.kind === "docker" ? WALL.env() : childEnv(record);
+  return spawnSync(full[0], full.slice(1), { encoding: "utf8", timeout, env });
 }
 
 // One inference run: real src/search.py (armed or sabotaged) + the stub loader.
-// `confined` chooses the side of the wall; everything else is identical, which
-// is what makes the two results comparable.
 function runInference({ variant, confined, record }) {
   rmSync(join(T, record), { force: true });
-  const target = `/t/${variant}/search.py`;
-  const r = confined
-    ? docker([...wallArgs(record), PY_IMAGE, "python3", "/t/drive.py", target])
-    : spawnSync("python3", [join(T, "drive.py"), join(T, variant, "search.py")], {
-        encoding: "utf8",
-        timeout: 120000,
-        env: {
-          ...process.env,
-          HOME: join(T, "home"),
-          STARRECKON_STUB_RECORD: join(T, record),
-        },
-      });
-  const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  const base = confined ? { t: WALL.t, py: WALL.python } : { t: T, py: "python3" };
+  const r = run({
+    argv: [base.py, `${base.t}/drive.py`, `${base.t}/${variant}/search.py`],
+    confined,
+    record,
+  });
+  const out = `${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? ` [spawn: ${r.error.message}]` : ""}`;
   const lines = existsSync(join(T, record))
     ? readFileSync(join(T, record), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l))
     : [];
   return { status: r.status, out, events: lines };
 }
-
-const DOCKER = dockerStatus();
 
 // The outside control, run exactly once: the repo's own probe on the host. If
 // this machine cannot reach the network at all, a refusal inside the wall
@@ -263,7 +310,7 @@ function loudSkip(t, reason) {
 }
 
 function needWall(t) {
-  if (!DOCKER.ok) return loudSkip(t, `no usable network wall here: ${DOCKER.reason}`), false;
+  if (!WALL.ok) return loudSkip(t, `no usable network wall here: ${WALL.reason}`), false;
   if (!EGRESS_OPEN)
     return (
       loudSkip(
@@ -280,7 +327,7 @@ function needWall(t) {
 // controls first: is there a wall, and is it really a wall?
 
 test("control: the identical probe CONNECTS outside the wall", (t) => {
-  if (!DOCKER.ok) return void loudSkip(t, `no usable network wall here: ${DOCKER.reason}`);
+  if (!WALL.ok) return void loudSkip(t, `no usable network wall here: ${WALL.reason}`);
   if (!EGRESS_OPEN) return void loudSkip(t, "this machine has no egress — nothing below can be conclusive");
   assert.match(outsideProbe.stdout, /egress attempt: TCP 1\.1\.1\.1:443/);
   assert.match(outsideProbe.stdout, /NOT BLOCKED/);
@@ -288,10 +335,15 @@ test("control: the identical probe CONNECTS outside the wall", (t) => {
 
 test("control: the kernel REFUSES the same probe inside the wall", (t) => {
   if (!needWall(t)) return;
-  // src/confine.mjs --probe, unchanged, run under --network none. Same probe,
-  // same exit codes, same reading as bin/starreckon-proof.sh step 3/3.
-  const r = docker([...wallArgs("probe.jsonl"), NODE_IMAGE, "node", "/repo/src/confine.mjs", "--probe"]);
-  const out = `${r.stdout}${r.stderr}`;
+  // src/confine.mjs --probe, unchanged, run under whichever wall was chosen.
+  // Same probe, same exit codes, same reading as bin/starreckon-proof.sh 3/3.
+  const r = run({
+    argv: [WALL.node, `${WALL.repo}/src/confine.mjs`, "--probe"],
+    confined: true,
+    record: "probe.jsonl",
+    timeout: 60000,
+  });
+  const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   assert.equal(r.status, 0, `expected BLOCKED (exit 0), got exit ${r.status}:\n${out}`);
   assert.match(out, /BLOCKED/);
   assert.match(out, /kernel refused before any packet could leave/);
@@ -341,7 +393,7 @@ test("ARMED: inference completes with the network denied, and the loader saw HF_
 // from "no inference ran".
 
 test("POSITIVE CONTROL: with the flag renamed, inference reaches the network for real (outside the wall)", (t) => {
-  if (!DOCKER.ok && !EGRESS_OPEN) return void loudSkip(t, "no egress and no wall — nothing to compare");
+  if (!WALL.ok && !EGRESS_OPEN) return void loudSkip(t, "no egress and no wall — nothing to compare");
   if (!EGRESS_OPEN) return void loudSkip(t, "no egress on this machine — cannot show the call succeeding");
   const r = runInference({ variant: "sabotaged", confined: false, record: "sabotage-open.jsonl" });
   const connected = r.events.filter((e) => e.event === "connected");
@@ -388,17 +440,20 @@ test("real SecureBERT models: an unstubbed query under the wall", (t) => {
   }
   if (!needWall(t)) return;
   const home = homedir();
-  // The real HOME is mounted at its real path so the venv's absolute paths
-  // still resolve; read-only, because this test must not be able to modify
-  // anything of the user's.
-  const r = docker([
-    "run", "--rm", "--network", "none",
-    "--user", `${process.getuid()}:${process.getgid()}`,
-    "-v", `${home}:${home}:ro`,
-    "-v", `${ROOT}:/repo:ro`,
-    "-e", `HOME=${home}`,
-    PY_IMAGE, venvPy, "/repo/src/search.py", "query", "authentication",
-  ]);
+  const query = [venvPy, SEARCH_PY, "query", "authentication"];
+  // A host wall (sandbox-exec, netns) runs the user's own venv in place. The
+  // container fallback has to mount the real HOME at its real path so the
+  // venv's absolute paths still resolve — read-only, because this test must not
+  // be able to modify anything of the user's.
+  const argv =
+    WALL.kind === "docker"
+      ? ["docker", "run", "--rm", "--network", "none",
+         "--user", `${process.getuid()}:${process.getgid()}`,
+         "-v", `${home}:${home}:ro`,
+         "-e", `HOME=${home}`,
+         PY_IMAGE, ...query]
+      : WALL.wrap(query);
+  const r = spawnSync(argv[0], argv.slice(1), { encoding: "utf8", timeout: 300000, env: { ...process.env } });
   const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   if (r.status === 0) {
     assert.match(out, /query:/, out);
@@ -407,8 +462,15 @@ test("real SecureBERT models: an unstubbed query under the wall", (t) => {
   // A non-zero exit is only a verdict when it is a NETWORK verdict. Anything
   // else (a venv that will not run under this image, an incomplete cache) is
   // inconclusive and is reported as such rather than rounded to a failure —
-  // the same distinction bin/starreckon-proof.sh draws for its scan step.
-  if (/ENETUNREACH|Network is unreachable|Max retries|Failed to establish|getaddrinfo|Temporary failure/i.test(out)) {
+  // the same distinction bin/starreckon-proof.sh draws for its scan step. Note
+  // which side of the line huggingface's own offline error falls on: "offline
+  // mode is enabled" is the guarantee HOLDING against a thin cache, not
+  // breaking, so it must not be read as a failure here.
+  if (
+    /ENETUNREACH|Network is unreachable|Max retries|Failed to establish|getaddrinfo|Temporary failure|HTTPSConnectionPool|ConnectionError/i.test(
+      out
+    )
+  ) {
     assert.fail(`inference tried to reach the network with the models installed:\n${out}`);
   }
   loudSkip(t, `the real-model run could not start under the wall for a non-network reason:\n${out}`);
