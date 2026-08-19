@@ -235,3 +235,32 @@ test("NO_COLOR: the conditioned screens and the nothing-to-start notice are plai
     }
   }
 });
+
+// ---- [G] history — the series view, reachable from the menu ------------------
+//
+// Both builds of the series view shipped without a menu key, and both reviewers
+// said the same thing about it independently: a view only reachable by typing a
+// subcommand you already know exists is not one that gets read. These two tests
+// are the whole of that fix — the key is offered, and pressing it renders the
+// same three-state answer the subcommand renders.
+
+test("[G] is offered in the menu", () => {
+  const home = fakeHome();
+  const r = run(home, SCAN_ARGS, { input: "Q\n", interactive: true });
+  const menu = menuOf(r.stdout);
+  assert.ok(menu.includes("[G]"), "the menu never offered the history view");
+  assert.match(menu, /how many months of history exist/,
+    "[G] was listed without saying what it answers");
+});
+
+test("[G] renders the same view the `series` subcommand renders", () => {
+  const home = fakeHome();
+  const viaKey = run(home, SCAN_ARGS, { input: "G\nQ\n", interactive: true });
+  const viaSub = run(home, ["series"]);
+  // The subcommand's whole output must appear in the menu run. Two renderings
+  // of one question drift apart; this asserts there is one rendering.
+  const body = viaSub.stdout.trim();
+  assert.ok(body.length > 0, "the series subcommand printed nothing to compare against");
+  assert.ok(viaKey.stdout.includes(body),
+    "pressing [G] did not produce what `starreckon series` produces");
+});

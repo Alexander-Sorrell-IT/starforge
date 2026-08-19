@@ -2143,6 +2143,11 @@ async function main() {
       console.log(`\n${BOLD}${CYAN}before you go${RESET}`);
       console.log(`  ${BOLD}[P]${RESET} prove it      ${DIM}ask the kernel whether anything can leave${RESET}`);
       console.log(`  ${BOLD}[T]${RESET} transparency  ${DIM}every field this tool KEPT, read from the bytes on disk${RESET}`);
+      // [G] history — the series view, reachable without knowing a subcommand
+      // exists. Both builds of that view shipped without a menu key, and both
+      // reviewers said the same thing about it: a witness only a person who
+      // already knows its name can reach is not one that will be read.
+      console.log(`  ${BOLD}[G]${RESET} history       ${DIM}how many months of history exist, and how many a forecast needs${RESET}`);
       if (timeline.length)
         console.log(`  ${BOLD}[C]${RESET} compare      ${DIM}[M] mine · ${fleetStars?.lifetime ? "[F] fleet · " : ""}[S] save${RESET}`);
       // Which optional doors are real on THIS machine, right now — re-measured
@@ -2189,6 +2194,13 @@ async function main() {
       } else if (key === "T") {
         console.log("");
         console.log(renderReceipt(buildReceipt(), { color: !process.env.NO_COLOR }));
+      } else if (key === "G") {
+        // Same call the `series` subcommand makes, and deliberately the same
+        // one: two renderings of one question drift apart, and this view exists
+        // to keep three states apart rather than to invent a fourth.
+        const { surveySeries, renderSeries } = await import("./series.mjs");
+        console.log("");
+        console.log(renderSeries(surveySeries(), { color: !process.env.NO_COLOR }));
       } else if (key === "C" && timeline.length) {
         // Compare sub-menu: [M] mine · [F] fleet · [S] save
         const thisMonth = timeline[timeline.length - 1];
