@@ -43,19 +43,24 @@ const CLAIMS = [
    "src/scan.mjs",
    '        : (typeof d.uuid === "string" && d.uuid ? `uuid:${d.uuid}` : null);',
    '        : null;',
-   ["tests/usage-dedup.test.mjs", "tests/conformance.test.mjs"]],
+   ["tests/claims-batch1.test.mjs", "tests/usage-dedup.test.mjs"]],
 
   ["redact.mjs — the account pseudonym never carries the address",
    "src/redact.mjs",
    '      .update(PSEUDONYM_SALT + String(identity ?? ""))',
    '      .update(String(identity ?? ""))',
-   ["tests/redact.test.mjs", "tests/privacy.test.mjs"]],
+   ["tests/claims-batch1.test.mjs", "tests/redact.test.mjs"]],
 
+  // NOTE ON THIS MUTATION. It first read `replace: true` -> `replace: true ||
+  // true`, which is the same value: the claim was never falsified and the
+  // census dutifully reported UNGUARDED for a guard that works. A mutation
+  // that does not change behaviour makes every test look absent, which is this
+  // project's own signature defect wearing a census badge.
   ["fleet.mjs:770 — a real report is never clobbered by a stub",
    "src/fleet.mjs",
-   "replace: true",
-   "replace: true /* CLAIM FALSIFIED */ || true",
-   ["tests/fleet.test.mjs"]],
+   "  const report = join(hrDir, \"REPORT.md\");\n  if (!existsSync(report)) {",
+   "  const report = join(hrDir, \"REPORT.md\");\n  if (true) {",
+   ["tests/claims-batch1.test.mjs", "tests/fleet.test.mjs"]],
 
   ["verify.mjs — markupStrings sees text a browser renders",
    "src/verify.mjs",
