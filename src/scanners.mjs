@@ -753,7 +753,12 @@ function agyDecrypt(raw) {
     const iv = raw.subarray(0, 12);
     const tag = raw.subarray(raw.length - 16);
     const ct = raw.subarray(12, raw.length - 16);
-    const dec = createDecipheriv("aes-256-gcm", AGY_KEY, iv);
+    // authTagLength SAID, not merely arithmetic. The tag is 16 bytes because
+    // the slice above takes 16 bytes; nothing told the cipher that, so a
+    // future edit to the slice would hand GCM a short tag and it would accept
+    // it. 16 is already the default — this changes no behaviour and moves the
+    // invariant from a subtraction into the API. (semgrep: gcm-no-tag-length)
+    const dec = createDecipheriv("aes-256-gcm", AGY_KEY, iv, { authTagLength: 16 });
     dec.setAuthTag(tag);
     return Buffer.concat([dec.update(ct), dec.final()]);
   } catch {
