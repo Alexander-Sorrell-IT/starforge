@@ -613,7 +613,33 @@ export async function parseClaudeFile(filePath, stats, opts = {}) {
           : null;
       if (model) s.models.set(model, (s.models.get(model) ?? 0) + 1);
       const u = msg.usage;
-      const id = typeof msg.id === "string" ? msg.id : null;
+      // THE ROW UUID IS AN IDENTITY, AND WITHOUT IT A COPY COUNTS TWICE.
+      //
+      // This read message.id and stopped, so a row without one was credited
+      // in full every time it was seen — and creditUsage says so out loud:
+      // "No id means nothing to correlate it with, so it is its own message."
+      // A row IS its own message; the mistake was concluding it therefore has
+      // no identity. It has one: the row uuid, which is stable across copies
+      // of the same transcript, and a duplicated profile is the case this
+      // whole scan exists to survive.
+      //
+      // Found by the differential fuzzer: 20 of 60 generated corpora
+      // disagreed, starreckon exactly DOUBLE on every session whose rows
+      // carry no message.id, against both deadreckon and the corpus's own
+      // constructed truth (43,669 true, 71,263 counted).
+      //
+      // Two other implementations already did this and this one did not —
+      // accounts.mjs:468 credits `msg.id ?? rec.uuid`, and deadreckon's
+      // MessageMax.key falls back to ("uuid", row_uuid). So this line also
+      // settles starreckon's own internal disagreement, where the two
+      // counters reported 50 and 100 for the same record.
+      //
+      // Order matters: message.id FIRST, because it is what ties the many
+      // rewrites of one streaming message together. The uuid is per ROW, so
+      // using it first would make every rewrite its own message.
+      const id = typeof msg.id === "string" && msg.id
+        ? msg.id
+        : (typeof d.uuid === "string" && d.uuid ? `uuid:${d.uuid}` : null);
       if (u) {
         const d = creditUsage(stats.seenMessageIds, id, u);
         s.tok.in += d.in;
