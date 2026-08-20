@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
-  "_comment": "scan.mjs is THE COUNTING FILE \u2014 1,268 lines \u2014 and had never been mutated; this config previously named redact.mjs and nothing else. Runner scoped BY GREP for suites importing src/scan.mjs, minus six that read outside the tree (homedir, README, ../..) and cannot run in Stryker's sandbox copy. Scoping by guesswork read 11% once and 50.66% on the re-run. sanitize-model.test.mjs added after the first run gave sanitizeModel 0.0%.",
+  "_comment": "scan.mjs is THE COUNTING FILE \u2014 1,268 lines \u2014 and had never been mutated; this config previously named redact.mjs and nothing else. Runner scoped BY GREP for suites importing src/scan.mjs, minus six that read outside the tree and cannot run in Stryker's sandbox copy. REPORTS HERE ARE WORKING FILES AND GET OVERWRITTEN \u2014 a scoped run (--mutate 'src/scan.mjs:55-64') replaced the full 1,014-mutant report with ten lines' worth and lost the measurement the plan was built on. Anything a decision rests on is copied to ~/reckon-exchange/measurements/ with a UTC stamp, where nothing but a person writes.",
   "packageManager": "npm",
   "testRunner": "command",
   "commandRunner": {
