@@ -129,6 +129,62 @@ const CLAIMS = [
    "    detail.query_chars = q.length;",
    "    detail.query_chars = q.length;\n    detail.query = q;",
    ["tests/claims-batch2.test.mjs", "tests/layerlog.test.mjs"]],
+
+  // ── batch 3, 2026-08-20 · the destructive verbs ──────────────────────────
+
+  ["protect.mjs:23 — NEVER lowers cleanupPeriodDays",
+   "src/protect.mjs",
+   "  if (cur >= TARGET_DAYS) {",
+   "  if (cur === TARGET_DAYS) {",
+   ["tests/protect.test.mjs"]],
+
+  ["layerlog.mjs:103 — a run record is NEVER overwritten",
+   "src/layerlog.mjs",
+   "    linkSync(tmp, file);\n    return true;",
+   "    renameSync(tmp, file);\n    return true;",
+   ["tests/layerlog.test.mjs"]],
+
+  ["audit.mjs:246 — writing the run log NEVER throws",
+   "src/audit.mjs",
+   "function persist(audit, { complete, abort_reason }) {\n  try {",
+   "function persist(audit, { complete, abort_reason }) {\n  if (true) {",
+   ["tests/audit.test.mjs"]],
+
+  // ── batch 4, 2026-08-20 ──────────────────────────────────────────────────
+
+  ["contact.mjs — a field is NEVER truncated mid-value; it fits whole or is skipped",
+   "src/contact.mjs",
+   "    if (used + bytes > (budget ?? Infinity)) continue; // skip, never truncate mid-value",
+   "    if (used + bytes > (budget ?? Infinity)) { lines.push(line.slice(0, 8)); break; }",
+   ["tests/claims-batch4.test.mjs", "tests/wrapped.test.mjs"]],
+
+  // The first mutation here inserted `if (true) {}` next to the comment, which
+  // changes nothing — the second no-op mutation this census has written, and
+  // both reported a working guard as absent. A mutation that does not change
+  // behaviour is the census committing the defect it exists to find.
+  ["accounts.mjs:209 — a profile found deep in the tree must say who it is",
+   "src/accounts.mjs",
+   "      if (!inherits) {\n        unclaimed.push(p);\n        return;\n      }",
+   "      if (false) {\n        unclaimed.push(p);\n        return;\n      }",
+   ["tests/claims-batch4.test.mjs", "tests/accounts.test.mjs"]],
+
+  ["fleetstar.mjs:60 — the two can never disagree about which folders are machines",
+   "src/fleetstar.mjs",
+   "    machines = machineFolders(tokenUsageDir)",
+   "    machines = readdirSync(tokenUsageDir).map((n) => join(tokenUsageDir, n))",
+   ["tests/claims-batch4.test.mjs", "tests/fleetstar.test.mjs"]],
+
+  ["scanners.mjs — the published row and the per-session list never disagree",
+   "src/scanners.mjs",
+   "    for (const s of bucket.values())\n      for (const k of Object.keys(sum)) sum[k] += s.tokens[k] ?? 0;",
+   "    for (const s of [...bucket.values()].slice(1))\n      for (const k of Object.keys(sum)) sum[k] += s.tokens[k] ?? 0;",
+   ["tests/claims-batch4.test.mjs", "tests/scanners.test.mjs"]],
+
+  ["redact.mjs — maskProjects never mutates its input",
+   "src/redact.mjs",
+   "    if (Array.isArray(n)) return n.map((v) => walk(v, d + 1));",
+   "    if (Array.isArray(n)) { n.forEach((v, i) => { n[i] = walk(v, d + 1); }); return n; }",
+   ["tests/claims-batch4.test.mjs", "tests/redact.test.mjs"]],
 ];
 
 // What a claim's sandbox needs. node_modules is SYMLINKED, not copied: it is
