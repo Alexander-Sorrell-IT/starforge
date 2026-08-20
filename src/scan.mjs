@@ -862,7 +862,14 @@ function ensureMonth(monthly, key) {
       tools: 0,
       exts: new Map(),
       models: new Map(),
-      projects: new Set(),
+      // A MAP, COUNTING. This was a Set, and Set.entries() yields [value,
+      // value] pairs — so top_projects published {name: "x", sessions: "x"},
+      // the project's NAME in the session-count field, and the sort
+      // `y[1] - x[1]` subtracted two strings, gave NaN, and left the list in
+      // INSERTION ORDER. Insertion order came off the filesystem, which is the
+      // exact defect byCountThenKey exists in this file to prevent: two
+      // machines with the same corpus disagreeing about which project is busiest.
+      projects: new Map(),
       hours: new Array(24).fill(0),
       days: new Set(),
     };
@@ -910,7 +917,8 @@ export function finalize(stats) {
       b.tools += s.tools;
       for (const [e, n] of s.exts) b.exts.set(e, (b.exts.get(e) ?? 0) + n);
       for (const [m, n] of s.models) b.models.set(m, (b.models.get(m) ?? 0) + n);
-      if (s.project && s.project !== "[excluded]") b.projects.add(s.project);
+      if (s.project && s.project !== "[excluded]")
+        b.projects.set(s.project, (b.projects.get(s.project) ?? 0) + 1);
       for (let h = 0; h < 24; h++) b.hours[h] += s.hours[h];
       // Calendar facts are NOT attributed to the start month the way volume is.
       // A session that runs 31 Jan into 1 Feb really did happen on a February
@@ -1066,7 +1074,7 @@ export function finalize(stats) {
         // via forFiles(), which already masks this field. The count is the star axis
         // input (projects_count above, uncapped); these names are display only.
         top_projects: [...b.projects.entries()]
-          .sort((x, y) => y[1] - x[1])
+          .sort(byCountThenKey)
           .slice(0, 5)
           .map(([name, sessions]) => ({ name, sessions })),
         models: Object.fromEntries([...b.models.entries()].sort((x, y) => y[1] - x[1])),
