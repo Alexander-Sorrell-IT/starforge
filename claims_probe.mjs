@@ -85,6 +85,50 @@ const CLAIMS = [
    "  if (!Number.isInteger(depth) || depth < 1 || !segs.length) return declared;",
    "  if (!segs.length) return declared;",
    ["tests/bob-locations.test.mjs"]],
+
+  // ── batch 2, 2026-08-20 · the counting path and the privacy claims ───────
+  //
+  // NOTE ON LINE NUMBERS. CLAIMS.md records `file:line`, and those go stale the
+  // moment the file changes — sources.mjs:113 had already moved by the time
+  // this batch was written. Every anchor below is TEXT, so a claim survives its
+  // own file being edited; an anchor that stops matching is reported as
+  // ANCHOR MISSING rather than passing quietly.
+
+  ["scanners.mjs — the scanner fingerprint is NULL, never the string \"unknown\"",
+   "src/scanners.mjs",
+   "  } catch {\n    return null;\n  }\n}",
+   "  } catch {\n    return \"unknown\";\n  }\n}",
+   ["tests/claims-batch2.test.mjs", "tests/scanners.test.mjs"]],
+
+  ["scanners.mjs — a store's unreadable note is ALWAYS an array of lines",
+   "src/scanners.mjs",
+   "    row.unreadable = [`${note.unreadable} conversation(s) could not be decoded`];",
+   "    row.unreadable = `${note.unreadable} conversation(s) could not be decoded`;",
+   ["tests/claims-batch2.test.mjs", "tests/scanners.test.mjs"]],
+
+  ["scanners.mjs — knownClaudeIds is REQUIRED and must be the live Claude ids",
+   "src/scanners.mjs",
+   "  if (!(knownClaudeIds instanceof Set)) {",
+   "  if (false) {",
+   ["tests/claims-batch2.test.mjs", "tests/conformance.test.mjs"]],
+
+  ["sources.mjs — unreadable is never folded into absent or empty",
+   "src/sources.mjs",
+   '    state: found.length ? "present" : (unreadable.length ? "unreadable" : "absent"),',
+   '    state: found.length ? "present" : "absent",',
+   ["tests/claims-batch2.test.mjs", "tests/sources.test.mjs"]],
+
+  ["verify.mjs — a test host can never resolve on the public internet",
+   "src/verify.mjs",
+   "  return NAMESPACE_HOSTS.has(h);",
+   "  return true;",
+   ["tests/claims-batch2.test.mjs", "tests/verify.test.mjs"]],
+
+  ["layerlog.mjs — the search query itself is never recorded",
+   "src/layerlog.mjs",
+   "    detail.query_chars = q.length;",
+   "    detail.query_chars = q.length;\n    detail.query = q;",
+   ["tests/claims-batch2.test.mjs", "tests/layerlog.test.mjs"]],
 ];
 
 // What a claim's sandbox needs. node_modules is SYMLINKED, not copied: it is
