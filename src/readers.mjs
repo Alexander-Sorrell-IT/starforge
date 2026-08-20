@@ -240,6 +240,34 @@ export function readClaudeOrphans(home, known, pr) {
  * they are absent from the data, not zero in it. Only two keys are summed, and
  * a file lacking `total_input_tokens` is not a session rollup and is skipped.
  */
+/**
+ * A token count, or null if the value is not one.
+ *
+ * `Number(v) || 0` was the coercion here and it is the loosest in the program:
+ * it rejects NaN and nothing else. jazzer.js reached it in seconds with
+ * `total_input_tokens: 1e400` — a number JSON accepts and JS parses as
+ * Infinity, which `Number()` passes straight through, which then leaves the
+ * machine and becomes `null` in the written file. Absent looking exactly like
+ * zero, one more time.
+ *
+ * The same value CRASHES deadreckon (`int(inf)` raises OverflowError), and the
+ * two programs disagreed on six of nine malformed shapes. This is the rule
+ * both now apply: finite, non-negative, integral, and not a boolean. Numeric
+ * strings are accepted because both programs already accepted them and real
+ * rollups have used them.
+ *
+ * SAFE integer, not merely integer. Above 2**53 JavaScript cannot hold the
+ * value exactly and Python can, so the two programs are guaranteed to disagree
+ * on anything larger — 1e308 reads as 1e+308 here and as a 309-digit integer
+ * there. A number no one can agree on is not a count.
+ */
+export function tokenCount(v) {
+  if (typeof v === "boolean" || v === null || v === undefined) return null;
+  const n = typeof v === "string" ? (v.trim() === "" ? NaN : Number(v)) : v;
+  if (typeof n !== "number" || !Number.isSafeInteger(n) || n < 0) return null;
+  return n;
+}
+
 export function readClawspring(home, pr) {
   pr = look("clawspring", home, pr);
   if (!pr.present) return result(pr.state, [], { probe: pr });
@@ -258,18 +286,20 @@ export function readClawspring(home, pr) {
   for (const base of pr.found) walk(base, 0);
 
   const bySession = new Map();
+  const unreadable = [];
   for (const f of files) {
     const d = readJson(f);
     // The presence of `total_input_tokens` is what makes this a rollup. A file
     // without it is some other JSON that happens to sit here.
     if (!d || typeof d !== "object" || d.total_input_tokens === undefined) continue;
     const sid = d.session_id || f.split("/").pop().replace(/\.json$/, "");
-    const t = {
-      input: Number(d.total_input_tokens) || 0,
-      cacheWrite: 0,
-      cacheRead: 0,
-      output: Number(d.total_output_tokens) || 0,
-    };
+    // A rollup whose counters are not counts is NAMED, not guessed at. The
+    // alternative is a file that reads as a real session holding 0, or
+    // Infinity, or a negative number, and none of those announce themselves.
+    const inTok = tokenCount(d.total_input_tokens);
+    const outTok = d.total_output_tokens === undefined ? 0 : tokenCount(d.total_output_tokens);
+    if (inTok === null || outTok === null) { unreadable.push(f); continue; }
+    const t = { input: inTok, cacheWrite: 0, cacheRead: 0, output: outTok };
     const held = bySession.get(sid);
     if (!held) bySession.set(sid, { id: sid, cli: "clawspring", tokens: t });
     else {
@@ -292,7 +322,8 @@ export function readClawspring(home, pr) {
   const sessions = [...bySession.values()].filter(
     (s) => s.tokens.input + s.tokens.cacheWrite + s.tokens.cacheRead + s.tokens.output > 0);
   return result(stateOf(pr, sessions.length), sessions,
-                { files: files.length, emptyRollups: bySession.size - sessions.length, probe: pr });
+                { files: files.length, emptyRollups: bySession.size - sessions.length,
+                  unreadable, probe: pr });
 }
 
 // ── lmstudio ──────────────────────────────────────────────────────────────────
