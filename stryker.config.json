@@ -1,25 +1,22 @@
 {
   "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
-  "_comment": "Scoped by the maps: madge says redact.mjs has 15 dependents, more than any other module, so its guarantees are the ones worth grading. Runner = every suite that touches it (grep, not guesswork) EXCEPT docs/copydirs/shipset, which read files outside the tree and cannot run in Stryker's sandbox copy.",
+  "_comment": "scan.mjs is THE COUNTING FILE \u2014 1,268 lines \u2014 and had never been mutated; this config previously named redact.mjs and nothing else. Runner scoped BY GREP for suites importing src/scan.mjs, minus six that read outside the tree (homedir, README, ../..) and cannot run in Stryker's sandbox copy. Scoping by guesswork read 11% once and 50.66% on the re-run. sanitize-model.test.mjs added after the first run gave sanitizeModel 0.0%.",
   "packageManager": "npm",
   "testRunner": "command",
   "commandRunner": {
-    "command": "node --test tests/redact.test.mjs tests/privacy.test.mjs tests/properties.test.mjs tests/profile.test.mjs tests/projects.test.mjs tests/accounts.test.mjs tests/session-export.test.mjs tests/layerlog.test.mjs"
+    "command": "node --test tests/determinism.test.mjs tests/accounts.test.mjs tests/claims-batch1.test.mjs tests/beacon.test.mjs tests/usage-dedup.test.mjs tests/hardening.test.mjs tests/conformance.test.mjs tests/session-export.test.mjs tests/undated.test.mjs tests/projects.test.mjs tests/sanitize-model.test.mjs"
   },
   "mutate": [
-    "src/redact.mjs"
+    "src/scan.mjs"
   ],
   "reporters": [
     "progress",
     "json"
   ],
-  "clearTextReporter": {
-    "maxTestsToLog": 3
-  },
   "coverageAnalysis": "off",
   "concurrency": 4,
   "timeoutMS": 60000,
   "jsonReporter": {
-    "fileName": "reports/mutation/mutation.json"
+    "fileName": "reports/mutation/scan.json"
   }
 }
