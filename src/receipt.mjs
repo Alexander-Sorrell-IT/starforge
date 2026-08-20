@@ -115,8 +115,12 @@ export function collapseMapKeys(keys) {
 /** Reader-visible text of markup, so an SVG/HTML is judged on what it shows. */
 function visibleText(s) {
   return s
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    // See the note in verify.mjs markupStrings: a browser closes the element
+    // on `</script bar>`, and matching only `</script>` lets a crafted document
+    // swallow the reader-visible text between a fake close tag and the next
+    // real one.
+    .replace(/<script\b[\s\S]*?<\/script\b[^>]*>/gi, " ")
+    .replace(/<style\b[\s\S]*?<\/style\b[^>]*>/gi, " ")
     .replace(/<[^>]*>/g, " ")
     .replace(/&[a-z#0-9]+;/gi, " ")
     .replace(/\s+/g, " ")

@@ -980,9 +980,17 @@ export function markupStrings(text) {
   const out = [];
   // Replace, not delete, so offsets stay close to the original.
   const blank = (m) => " ".repeat(m.length);
+  // `</script\s*>` DOES NOT CLOSE A SCRIPT THE WAY A BROWSER DOES. HTML ends
+  // the element on `</script bar>` and `</script\t\n foo>` too, so with
+  // `</script bar>` this non-greedy match ran on to the NEXT real close tag and
+  // blanked everything between — reader-visible text the verifier then never
+  // examined. Proven: a document with `</script bar>` hid a paragraph from
+  // markupStrings that the identical document with `</script>` showed.
+  // `[^>]*` matches the attributes HTML tolerates; \b keeps `</scriptfoo>`
+  // from counting as a close tag.
   const stripped = text
-    .replace(/<script\b[\s\S]*?<\/script\s*>/gi, blank)
-    .replace(/<style\b[\s\S]*?<\/style\s*>/gi, blank);
+    .replace(/<script\b[\s\S]*?<\/script\b[^>]*>/gi, blank)
+    .replace(/<style\b[\s\S]*?<\/style\b[^>]*>/gi, blank);
 
   const tagRe = /<[a-zA-Z!/?][^>]*>/g;
   const attrRe =
