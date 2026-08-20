@@ -1913,6 +1913,9 @@ async function main() {
         "unnamed-machine";
       const machineName = opt("machine") ?? hostSlug;
       const machineLabel = opt("label") ?? (hostShort || hostSlug);
+      // replace: this machine rewriting its OWN folder every scan is the
+      // whole feature. The refusal added to writeMachineFolder is for a
+      // DIFFERENT machine's folder arriving over the LAN.
       const res = writeMachineFolder(
         joinDir,
         machineName,
@@ -1925,7 +1928,8 @@ async function main() {
           statsCache: fleetJoin.fleetStatsCache,
           scannerFeatures: ["claude", ...Object.keys(providers?.providers ?? {})],
         })
-      );
+      ,
+        { replace: true });
       console.log(`\nfleet join: wrote ${maskPath(res.dir)} (${res.files.length} files, grand total ${fmt(res.grandTotal)})`);
       // Name only what the reader actually has: the same directory they just
       // passed, read back by this same binary. (This line used to say "run his
@@ -1979,6 +1983,7 @@ async function main() {
       const mn2 = opt("machine") ?? hostSlug2;
       const ml2 = opt("label") ?? (hostShort2 || hostSlug2);
       mkdirSync(DESKTOP_FLEET_DIR, { recursive: true });
+      // Same: our own folder in the Desktop fleet dir, rewritten each run.
       writeMachineFolder(
         DESKTOP_FLEET_DIR,
         mn2,
@@ -1989,7 +1994,8 @@ async function main() {
           statsCache: fleetJoin.fleetStatsCache,
           scannerFeatures: ["claude", ...Object.keys(providers?.providers ?? {})],
         })
-      );
+      ,
+        { replace: true });
     } catch {
       // Silent — Desktop may not exist in CI / headless / containers.
     }
@@ -2412,11 +2418,15 @@ async function main() {
         };
       }).filter((a) => Object.values(a.totals).reduce((s, v) => s + v, 0) >= 0);
       mkdirSync(DESKTOP_FLEET_DIR, { recursive: true });
+      // A PEER's folder, not ours. replace: true because a beacon peer
+      // re-announcing itself is the normal case and its own broadcast is the
+      // only source for that folder — but it is said here rather than assumed
+      // three files away, which is the whole point of the refusal.
       writeMachineFolder(DESKTOP_FLEET_DIR, peerSlug, {
         label: peerLabel,
         accounts: peerAccounts,
         sessions: [],
-      });
+      }, { replace: true });
     } catch {
       // Silent
     }

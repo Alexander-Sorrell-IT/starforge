@@ -1,0 +1,2 @@
+{"sessionId": "claude-1", "timestamp": "2026-01-01T00:01:00Z", "type": "assistant", "message": {"id": "m2", "role": "assistant", "model": "test-model", "usage": {"input_tokens": 20, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 8, "output_tokens": 4}}}
+{"sessionId": "claude-1", "timestamp": "2026-01-01T00:01:01Z", "type": "assistant", "message": {"id": "m3", "role": "assistant", "model": "test-model", "usage": {"input_tokens": 7, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 1}}}

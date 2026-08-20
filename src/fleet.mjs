@@ -599,7 +599,34 @@ function writeJson(file, obj) {
 // folder root, totals.json / sessions.json / hardware.json under
 // machine-readable/, and a human-readable/REPORT.md stub so combine's link
 // resolves. Throws on any arithmetic the check_consistency.py gate would fail.
-export function writeMachineFolder(tokenUsageDir, folderName, data = {}) {
+export function writeMachineFolder(tokenUsageDir, folderName, data = {}, opts = {}) {
+  // REFUSING TO CLOBBER IS THE DEFAULT; REPLACING IS A DECISION.
+  //
+  // This guarded exactly one file — human-readable/REPORT.md, with an
+  // existsSync check and a comment saying "so a real report is never
+  // clobbered" — and wrote machine-readable/{totals,sessions,hardware}.json
+  // beside it with no guard at all. Measured by calling it twice:
+  //
+  //     first  submission: 14,000,000,000 tokens | real.person@example.com
+  //     second submission:             1 token   | attacker@example.com
+  //
+  // The prose was protected and the numbers were not. Under `--serve-collect`
+  // this writer is reachable over the LAN with no authentication, so a peer
+  // who names an existing folder replaces that machine's published figures and
+  // the fleet rollup then publishes theirs.
+  //
+  // A fleet member re-submitting is a real case, so the capability stays —
+  // behind `{ replace: true }`, which a caller has to mean.
+  {
+    const existing = join(tokenUsageDir, folderName);
+    if (!opts.replace && existsSync(existing)) {
+      throw new Error(
+        `${folderName} already exists in ${tokenUsageDir} — refusing to ` +
+        "overwrite a machine's published figures. Pass { replace: true } to " +
+        "replace it deliberately, or submit under a different folder name."
+      );
+    }
+  }
   if (!folderName || /[/\\]/.test(folderName) || folderName.startsWith(".")) {
     throw new Error(`invalid machine folder name: ${folderName}`);
   }

@@ -530,13 +530,18 @@ test("--ledger is accepted, and writes nothing when there is nothing it can reco
 
 // ── 6. POST /submit under --serve-collect ───────────────────────────────────
 
-test("POST /submit OVERWRITES an existing machine folder with no existence check", async () => {
-  // FINDING, pinned. --serve-collect accepts submissions from other machines on
-  // the LAN and hands each one to writeMachineFolder(), which validates the
-  // NAME (no slashes, no dot-prefix, not a reserved word) and then writes. It
-  // never asks whether that folder already exists. Two machines that pick the
-  // same hostname — or one machine submitting twice — and the second silently
-  // replaces the first's numbers, with a 200 and an "✓ submitted" line.
+test("POST /submit REFUSES to overwrite an existing machine folder", async () => {
+  // WAS A PINNED FINDING, NOW THE FIX. --serve-collect accepts submissions from
+  // other machines on the LAN and hands each to writeMachineFolder(), which
+  // validated the NAME (no slashes, no dot-prefix, not reserved) and then
+  // wrote — never asking whether that folder already existed. Two machines
+  // picking the same hostname, or one submitting twice, and the second
+  // silently replaced the first's numbers with a 200 and an "✓ submitted".
+  //
+  // Measured then: 14,000,000,000 under a real account replaced by 1 under
+  // another. The writer now refuses unless the caller passes { replace: true },
+  // and the endpoint answers 409 — a collision is a different fact from bad
+  // JSON, and a submitter can act on it.
   //
   // Asserted through makeHandler directly: no socket is opened, and the writer
   // is the same one the LAN path calls.
@@ -576,28 +581,26 @@ test("POST /submit OVERWRITES an existing machine folder with no existence check
 
   // The same folder name, from a different machine, with different numbers.
   const second = await post(handler, { folderName: "laptop", accounts: [acct(7)] });
-  assert.equal(second.status, 200, `the second submission was refused — the overwrite has been fixed: ${second.body}`);
+  assert.equal(second.status, 409,
+    `a colliding submission must be refused with 409, not accepted: ${second.body}`);
   assert.equal(
     JSON.parse(readFileSync(totalsPath, "utf8")).grand_total_tokens,
-    7,
-    "the second submission did not overwrite — a guard now exists; replace this test with an assertion of what it does"
+    1000,
+    "the first machine's published figure was replaced by a LAN submission"
   );
-  // And the response says nothing about having replaced anything.
-  assert.ok(
-    !/overwrote|replaced|already exists/i.test(second.body),
-    "the response now warns about the overwrite — update this test"
-  );
+  // And the refusal SAYS what happened, so the submitter can act on it rather
+  // than retrying into the same wall.
+  assert.match(second.body, /already exists/i,
+    "the refusal did not name its reason");
 
-  // The asymmetry that shows this is an oversight rather than a policy:
-  // writeMachineFolder guards human-readable/REPORT.md with an existsSync check
-  // ("so a real report is never clobbered", src/fleet.mjs) while the three
-  // machine-readable files it writes beside it carry no such guard. The
-  // protected file is prose; the clobbered ones are the numbers.
+  // The asymmetry that made this an oversight rather than a policy:
+  // writeMachineFolder already guarded human-readable/REPORT.md with an
+  // existsSync check ("so a real report is never clobbered") while the three
+  // machine-readable files beside it had none. The prose was protected and the
+  // numbers were not. Both are protected now, and this asserts the half that
+  // was never in doubt still holds.
   const report = readFileSync(join(dir, "laptop", "human-readable", "REPORT.md"), "utf8");
-  assert.ok(
-    report.includes("1,000"),
-    "REPORT.md was clobbered too — the one guard that existed is gone; update this finding"
-  );
+  assert.ok(report.includes("1,000"), "the original REPORT.md is gone");
 });
 
 test("POST /submit never lets a submitted name escape the collect dir", async () => {

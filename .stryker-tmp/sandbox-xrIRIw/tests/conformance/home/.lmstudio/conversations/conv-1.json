@@ -1,0 +1,1 @@
+{"name": "fixture", "messages": [{"versions": [{"steps": [{"genInfo": {"stats": {"promptTokensCount": 60, "predictedTokensCount": 9}}}, {"genInfo": {"stats": {"promptTokensCount": 40, "predictedTokensCount": 1}}}]}]}]}

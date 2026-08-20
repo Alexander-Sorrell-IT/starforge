@@ -1,0 +1,522 @@
+{
+  "_comment": [
+    "Every place AI-coding work happens on a machine, and what each one is.",
+    "",
+    "CALLED `sources`, NOT `clis`. Half of these are not CLIs: copilot-chat and",
+    "kilocode are VS Code extensions, lmstudio is a desktop app, cowork is a Mac",
+    "app, cursor is an editor. `source` is also the word starreckon's own code",
+    "already uses — discoverSources(), src.source === \"codex\" — so the file is",
+    "named after the thing rather than after the half of it that came first.",
+    "",
+    "`tools.json` was rejected: `tool` already means something else in both",
+    "programs (toolCallRounds, tool names in the digest), and a name that",
+    "collides with a concept you already count inside sessions is a name that",
+    "will be misread.",
+    "",
+    "WHAT `kind` IS FOR. It is not a label. It decides WHERE discovery looks:",
+    "",
+    "  cli        a dotdir in $HOME                    ~/.codex, ~/.grok",
+    "  extension  under a host editor's storage        {vscode}/User/globalStorage",
+    "  app        the OS application-support tree      Library/Application Support",
+    "  editor     its own workspace storage            varies",
+    "  derived    not a tool at all — a counter that outlived its transcripts",
+    "",
+    "That distinction is currently buried inside each reader, which is why",
+    "adding a source means editing code in two languages instead of a file.",
+    "",
+    "`counted_by` IS THE HONEST FIELD. It says which programs can actually",
+    "produce a number for this source today. A name listed here that neither",
+    "program can read must report `no_reader` BY NAME on every run — never 0.",
+    "Zero is what a store that exists and is empty reports, and this system has",
+    "shipped that confusion seven times in four disguises.",
+    "",
+    "`billed` distinguishes work that went through a provider account from work",
+    "that ran on this machine. It is a fact about WHERE THE COMPUTATION",
+    "HAPPENED, not a claim about money — nothing in either program attaches a",
+    "price to a token, and tests/no-cost.test.mjs enforces that.",
+    "",
+    "DECLARE WHERE AND WHAT. CODE HOW. (author ruling, 2026-08-16)",
+    "",
+    "Nothing that decides WHERE a source lives or WHAT fields it carries is",
+    "to be hardcoded in a reader. It is declared here — `kind` says where to",
+    "look, the entry says what to read — so adding a source is an edit to this",
+    "file and not to two programs in two languages.",
+    "",
+    "What stays in code is HOW a number is computed: the dedup rule, the",
+    "Codex fork-lineage handling, the fact that bob's `input` already includes",
+    "its cache. That is behaviour, and the last spec design that tried to",
+    "carry behaviour was rejected for exactly that — a JSON glob is read",
+    "differently by Python's glob and Node's fs, and a rule in prose is a rule",
+    "nobody executes. Behaviour lives in code, held to the shared fixture."
+  ],
+  "schema": 1,
+  "states": {
+    "absent": "the store is not on this machine; nothing was found because there is nothing to find",
+    "empty": "the store is present and holds no countable session",
+    "counted": "the store is present and yielded sessions",
+    "unreadable": "the store is present and could not be read — a locked directory, a corrupt database, a runtime missing a builtin",
+    "no_reader": "declared here and this program has no reader bound to it; printed as a named gap, never as 0"
+  },
+  "sources": [
+    {
+      "name": "claude",
+      "kind": "cli",
+      "label": "Claude Code",
+      "billed": true,
+      "counted_by": [
+        "deadreckon",
+        "starreckon"
+      ],
+      "note": "the only CLI that writes its account email to disk, and the only one that deletes transcripts on a timer",
+      "stores": [
+        {
+          "base": "home",
+          "dotdir_contains": "claude",
+          "segments": [
+            "projects"
+          ],
+          "label": "claude"
+        }
+      ]
+    },
+    {
+      "name": "claude-orphans",
+      "kind": "derived",
+      "label": "Claude Code — recovered counters",
+      "billed": true,
+      "counted_by": [
+        "deadreckon",
+        "starreckon"
+      ],
+      "runs_after": [
+        "claude"
+      ],
+      "note": "NOT a tool. Recovers per-project lastTotal* counters in .claude.json for sessions whose transcripts were deleted, minus everything the claude reader already emitted. 4,172,332,033 tokens across 78 sessions on hp-laptop-linux. Ordering is load-bearing.",
+      "stores": [
+        {
+          "base": "home",
+          "segments": [
+            ".claude.json"
+          ],
+          "label": "claude-config"
+        },
+        {
+          "base": "home",
+          "dotdir_contains": "claude",
+          "segments": [
+            ".claude.json"
+          ],
+          "label": "claude-config-profiles"
+        },
+        {
+          "base": "home",
+          "dotdir_contains": "claude",
+          "segments": [
+            "backups"
+          ],
+          "label": "claude-config-backups",
+          "note": "the profile's own timestamped copies. Declared because the DEFAULT profile keeps its config at ~/.claude.json, OUTSIDE ~/.claude — so no found config file has ~/.claude as its parent and its backups/ would never be reached by walking upward from a file."
+        }
+      ]
+    },
+    {
+      "name": "codex",
+      "kind": "cli",
+      "label": "OpenAI Codex CLI",
+      "billed": true,
+      "counted_by": [
+        "deadreckon",
+        "starreckon"
+      ],
+      "note": "total_token_usage is cumulative over the session LINEAGE, not the file. A fork inherits its parent's total; counting it whole double-counts the prefix once per fork.",
+      "stores": [
+        {
+          "base": "home",
+          "segments": [
+            ".codex",
+            "sessions"
+          ],
+          "label": "codex"
+        }
+      ]
+    },
+    {
+      "name": "gemini",
+      "kind": "cli",
+      "label": "Google Gemini CLI",
+      "billed": true,
+      "counted_by": [
+        "deadreckon",
+        "starreckon"
+      ],
+      "stores": [
+        {
+          "base": "home",
+          "segments": [
+            ".gemini",
+            "tmp"
+          ],
+          "label": "gemini"
+        }
+      ]
+    },
+    {
+      "name": "copilot",
+      "kind": "cli",
+      "label": "GitHub Copilot CLI",
+      "billed": true,
+      "counted_by": [
+        "deadreckon",
+        "starreckon"
+      ],
+      "stores": [
+        {
+          "base": "home",
+          "segments": [
+            ".copilot",
+            "session-state"
+          ],
+          "label": "copilot"
+        }
+      ]
+    },
+    {
+      "name": "grok",
+      "kind": "cli",
+      "label": "xAI Grok CLI",
+      "billed": true,
+      "counted_by": [
+        "deadreckon",
+        "starreckon"
+      ],
+      "stores": [
+        {
+          "base": "home",
+          "segments": [
+            ".grok",
+            "sessions"
+          ],
+          "label": "grok"
+        },
+        {
+          "base": "home",
+          "segments": [
+            ".grok",
+            "archived_sessions"
+          ],
+          "label": "grok-archived"
+        }
+      ]
+    },
+    {
+      "name": "antigravity",
+      "kind": "cli",
+      "label": "Antigravity CLI",
+      "billed": true,
+      "counted_by": [
+        "deadreckon",
+        "starreckon"
+      ],
+      "stores": [
+        {
+          "base": "home",
+          "segments": [
+            ".gemini",
+            "antigravity-cli",
+            "conversations"
+          ],
+          "label": "gemini-antigravity"
+        }
+      ]
+    },
+    {
+      "name": "bob",
+      "kind": "cli",
+      "label": "Bob",
+      "billed": true,
+      "counted_by": [
+        "deadreckon",
+        "starreckon"
+      ],
+      "note": "SQLite, not JSONL. node:sqlite is a Node builtin so this costs no dependency, but it arrived in 22.5 — on an older runtime the store is present and UNREADABLE, which is not zero usage.",
+      "stores": [
+        {
+          "base": "home",
+          "segments": [
+            ".bob",
+            "db"
+          ],
+          "label": "bob"
+        }
+      ]
+    },
+    {
+      "name": "clawspring",
+      "kind": "cli",
+      "label": "Clawspring",
+      "billed": true,
+      "counted_by": [
+        "deadreckon",
+        "starreckon"
+      ],
+      "note": "the format has no cache counters at all; those buckets are absent, not zero. A rollup recording 0 and 0 is not a session and is not emitted.",
+      "stores": [
+        {
+          "base": "home",
+          "segments": [
+            ".clawspring",
+            "sessions"
+          ],
+          "label": "clawspring"
+        }
+      ]
+    },
+    {
+      "name": "copilot-chat",
+      "kind": "extension",
+      "host": "vscode",
+      "label": "GitHub Copilot Chat",
+      "billed": true,
+      "counted_by": [
+        "deadreckon",
+        "starreckon"
+      ],
+      "note": "sums exactly one field — toolCallRounds[].thinking.tokens — into output. There is no input or prompt counter anywhere in the store, so the figure is a LOWER BOUND ON WHAT IS COUNTABLE and should be shown as one.",
+      "stores": [
+        {
+          "base": "vscode",
+          "channel": "Code",
+          "segments": [
+            "User",
+            "workspaceStorage"
+          ],
+          "label": "copilot-chat"
+        },
+        {
+          "base": "vscode",
+          "channel": "Code - Insiders",
+          "segments": [
+            "User",
+            "workspaceStorage"
+          ],
+          "label": "copilot-chat-insiders"
+        },
+        {
+          "base": "vscode",
+          "channel": "Code",
+          "segments": [
+            "User",
+            "globalStorage",
+            "emptyWindowChatSessions"
+          ],
+          "label": "copilot-chat-empty"
+        },
+        {
+          "base": "vscode",
+          "channel": "Code - Insiders",
+          "segments": [
+            "User",
+            "globalStorage",
+            "emptyWindowChatSessions"
+          ],
+          "label": "copilot-chat-empty-insiders"
+        }
+      ]
+    },
+    {
+      "name": "kilocode",
+      "kind": "extension",
+      "host": "vscode",
+      "label": "Kilo Code",
+      "billed": true,
+      "counted_by": [
+        "deadreckon",
+        "starreckon"
+      ],
+      "note": "spelled `kilocode` everywhere. The registry key was `kilo` on the starreckon side, so scanProvider('kilocode') threw and an api key under that name could never reach its reader.",
+      "stores": [
+        {
+          "base": "vscode",
+          "channel": "Code",
+          "segments": [
+            "User",
+            "globalStorage",
+            "kilocode.kilo-code",
+            "tasks"
+          ],
+          "label": "kilocode"
+        },
+        {
+          "base": "vscode",
+          "channel": "Code - Insiders",
+          "segments": [
+            "User",
+            "globalStorage",
+            "kilocode.kilo-code",
+            "tasks"
+          ],
+          "label": "kilocode-insiders"
+        }
+      ]
+    },
+    {
+      "name": "lmstudio",
+      "kind": "app",
+      "label": "LM Studio",
+      "billed": false,
+      "counted_by": [
+        "deadreckon",
+        "starreckon"
+      ],
+      "note": "local models: the work ran on this machine and never went through a provider account. Counters live at the exact path messages[].versions[].steps[].genInfo.stats — searching the document for any genInfo is more permissive than deadreckon and diverges on the first malformed file.",
+      "stores": [
+        {
+          "base": "home",
+          "segments": [
+            ".lmstudio",
+            "conversations"
+          ],
+          "label": "lmstudio"
+        }
+      ]
+    },
+    {
+      "name": "cowork",
+      "kind": "app",
+      "label": "Claude Cowork (macOS)",
+      "billed": true,
+      "counted_by": [
+        "starreckon"
+      ],
+      "note": "an ordinary Mac app storing ordinary Claude Code profiles seven levels down, so the Claude parser reads them unchanged. deadreckon has no reader — it must report no_reader, not 0. The store is macOS-only and nobody has read the number in either direction yet.",
+      "stores": [
+        {
+          "base": "appsupport",
+          "segments": [
+            "Claude",
+            "local-agent-mode-sessions"
+          ],
+          "note": "an ordinary Mac app store holding ordinary Claude Code profiles seven levels down: <account>/<org>/local_<uuid>/.claude/projects"
+        }
+      ]
+    },
+    {
+      "name": "history",
+      "kind": "derived",
+      "label": "Claude Code — session ledger",
+      "billed": false,
+      "counts_tokens": false,
+      "counted_by": [
+        "deadreckon",
+        "starreckon"
+      ],
+      "note": "CARRIES NO TOKEN COUNTS AT ALL. It proves a session existed, when, and in which project, and reaches months further back than the transcripts do. Giving it token fields would describe a file that does not have them.",
+      "stores": [
+        {
+          "base": "home",
+          "dotdir_contains": "claude",
+          "segments": [
+            "history.jsonl"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "cursor",
+      "kind": "editor",
+      "label": "Cursor",
+      "billed": true,
+      "counted_by": [],
+      "note": "NEITHER PROGRAM CAN COUNT IT. Listed so it reports no_reader by name on every run instead of being silently absent — a tool nobody has written a reader for and a tool nobody uses must not look the same.",
+      "stores": [
+        {
+          "base": "home",
+          "segments": [
+            ".cursor",
+            "chats"
+          ]
+        }
+      ]
+    }
+  ],
+  "bases": {
+    "_comment": [
+      "Where a `stores[].base` starts, per platform. Home-relative segments",
+      "are joined under one of these. Values are SEGMENT LISTS, never joined",
+      "strings, so no separator convention has to be agreed between a Python",
+      "reader and a JavaScript one.",
+      "",
+      "`{APPDATA}` is the only substitution: %APPDATA% on Windows, falling back",
+      "to AppData/Roaming under home when the variable is unset."
+    ],
+    "home": {
+      "linux": [
+        []
+      ],
+      "darwin": [
+        []
+      ],
+      "win32": [
+        []
+      ]
+    },
+    "appsupport": {
+      "linux": [
+        [
+          ".config"
+        ]
+      ],
+      "darwin": [
+        [
+          "Library",
+          "Application Support"
+        ],
+        [
+          ".config"
+        ]
+      ],
+      "win32": [
+        [
+          "{APPDATA}"
+        ],
+        [
+          ".config"
+        ]
+      ]
+    },
+    "vscode": {
+      "linux": [
+        [
+          ".config"
+        ]
+      ],
+      "darwin": [
+        [
+          "Library",
+          "Application Support"
+        ],
+        [
+          ".config"
+        ]
+      ],
+      "win32": [
+        [
+          "{APPDATA}"
+        ],
+        [
+          ".config"
+        ]
+      ]
+    }
+  },
+  "store_rules": {
+    "_comment": [
+      "The two shapes that are not a literal path. Declared as RULES with",
+      "names, not as glob strings: a glob is read differently by Python's glob",
+      "and Node's fs, and declaring one here would move the drift rather than",
+      "remove it. The spec says where to start; the reader still walks."
+    ],
+    "dotdir_contains": "under the base, every DIRECTORY whose name starts with '.' and whose remainder contains this word — the rule that finds ~/.claude, ~/.claude-alt and ~/.my-claude alike",
+    "channel": "for base 'vscode': the editor directory under the base ('Code', 'Code - Insiders', 'VSCodium', 'Code - OSS')"
+  }
+}

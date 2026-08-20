@@ -5,11 +5,12 @@
 // pass on any machine regardless of what services are running.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { lanIp, findHtml, makeHandler } from "../src/serve.mjs";
+import { writeMachineFolder } from "../src/fleet.mjs";
 
 // ── Fake req/res helpers ──────────────────────────────────────────────────────
 
@@ -438,5 +439,66 @@ test("GET / visit counter is unaffected by POST /submit requests", async () => {
 
   assert.equal(getVisits(), 0, "POST /submit must not increment GET visit counter");
 
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── POST /submit must not overwrite a machine's numbers ──────────────────────
+//
+// FOUND BY RUNNING THE WRITER TWICE. writeMachineFolder guards ONE file —
+// human-readable/REPORT.md, with an existsSync check and a comment saying "so
+// a real report is never clobbered" — and writes machine-readable/totals.json,
+// sessions.json and hardware.json beside it with no guard at all.
+//
+//     first  submission: 14,000,000,000 tokens | real.person@example.com
+//     second submission:             1 token   | attacker@example.com
+//
+// The prose was protected; the numbers were not. Under `--serve-collect` that
+// writer is reachable by anyone on the LAN with no authentication, so a peer
+// who names an existing folder replaces that machine's published figures and
+// the fleet rollup then reports theirs.
+test("writeMachineFolder refuses to overwrite an existing machine folder", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sf-clobber-"));
+  const tok = (n) => ({
+    input_tokens: n, cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0, output_tokens: 0,
+  });
+  const doc = (who, n) => ({
+    label: "hp-laptop-linux",
+    accounts: [{ account: who, totals: tok(n), by_model: { "claude-opus-5": tok(n) } }],
+  });
+
+  writeMachineFolder(dir, "hp-laptop-linux", doc("real.person@example.com", 14_000_000_000));
+  const before = readFileSync(
+    join(dir, "hp-laptop-linux", "machine-readable", "totals.json"), "utf8");
+
+  assert.throws(
+    () => writeMachineFolder(dir, "hp-laptop-linux", doc("attacker@example.com", 1)),
+    /exists|refus/i,
+    "a second write to the same folder was accepted — the first machine's numbers are gone"
+  );
+
+  const after = readFileSync(
+    join(dir, "hp-laptop-linux", "machine-readable", "totals.json"), "utf8");
+  assert.equal(after, before, "the refusal still changed the file on disk");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("and the same machine CAN be updated when the caller says so", () => {
+  // A fleet member re-submitting is a real case; the guard must not delete the
+  // feature. Refusal is the default, replacement is a decision.
+  const dir = mkdtempSync(join(tmpdir(), "sf-clobber2-"));
+  const tok = (n) => ({
+    input_tokens: n, cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0, output_tokens: 0,
+  });
+  const doc = (n) => ({
+    label: "hp-laptop-linux",
+    accounts: [{ account: "real.person@example.com", totals: tok(n), by_model: { "claude-opus-5": tok(n) } }],
+  });
+  writeMachineFolder(dir, "hp-laptop-linux", doc(1000));
+  writeMachineFolder(dir, "hp-laptop-linux", doc(2000), { replace: true });
+  const doc2 = JSON.parse(readFileSync(
+    join(dir, "hp-laptop-linux", "machine-readable", "totals.json"), "utf8"));
+  assert.equal(doc2.grand_total_tokens, 2000, "an explicit replace did not take effect");
   rmSync(dir, { recursive: true, force: true });
 });

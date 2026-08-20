@@ -141,8 +141,15 @@ export function makeHandler(html, maxVisits, collectDir = null) {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true, folder: folderName, grandTotal: result.grandTotal }));
         } catch (err) {
-          res.writeHead(400, { "Content-Type": "application/json" });
+          // 409 for "that folder is already here", 400 for a malformed
+          // submission. They are different answers and a submitter can act on
+          // the first — the second machine to announce itself under one name
+          // is a collision, not bad JSON.
+          const exists = /already exists/.test(err.message ?? "");
+          res.writeHead(exists ? 409 : 400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: false, error: err.message }));
+          if (exists)
+            console.log(`  ${d("✗")} ${d("refused: a folder by that name is already here")}`);
         }
       });
       return;

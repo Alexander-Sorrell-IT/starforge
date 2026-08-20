@@ -1,0 +1,10 @@
+node_modules/
+.DS_Store
+
+# python bytecode from src/search.py
+src/__pycache__/
+
+# YOUR accounts, not part of a tool other people install. spec/sources.json
+# ships; this does not. deadreckon commits its copy because deadreckon IS the
+# record — here it would publish addresses to everyone who runs npx starreckon.
+spec/identity.json
