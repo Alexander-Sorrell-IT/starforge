@@ -216,6 +216,40 @@ const CLAIMS = [
    "      sid = opts.noProjects\n        ? projectPseudonym(id)\n        : maskPath(redactSecrets(id));",
    "      sid = id;",
    ["tests/claims-batch5.test.mjs", "tests/privacy.test.mjs"]],
+
+  // ── batch 6, 2026-08-20 ──────────────────────────────────────────────────
+
+  ["shareurl.mjs:23 — the payload rides in the FRAGMENT, never sent to a server",
+   "src/shareurl.mjs",
+   '  return PAGES_BASE + "#" + params.toString();',
+   '  return PAGES_BASE + "?" + params.toString();',
+   ["tests/claims-batch6.test.mjs", "tests/shareurl.test.mjs"]],
+
+  ["layerlog.mjs:348 — the record name carries the pid, so two processes never collide",
+   "src/layerlog.mjs",
+   'const candidate = join(dir, `${parts.time}-${layer}-${event}-${process.pid}-${randomBytes(2).toString("hex")}.json`);',
+   'const candidate = join(dir, `${parts.time}-${layer}-${event}.json`);',
+   ["tests/claims-batch6.test.mjs", "tests/layerlog.test.mjs"]],
+
+  // AN UNREACHABLE MUTATION IS NOT A CLAIM ANYONE CAN GUARD. This first blanked
+  // the error in logLayerRun's "no free name after 8 tries" branch — a branch
+  // no test can reach, because each candidate name carries the pid AND two
+  // random bytes, so eight collisions cannot be arranged from outside. The
+  // census would have reported UNGUARDED forever against code nothing can
+  // exercise. The REACHABLE enforcement of "never overwritten" is the
+  // hard-link fallback below: linkSync fails, and the rename is only allowed
+  // when the destination genuinely does not exist.
+  ["layerlog.mjs — the rename fallback never clobbers an existing record",
+   "src/layerlog.mjs",
+   '    if (e?.code !== "EEXIST" && !existsSync(file)) {',
+   '    if (true) {',
+   ["tests/claims-batch6.test.mjs", "tests/layerlog.test.mjs"]],
+
+  ["confine.mjs:236 — a control that CANNOT succeed is not reported as blocked",
+   "src/confine.mjs",
+   '    if (!det.recommended) return { ok: false, code: null, error: det.notes.at(-1) };',
+   '    if (!det.recommended) return { ok: true, code: 0, blocked: true };',
+   ["tests/claims-batch6.test.mjs", "tests/confine.test.mjs"]],
 ];
 
 // What a claim's sandbox needs. node_modules is SYMLINKED, not copied: it is
