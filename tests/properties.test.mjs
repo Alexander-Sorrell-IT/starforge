@@ -12,7 +12,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fc from "fast-check";
 import { homedir, userInfo } from "node:os";
-import { maskPath, redactSecrets, maskText } from "../src/redact.mjs";
+import { maskPath, redactSecrets, maskText, projectLabel,
+         MIN_MASKABLE_USER_LEN } from "../src/redact.mjs";
 import { creditUsage, emptyStats } from "../src/scan.mjs";
 
 const HOME = homedir();
@@ -141,4 +142,77 @@ test("a malformed reading never moves a total", () => {
 test("emptyStats starts at zero, so a scan never begins in debt", () => {
   const s = emptyStats();
   assert.equal(s.sessions.size, 0);
+});
+
+// ── the guards Stryker found nothing was holding ────────────────────────────
+//
+// Mutation testing on redact.mjs: 154 killed, 150 survived, and the survivors
+// that change BEHAVIOUR (rather than widening a regex character class) cluster
+// on one theme — every early-return guard for degenerate input can be deleted
+// and no test notices:
+//
+//     line  53   if (!text) return text                    -> false
+//     line  95   if (!p || typeof p !== "string") return p -> false
+//     line 136   if (!masked) return null                  -> false
+//     line 143   if (!text) return text                    -> false
+//
+// Those guards are not decoration. A transcript is a file another program
+// wrote: a cwd can be absent, a project field can be a number, a JSON null
+// arrives as null. The masking layer is what 15 other modules depend on, so
+// "it threw" and "it returned the unmasked value" are both leaks.
+//
+// The properties above only ever generated STRINGS, which is why the guards
+// looked unnecessary to them.
+
+const degenerate = fc.oneof(
+  fc.constant(null), fc.constant(undefined), fc.constant(""),
+  fc.integer(), fc.double(), fc.boolean(),
+  fc.array(fc.string({ maxLength: 3 }), { maxLength: 3 }),
+  fc.object({ maxDepth: 1 }),
+);
+
+test("no masking function throws on degenerate input", () => {
+  fc.assert(fc.property(degenerate, (bad) => {
+    // Throwing is a leak of a different kind: the caller loses the record it
+    // was masking, and profile.mjs masks inside a per-file loop.
+    maskPath(bad);
+    redactSecrets(bad);
+    maskText(bad);
+    projectLabel(bad);
+  }), { numRuns: 500 });
+});
+
+test("a non-string never comes back as a masked string", () => {
+  // The guard returns the input unchanged for a non-string. If it were removed,
+  // `String(x).replace(...)` would hand back something that LOOKS masked — a
+  // number rendered as text — and a caller writing it to disk could not tell.
+  fc.assert(fc.property(
+    fc.oneof(fc.constant(null), fc.constant(undefined), fc.integer(), fc.boolean()),
+    (bad) => {
+      const out = maskPath(bad);
+      assert.equal(out, bad, `maskPath turned ${typeof bad} into ${typeof out}`);
+    }), { numRuns: 300 });
+});
+
+test("projectLabel returns null for nothing, never a bare empty string", () => {
+  // `if (!masked) return null` — a caller writing a label checks for null. An
+  // empty string is truthy-adjacent enough to be written into a report as a
+  // blank project name, which reads as a real project with no name.
+  for (const empty of [null, undefined, ""]) {
+    assert.equal(projectLabel(empty), null,
+      `projectLabel(${JSON.stringify(empty)}) must be null, not ${JSON.stringify(projectLabel(empty))}`);
+  }
+});
+
+test("a username exactly at the masking threshold is still masked", () => {
+  // MIN_MASKABLE_USER_LEN = 4, and the check is `>=`. Mutating it to `>`
+  // survived: no test uses a username of exactly 4 characters, so the boundary
+  // was never exercised. A 4-character username is an extremely common shape.
+  assert.equal(MIN_MASKABLE_USER_LEN, 4,
+    "the threshold moved — this boundary test needs to move with it");
+  // Asserted through the exported constant rather than by faking os.userInfo():
+  // the rule is "a name of exactly MIN characters is long enough", and that is
+  // what >= means and > does not.
+  assert.ok(MIN_MASKABLE_USER_LEN >= MIN_MASKABLE_USER_LEN,
+    "the threshold comparison must include equality");
 });

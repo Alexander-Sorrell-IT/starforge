@@ -50,7 +50,21 @@ const ENV_SECRET =
   /\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTH))=(["']?)([^\s"']{8,})\2/g;
 
 export function redactSecrets(text) {
-  if (!text) return text;
+  // TRUTHY IS NOT THE SAME AS TEXT. This read `if (!text) return text`, which
+  // catches null, undefined and "" — and lets `true`, a number and an object
+  // through to `.replace`, where it throws "out.replace is not a function".
+  // maskPath one function below has always checked the TYPE; this checked
+  // emptiness, and the two disagreed about what a string is.
+  //
+  // It matters because a transcript is a file another program wrote: a JSON
+  // `true` in a field this expects to be text is a shape a file can hold, and
+  // profile.mjs masks inside a per-file loop — one such value ends the scan of
+  // that file rather than being masked.
+  //
+  // Found by closing a mutation-testing gap, not by reading: Stryker deleted
+  // this guard and nothing failed, because every property here generated
+  // strings. Generating booleans and numbers is what made it visible.
+  if (!text || typeof text !== "string") return text;
   let out = text;
   for (const re of SECRET_PATTERNS) out = out.replace(re, REDACTED);
   out = out.replace(LABELED_SECRET, (_m, label, sep) => `${label}${sep}${REDACTED}`);
@@ -133,7 +147,12 @@ export function maskPath(p) {
 //      thing on every platform, which is what it always claimed to mean.
 export function projectLabel(cwd) {
   const masked = maskPath(redactSecrets(cwd));
-  if (!masked) return null;
+  // NULL, NOT A CRASH, AND NOT A LABEL. `!masked` catches null/undefined/"" —
+  // and a non-string that survived both maskers (a JSON `true`, a number) is
+  // truthy, reached .split, and threw inside a per-file masking loop. A cwd
+  // that is not text has no project label; that is a fact to return, not an
+  // exception to raise three frames from the file that caused it.
+  if (!masked || typeof masked !== "string") return null;
   const parts = masked.split(/[/\\]/).filter(Boolean);
   if (parts.length <= 2) return masked;
   return parts.slice(-2).join("/");
