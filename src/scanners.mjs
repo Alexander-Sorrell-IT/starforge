@@ -1251,6 +1251,31 @@ export async function scanPortedReaders(roots = [homedir()], { knownClaudeIds } 
   const providers = {};
   const perSession = [];
 
+  // EVERY ROOT, AND EACH SESSION ONCE.
+  //
+  // This read roots[0] and `break`ed, under a comment saying extra roots were
+  // "merged by the caller". They were not: the caller merges what it is handed,
+  // and it was handed one root's worth. Measured before the fix — two roots
+  // holding 1,000 and 2,000 clawspring tokens returned 1,000 — so the five
+  // ported readers and `history` silently skipped every root but the first
+  // whenever --roots named more than one.
+  //
+  // Summing roots blindly is the opposite defect, and this project has already
+  // paid for it: four copied profiles counted as four machines' work,
+  // 37,196,921,021 against a true 11,414,194,297. A session id is the identity
+  // here as it is everywhere else, so a session seen under two roots is ONE
+  // session and the larger reading of it wins — a partial copy cannot lower the
+  // total, and a complete copy cannot raise it.
+  const historySeen = new Map();      // history session id -> row, across roots
+  let historyPrompts = 0, historyEarliest = null, historyLatest = null;
+  let historyState = "absent";
+  const perProvider = new Map();      // provider -> Map(session_id -> session)
+  const providerMeta = new Map();     // provider -> { state, installed, unreadable[] }
+  const totalOf = (t) => (t.input ?? 0) + (t.output ?? 0) + (t.cacheRead ?? 0) + (t.cacheWrite ?? 0);
+  // Which state wins when roots disagree: a store that was READ somewhere is
+  // not absent, and "could not read it here" outranks "not here at all".
+  const STATE_RANK = { counted: 4, empty: 3, unreadable: 2, absent: 1 };
+
   const add = (name, r) => {
     const row = {
       sessions: r.sessions.length,
@@ -1275,30 +1300,22 @@ export async function scanPortedReaders(roots = [homedir()], { knownClaudeIds } 
         : (r.probe?.unreadable ?? []).map((u) => `${maskPath(u.path)} (${u.why})`);
       row.unreadable = list.length ? list : [maskText(String(r.why ?? "could not be read"))];
     }
-    providers[name] = row;
+    // Meta merges across roots; the numbers below are rebuilt from the deduped
+    // sessions afterwards rather than accumulated here, so a session counted
+    // twice cannot reach the row at all.
+    const meta = providerMeta.get(name) ?? { state: "absent", installed: false, unreadable: [] };
+    if ((STATE_RANK[row.state] ?? 0) > (STATE_RANK[meta.state] ?? 0)) meta.state = row.state;
+    meta.installed = meta.installed || row.installed;
+    if (row.unreadable) meta.unreadable.push(...row.unreadable);
+    providerMeta.set(name, meta);
+    if (!perProvider.has(name)) perProvider.set(name, new Map());
+    const bucket = perProvider.get(name);
     for (const s of r.sessions) {
-      perSession.push({
-        provider: name,
-        session_id: s.id,
-        // NULL, NOT A GUESS. Orphan and rollup records carry no timestamp —
-        // a vanished session has no turn to take a date from. Every consumer
-        // already handles a null month (scanProvider emits one for any session
-        // without a start), and inventing one would move real tokens into a
-        // month that did not earn them.
-        month: null,
-        input: s.tokens.input,
-        output: s.tokens.output,
-        cacheRead: s.tokens.cacheRead,
-        cacheWrite: s.tokens.cacheWrite,
-        model: s.model ?? "unknown",
-        vendor: s.cli === "claude" ? "anthropic" : null,
-        billed: s.billed !== false,
-        turns: 0,
-        duration_min: 0,
-        duration_tight_min: 0,
-        account: null,
-        project: s.project ?? null,
-      });
+      const prev = bucket.get(s.id);
+      // Larger reading wins: two roots holding the same session are the same
+      // work seen twice, and the fuller copy is the true one.
+      if (prev && totalOf(prev.tokens) >= totalOf(s.tokens)) continue;
+      bucket.set(s.id, s);
     }
   };
 
@@ -1323,18 +1340,63 @@ export async function scanPortedReaders(roots = [homedir()], { knownClaudeIds } 
     // surviving transcript is 2026-05-05. It cannot say what those months cost;
     // it can prove they happened, which turns "we may have lost some" into a
     // count with dates on it.
+    // MERGED ACROSS ROOTS, not overwritten by the last one. history.jsonl is
+    // per-home: each root has its own, and assigning here once per root meant
+    // the final root's file replaced every earlier one. Session ids dedup the
+    // same way the token readers do; the date range widens to cover them all.
     const h = readHistory(home);
-    providers["history"] = {
-      sessions: h.sessions.length,
-      prompts: h.prompts,
-      earliest: h.earliest,
-      latest: h.latest,
-      installed: h.state !== "absent",
-      state: h.state,
-      counts_tokens: false,
+    for (const hs of h.sessions ?? []) {
+      const id = hs?.id ?? hs?.session_id ?? JSON.stringify(hs);
+      if (!historySeen.has(id)) historySeen.set(id, hs);
+    }
+    historyPrompts += h.prompts ?? 0;
+    if (h.earliest && (!historyEarliest || h.earliest < historyEarliest)) historyEarliest = h.earliest;
+    if (h.latest && (!historyLatest || h.latest > historyLatest)) historyLatest = h.latest;
+    if ((STATE_RANK[h.state] ?? 0) > (STATE_RANK[historyState] ?? 0)) historyState = h.state;
+  }
+
+  providers["history"] = {
+    sessions: historySeen.size,
+    prompts: historyPrompts,
+    earliest: historyEarliest,
+    latest: historyLatest,
+    installed: historyState !== "absent",
+    state: historyState,
+    counts_tokens: false,
+  };
+
+  // Rebuild each provider row from the sessions that survived the dedup, so the
+  // published row and the per-session list can never disagree about what was
+  // counted — they are two views of one map rather than two accumulations.
+  for (const [name, bucket] of perProvider) {
+    const meta = providerMeta.get(name) ?? { state: "absent", installed: false, unreadable: [] };
+    const sum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    for (const s of bucket.values())
+      for (const k of Object.keys(sum)) sum[k] += s.tokens[k] ?? 0;
+    providers[name] = {
+      sessions: bucket.size, ...sum, models: {}, firstTs: null, lastTs: null,
+      installed: meta.installed, state: meta.state,
+      ...(meta.unreadable.length ? { unreadable: meta.unreadable } : {}),
     };
-    break;    // the first root is this machine's home; extra roots are merged
-              // by the caller in the same way scanAllProviders handles them
+    for (const s of bucket.values()) {
+      perSession.push({
+        provider: name,
+        session_id: s.id,
+        month: null,
+        input: s.tokens.input,
+        output: s.tokens.output,
+        cacheRead: s.tokens.cacheRead,
+        cacheWrite: s.tokens.cacheWrite,
+        model: s.model ?? "unknown",
+        vendor: s.cli === "claude" ? "anthropic" : null,
+        billed: s.billed !== false,
+        turns: 0,
+        duration_min: 0,
+        duration_tight_min: 0,
+        account: null,
+        project: s.project ?? null,
+      });
+    }
   }
 
   return { providers, perSession };
