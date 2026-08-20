@@ -1,7 +1,7 @@
 {
   "name": "starreckon",
   "version": "0.15.0",
-  "description": "Privacy-first developer wrapped: scans your local AI-coding session logs (Claude Code, Codex, Cowork), redacts secrets and masks paths BEFORE anything is written, keeps rolling monthly snapshots for longitudinal velocity, and renders your skill star live in the terminal. No network code on the scan path \u2014 and PROVE-IT.md shows you how to have the kernel confirm it rather than taking the claim on faith.",
+  "description": "Privacy-first developer wrapped: scans your local AI-coding session logs (Claude Code, Codex, Cowork), redacts secrets and masks paths BEFORE anything is written, keeps rolling monthly snapshots for longitudinal velocity, and renders your skill star live in the terminal. No network code on the scan path — and PROVE-IT.md shows you how to have the kernel confirm it rather than taking the claim on faith.",
   "type": "module",
   "bin": {
     "starreckon": "src/cli.mjs"
@@ -40,5 +40,9 @@
     "redaction",
     "cli"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@stryker-mutator/core": "^10.0.0",
+    "fast-check": "^4.9.0"
+  }
 }

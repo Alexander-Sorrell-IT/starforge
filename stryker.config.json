@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": "Scoped by the maps: madge says redact.mjs has 15 dependents, more than any other module, so its guarantees are the ones worth grading. Runner = every suite that touches it (grep, not guesswork) EXCEPT docs/copydirs/shipset, which read files outside the tree and cannot run in Stryker's sandbox copy.",
+  "packageManager": "npm",
+  "testRunner": "command",
+  "commandRunner": {
+    "command": "node --test tests/redact.test.mjs tests/privacy.test.mjs tests/properties.test.mjs tests/profile.test.mjs tests/projects.test.mjs tests/accounts.test.mjs tests/session-export.test.mjs tests/layerlog.test.mjs"
+  },
+  "mutate": [
+    "src/redact.mjs"
+  ],
+  "reporters": [
+    "progress",
+    "clear-text"
+  ],
+  "clearTextReporter": {
+    "maxTestsToLog": 3
+  },
+  "coverageAnalysis": "off",
+  "concurrency": 4,
+  "timeoutMS": 60000
+}
