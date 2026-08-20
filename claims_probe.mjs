@@ -185,6 +185,37 @@ const CLAIMS = [
    "    if (Array.isArray(n)) return n.map((v) => walk(v, d + 1));",
    "    if (Array.isArray(n)) { n.forEach((v, i) => { n[i] = walk(v, d + 1); }); return n; }",
    ["tests/claims-batch4.test.mjs", "tests/redact.test.mjs"]],
+
+  // ── batch 5, 2026-08-20 ──────────────────────────────────────────────────
+
+  ["cli.mjs:1739 — a dropped session must not read the same as an undated one",
+   "src/cli.mjs",
+   "    if ((agg.dropped_sessions ?? 0) > 0)",
+   "    if (false)",
+   ["tests/claims-batch5.test.mjs", "tests/cli-ux.test.mjs", "tests/undated.test.mjs"]],
+
+  ["series.mjs:171 — a calendar gap is REPORTED, never imputed and never counted",
+   "src/series.mjs",
+   "  for (let i = have[0] + 1; i < have[have.length - 1]; i += 1)\n    if (!set.has(i))",
+   "  for (let i = have[0] + 1; i < have[have.length - 1]; i += 1)\n    if (false)",
+   ["tests/claims-batch5.test.mjs", "tests/series.test.mjs"]],
+
+  ["fleet.mjs:163 — a floor is never below what was measured",
+   "src/fleet.mjs",
+   "      perAcctSess.set(x.account, (perAcctSess.get(x.account) || 0) + (x.total || 0));",
+   "      perAcctSess.set(x.account, x.total || 0);",
+   ["tests/claims-batch5.test.mjs", "tests/fleet.test.mjs"]],
+
+  // THIRD NO-OP MUTATION CAUGHT. This first anchored on the bare string
+  // "session_id", whose first occurrence in scan.mjs is inside the COMMENT that
+  // states the claim — so the mutation edited prose and reported UNGUARDED
+  // against code it never touched. An anchor has to name the code, not the
+  // sentence about the code.
+  ["scan.mjs — an INVENTED session id is masked; a row's own id is not",
+   "src/scan.mjs",
+   "      sid = opts.noProjects\n        ? projectPseudonym(id)\n        : maskPath(redactSecrets(id));",
+   "      sid = id;",
+   ["tests/claims-batch5.test.mjs", "tests/privacy.test.mjs"]],
 ];
 
 // What a claim's sandbox needs. node_modules is SYMLINKED, not copied: it is
