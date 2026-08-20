@@ -405,8 +405,13 @@ export function readLmstudio(home, pr) {
 export async function readBob(home, pr) {
   pr = look("bob", home, pr);
   if (!pr.present) return result(pr.state, [], { probe: pr });
-  const db = join(pr.found[0], "bob.db");
-  if (!existsSync(db)) return result("empty", [], { probe: pr, why: "the store is there and holds no bob.db" });
+  // EVERY FOUND STORE, NOT found[0]. This was the only reader in the file that
+  // took the first location and discarded the rest — the other five all iterate
+  // pr.found. A machine with two bob databases had the second one silently
+  // dropped, and on the machine this was written on that was 11 tasks and
+  // 116,711,574 tokens, half of bob's real total.
+  const dbs = pr.found.map((d) => join(d, "bob.db")).filter((f) => existsSync(f));
+  if (!dbs.length) return result("empty", [], { probe: pr, why: "the store is there and holds no bob.db" });
 
   let DatabaseSync;
   try {
@@ -419,18 +424,29 @@ export async function readBob(home, pr) {
     });
   }
 
-  let handle;
-  try {
-    handle = new DatabaseSync(db, { readOnly: true });
-  } catch (e) {
-    return result("unreadable", [], { why: `${db}: ${e.message}` });
-  }
+  // Merged by per-field MAXIMUM on the task id, which is deadreckon's
+  // multi_base rule. A database that is a COPY contributes nothing; one holding
+  // its own rows contributes them; and a copy whose tail was truncated loses
+  // field by field to the fuller one rather than winning by being read first.
+  const byId = new Map();
+  let rowCount = 0;
+  const unreadable = [];
 
-  try {
-    const rows = handle.prepare(
-      "SELECT id, costs FROM tasks WHERE costs IS NOT NULL").all();
-    const sessions = [];
-    for (const r of rows) {
+  for (const db of dbs) {
+    let handle;
+    try {
+      handle = new DatabaseSync(db, { readOnly: true });
+    } catch (e) {
+      // ONE BAD DATABASE MUST NOT LOSE THE OTHERS. Returning "unreadable" here
+      // threw away every database already read.
+      unreadable.push(`${db}: ${e.message}`);
+      continue;
+    }
+    try {
+      const rows = handle.prepare(
+        "SELECT id, costs FROM tasks WHERE costs IS NOT NULL").all();
+      rowCount += rows.length;
+      for (const r of rows) {
       let c;
       try { c = JSON.parse(r.costs); } catch { continue; }
       // BOB'S `input` IS THE WHOLE PROMPT. cacheRead and cacheWrite are PARTS
@@ -460,15 +476,26 @@ export async function readBob(home, pr) {
         output: Number(c?.output) || 0,
       };
       if (t.input + t.cacheWrite + t.cacheRead + t.output === 0) continue;
-      sessions.push({ id: String(r.id), cli: "bob", tokens: t });
+      const id = String(r.id);
+      const held = byId.get(id);
+      if (!held) byId.set(id, { id, cli: "bob", tokens: t });
+      else for (const k of ["input", "cacheWrite", "cacheRead", "output"])
+        if (t[k] > held.tokens[k]) held.tokens[k] = t[k];
+      }
+    } catch (e) {
+      unreadable.push(`${db}: ${e.message}`);
+    } finally {
+      try { handle.close(); } catch { /* best-effort */ }
     }
-    return result(stateOf(pr, sessions.length), sessions,
-                  { rows: rows.length, probe: pr });
-  } catch (e) {
-    return result("unreadable", [], { why: `${db}: ${e.message}` });
-  } finally {
-    try { handle.close(); } catch { /* best-effort */ }
   }
+
+  const sessions = [...byId.values()];
+  // Every database failed: that is unreadable, not empty. One of several
+  // failing is a partial read, and the caller is told which.
+  if (unreadable.length === dbs.length)
+    return result("unreadable", [], { probe: pr, why: unreadable.join("; ") });
+  return result(stateOf(pr, sessions.length), sessions,
+                { rows: rowCount, databases: dbs.length, unreadable, probe: pr });
 }
 
 // ── copilot chat ──────────────────────────────────────────────────────────────

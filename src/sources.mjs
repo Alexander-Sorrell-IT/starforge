@@ -18,7 +18,7 @@
 // contributes nothing to a total and looks identical to a tool nobody has. On
 // this fleet that is `cursor`, which standout scores and neither program reads.
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { join, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
@@ -94,7 +94,48 @@ export function storePaths(store, home, spec) {
     roots = hits;
   }
   const segs = store.segments ?? [];
-  return roots.map((r) => (segs.length ? join(r, ...segs) : r));
+  const declared = roots.map((r) => (segs.length ? join(r, ...segs) : r));
+
+  // COPIES, WHEN THE STORE DECLARES THEY EXIST. A declared path is one guess at
+  // where a tool keeps its data, and silence when the guess is incomplete.
+  // deadreckon's tool_roots has walked home for exactly this since the readers
+  // were fixed one at a time; starreckon read only the declared path, so bob's
+  // per-instance homes were invisible here and visible there — two programs
+  // giving two totals for one machine, which is the one thing a two-program
+  // system cannot afford.
+  //
+  // Opt-in per store, because the walk costs a bounded pass over home and most
+  // stores genuinely have one location. Deduplicated by RESOLVED path so a
+  // symlink and its target are not both returned; the reader still has to merge
+  // by id, because a hardlinked copy resolves to a different path and holds the
+  // same rows.
+  const depth = store.copies_max_depth;
+  if (!Number.isInteger(depth) || depth < 1 || !segs.length) return declared;
+
+  const seen = new Set();
+  const out = [];
+  const add = (p) => {
+    let key;
+    try { key = realpathSync(p); } catch { return; }
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(p);
+  };
+  declared.filter(isDir).forEach(add);
+
+  const tail = join(...segs);
+  const walkFrom = (dir, d) => {
+    if (d > depth) return;
+    for (const e of (ls(dir) ?? []).sort()) {
+      const child = join(dir, e);
+      if (!isDir(child)) continue;
+      const candidate = join(child, tail);
+      if (isDir(candidate)) add(candidate);
+      walkFrom(child, d + 1);
+    }
+  };
+  for (const r of roots) walkFrom(r, 1);
+  return out.length ? out : declared;
 }
 
 /**
