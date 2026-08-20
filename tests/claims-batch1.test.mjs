@@ -81,12 +81,19 @@ test("the pseudonym is not a bare hash of the identity", async () => {
     "an unsalted digest of an address is reversible with a wordlist");
 });
 
-test("the pseudonym never contains the identity", () => {
-  const email = "someone@example.com";
+test("the pseudonym never contains the identity, or any part of it", () => {
+  // DERIVED FROM THE INPUT, not three hardcoded fragments. The first version
+  // spelled out "someone" and "example.com", which CodeQL read as an
+  // incomplete URL check (js/incomplete-url-substring-sanitization) — a false
+  // positive on a negative assertion, but the literals were the weaker test
+  // anyway: they check the parts someone happened to think of.
+  const email = "someone.surname@sub.example.co.uk";
   const p = accountPseudonym(email);
-  assert.ok(!p.includes(email));
-  assert.ok(!p.includes("someone"));
-  assert.ok(!p.includes("example.com"));
+  assert.ok(!p.includes(email), "the whole address survived");
+  for (const part of email.split(/[@._-]/).filter((x) => x.length >= 3)) {
+    assert.ok(!p.includes(part), `the pseudonym still carries "${part}"`);
+  }
+  assert.match(p, /^acct-[0-9a-f]{8}$/, "a pseudonym is a label, not a transform");
 });
 
 test("the pseudonym is stable and distinguishing", () => {
