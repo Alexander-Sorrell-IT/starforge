@@ -8,3 +8,12 @@ src/__pycache__/
 # ships; this does not. deadreckon commits its copy because deadreckon IS the
 # record — here it would publish addresses to everyone who runs npx starreckon.
 spec/identity.json
+
+# Tool sandboxes and reports. Stryker copies the WHOLE TREE into
+# .stryker-tmp/sandbox-*/ to mutate it, and 137 of those files were committed
+# in acc6bd0 by a `git add -A`. A second stale copy of every source file in the
+# repo is worse than clutter: grep returns two answers, knip reads the sandbox
+# as real code, and a reader cannot tell which version is the program.
+.stryker-tmp/
+reports/mutation/
+.jazzer/

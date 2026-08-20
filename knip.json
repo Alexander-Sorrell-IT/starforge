@@ -1,0 +1,6 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": ["src/cli.mjs", "tests/*.test.mjs"],
+  "project": ["src/**/*.mjs"],
+  "ignoreDependencies": ["knip", "@jazzer.js/core"]
+}
