@@ -1237,38 +1237,61 @@ function inferLanguages(filePaths) {
   return Object.fromEntries(langs);
 }
 
-function computeStreaks(activeDays) {
-  if (activeDays.size === 0) return { longest: 0, current: 0 };
-  const sorted = [...activeDays].sort();
+// ONE STREAK RULE, AND IT WAS ALREADY WRITTEN DOWN.
+//
+// This file had its own computeStreaks and it was LENIENT: it counted the run
+// ending at the last active day and only zeroed it if that day was more than
+// one ago. profile.mjs had a second one implementing zY9 — walk back from
+// TODAY, any gap zeroes it — under a comment saying it "deliberately overrides
+// scan.mjs computeStreaks' leniency". Overriding by writing a second copy is
+// not overriding; it is two answers.
+//
+//   worked today and yesterday      both 2
+//   worked YESTERDAY, not today     lenient 2, zY9 0
+//   three days ending yesterday     lenient 3, zY9 0
+//
+// zY9 is the rule: deadreckon's stats.py mirrors it, profile.test.mjs asserts
+// it, and statspage.mjs renders it to the reader — "current streak walks back
+// from today (zY9); a gap zeroes it". The lenient copy published a different
+// number from current_streak_days and nothing compared them, because mutation
+// scored it 0.0% across 36 mutants: the tests import the OTHER one.
+//
+// Moved HERE rather than imported FROM profile.mjs because profile.mjs already
+// imports from this file — the other direction is a cycle.
+export function computeStreaks(activeDays, todayIso = null) {
+  const days = [...new Set(activeDays ?? [])].sort();
+  if (days.length === 0) return { current: 0, longest: 0 };
+  const have = new Set(days);
+  const today = todayIso ?? localDayKey(new Date());
   const dayMs = 864e5;
+  let cur = 0;
+  // LOCAL midnight, not Date.parse(). `Date.parse("2026-07-15")` returns UTC
+  // midnight, and localDayKey then reads that instant back on the local clock —
+  // which west of Greenwich is the PREVIOUS day. The walk started one day early
+  // and never matched, so in every Americas timezone a user who was active
+  // today scored current_streak 0, and a three-day run scored 2. UTC, Tokyo and
+  // Auckland were all correct, which is exactly why it survived: the machine
+  // that shows the bug is the machine most users are on, and not the one CI
+  // runs in.
+  //
+  // This is the same mixed-clock mistake the comment on activeDays describes,
+  // reintroduced two hundred lines away while fixing it — the parse stayed UTC
+  // while the read became local. Both ends have to move together.
+  const [ty, tm, td] = today.split("-").map(Number);
+  let probe = new Date(ty, tm - 1, td).getTime();
+  while (have.has(localDayKey(new Date(probe)))) {
+    cur += 1;
+    probe -= dayMs;
+  }
   let longest = 1, run = 1;
-  for (let i = 1; i < sorted.length; i++) {
-    const diff = Math.round(
-      (Date.parse(sorted[i]) - Date.parse(sorted[i - 1])) / dayMs
-    );
+  for (let i = 1; i < days.length; i++) {
+    const diff = Math.round((Date.parse(days[i]) - Date.parse(days[i - 1])) / dayMs);
     if (diff === 1) {
       run += 1;
       if (run > longest) longest = run;
     } else if (diff > 1) run = 1;
   }
-  let current = 1;
-  for (let i = sorted.length - 1; i > 0; i--) {
-    const diff = Math.round(
-      (Date.parse(sorted[i]) - Date.parse(sorted[i - 1])) / dayMs
-    );
-    if (diff === 1) current += 1;
-    else break;
-  }
-  // localDayKey for "today", because every entry in `sorted` is a LOCAL day key.
-  // Reading today in UTC compared two different calendars: west of Greenwich the
-  // UTC date rolls over in the evening, so the SAME history scored a live streak
-  // at 10:00 and a broken one at 20:00 on the same day. Both sides are now the
-  // local calendar date, parsed identically.
-  const daysSinceLast = Math.round(
-    (Date.parse(localDayKey(new Date())) - Date.parse(sorted[sorted.length - 1])) / dayMs
-  );
-  if (daysSinceLast > 1) current = 0;
-  return { longest, current };
+  return { current: cur, longest };
 }
 
 export function defaultRoots() {

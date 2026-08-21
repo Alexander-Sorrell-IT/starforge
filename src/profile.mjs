@@ -26,7 +26,7 @@ import { redactSecrets, maskPath, projectLabel } from "./redact.mjs";
 // from here, and the raw path went on to the HTML page. A second copy of a
 // redaction rule is a rule that will be fixed once.
 import { sanitizeModel, localDayKey, creditUsage, streamLines,
-         byCountThenKey } from "./scan.mjs";
+         byCountThenKey, computeStreaks } from "./scan.mjs";
 
 const MAX_ACTIVE_GAP_MIN = 15;
 const MIN_PROMPT_CHARS = 16; // Standout's low-signal floor
@@ -432,41 +432,7 @@ export async function collectProfileSignals(files, opts = {}) {
 // Python zY9 semantics (stats.py streaks): current streak walks back from
 // TODAY; any gap — including "was active yesterday but not today" — zeroes it.
 // This deliberately overrides scan.mjs computeStreaks' leniency.
-export function computeStreaks(activeDays, todayIso = null) {
-  const days = [...new Set(activeDays ?? [])].sort();
-  if (days.length === 0) return { current: 0, longest: 0 };
-  const have = new Set(days);
-  const today = todayIso ?? localDayKey(new Date());
-  const dayMs = 864e5;
-  let cur = 0;
-  // LOCAL midnight, not Date.parse(). `Date.parse("2026-07-15")` returns UTC
-  // midnight, and localDayKey then reads that instant back on the local clock —
-  // which west of Greenwich is the PREVIOUS day. The walk started one day early
-  // and never matched, so in every Americas timezone a user who was active
-  // today scored current_streak 0, and a three-day run scored 2. UTC, Tokyo and
-  // Auckland were all correct, which is exactly why it survived: the machine
-  // that shows the bug is the machine most users are on, and not the one CI
-  // runs in.
-  //
-  // This is the same mixed-clock mistake the comment on activeDays describes,
-  // reintroduced two hundred lines away while fixing it — the parse stayed UTC
-  // while the read became local. Both ends have to move together.
-  const [ty, tm, td] = today.split("-").map(Number);
-  let probe = new Date(ty, tm - 1, td).getTime();
-  while (have.has(localDayKey(new Date(probe)))) {
-    cur += 1;
-    probe -= dayMs;
-  }
-  let longest = 1, run = 1;
-  for (let i = 1; i < days.length; i++) {
-    const diff = Math.round((Date.parse(days[i]) - Date.parse(days[i - 1])) / dayMs);
-    if (diff === 1) {
-      run += 1;
-      if (run > longest) longest = run;
-    } else if (diff > 1) run = 1;
-  }
-  return { current: cur, longest };
-}
+
 
 // Sweep-line over session intervals. juggle_pct = share of covered wall-clock
 // with >=2 concurrent sessions; open_avg is time-weighted over covered time.

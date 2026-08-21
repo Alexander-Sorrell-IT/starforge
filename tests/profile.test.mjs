@@ -3,10 +3,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+// computeStreaks now lives in scan.mjs — profile.mjs had a SECOND copy under a
+// comment saying it "deliberately overrides scan.mjs computeStreaks' leniency",
+// and overriding by writing a second implementation is two answers, not one.
+import { computeStreaks } from "../src/scan.mjs";
 import {
   CORRECTION_RE,
   classifyProvider,
-  computeStreaks,
   sweepConcurrency,
   computeToolRelationship,
   collectProfileSignals,

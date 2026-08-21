@@ -34,10 +34,10 @@ const ALLOWED = {
   // Different signatures and different jobs; the shared name is a coincidence.
   temporal: "different signatures — temporal(stats, ts) vs temporal(col, src, ts)",
 
-  // KNOWN OPEN, awaiting a ruling on which streak semantic is correct.
-  // Delete this entry when one implementation is removed.
-  computeStreaks: "DRIFTED — scan.mjs allows a streak to end yesterday, "
-                + "profile.mjs requires today. Awaiting a ruling; see the header.",
+  // computeStreaks WAS here. It is gone because the duplicate is gone: the zY9
+  // implementation now lives once, in scan.mjs, and profile.mjs imports it.
+  // The exemption going stale is what the third test below is for, and it is
+  // what failed when this fix landed.
 
   // OPEN QUESTION, recorded rather than fixed here. accounts.mjs's
   // listJsonl(root) does NOT sort its readdirSync; scan.mjs's

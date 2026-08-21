@@ -112,7 +112,12 @@ test("scan and profile agree on the model vocabulary", () => {
 for (const tz of ["UTC", "America/Chicago", "America/Los_Angeles", "Asia/Tokyo", "Pacific/Auckland"]) {
   test(`current streak counts today and yesterday correctly in ${tz}`, async () => {
     process.env.TZ = tz;
-    const { computeStreaks } = await import(`../src/profile.mjs?tz=${tz}`);
+    // scan.mjs, not profile.mjs — that is where the one implementation lives
+    // now. The ?tz= query is what forces a fresh module evaluation per zone, so
+    // it has to name the module that actually holds the function; re-exporting
+    // it from profile.mjs would leave scan.mjs cached and quietly test one
+    // timezone five times.
+    const { computeStreaks } = await import(`../src/scan.mjs?tz=${tz}`);
     assert.equal(
       computeStreaks(["2026-07-15"], "2026-07-15").current, 1,
       `${tz}: active today must be a current streak of 1`
