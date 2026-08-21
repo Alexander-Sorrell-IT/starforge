@@ -986,7 +986,15 @@ if (subcommand === "search") {
     console.error("starreckon search: python3 not found on PATH. Install Python 3.8+ and try again.");
     process.exit(1);
   }
-  const roots = opt("roots")?.split(",").filter(Boolean) ?? [];
+  // effectiveRoots, NOT the raw flag. Every other path here already used it —
+  // scoreboard, serve, and the scan itself — and `search` was the one that did
+  // not, so a machine with extra_roots configured COUNTED those sessions and
+  // could never SEARCH them. The index and the total disagreed about which
+  // machine they were describing, and nothing said so: a search returns no hit
+  // for a session that exists, which reads exactly like a session that does
+  // not.
+  const { effectiveRoots: searchRoots } = await import("./config.mjs");
+  const roots = searchRoots(opt("roots")?.split(",").filter(Boolean) ?? []);
   let searchArgv;
   if (flag("--search-setup")) {
     searchArgv = ["setup"];
