@@ -575,6 +575,35 @@ Also true, and worth knowing:
   pointing `--join-fleet` at a synced or network-mounted folder ships those
   files by design. No socket check can see that; PROVE-IT.md §6 spells it out.
 
+## How the counting itself is tested
+
+The privacy proofs above cover what leaves the machine. The counting is proven
+separately, and more harshly than a test suite alone can:
+
+- **1,000+ tests**, every one of which follows the house rule that a test is
+  only believed after its fault has been planted and the failure watched.
+- **A second, independent implementation.** The same counting rules exist in
+  Python (`deadreckon`), and the two are run against each other. On the machine
+  this was written on, the two programs scanned the same home and agreed **to
+  the token** on every CLI — the one delta was the live session writing between
+  the two scans.
+- **A claims census** (`claims_probe.mjs`): every absolute sentence in the
+  source — NEVER, ALWAYS, CANNOT, MUST — is falsified in a throwaway copy and
+  must make a suite go red. A baseline runs before every mutation so a broken
+  sandbox cannot report a false pass.
+- **Mutation testing on every counting file** (`scan.mjs`, `scanners.mjs`,
+  `readers.mjs`, `accounts.mjs`), with the bar set where it means something:
+  every surviving mutation that can change a *number* is killed or written
+  down as equivalent. A changed string in a display path is noise; a flipped
+  `+=` in an accumulator is the product breaking.
+- **Coverage-guided fuzzing of the readers** (jazzer.js): the contract fuzzed
+  is that a reader never throws and never returns a shape its callers cannot
+  use — calibrated by planting a known fault and watching it found in seconds.
+- **The package, not just the source**: `npm pack` + install into an empty
+  directory + run, because a test suite runs the source tree and a user
+  installs the tarball — which are not the same thing, and were once broken
+  apart for a full day while every test stayed green.
+
 ## Prove it (the long version)
 
 Don't take this README's word for any of the above. [PROVE-IT.md](PROVE-IT.md)
