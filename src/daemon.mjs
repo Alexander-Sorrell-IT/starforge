@@ -55,6 +55,26 @@ export const PROTECT_LABEL = "work.starreckon.protect";
 //   · the marker is a CLAIM. Anyone can export it and get a run recorded as
 //     scheduled, so the record names the variable it believed rather than
 //     presenting "scheduled" as something it measured (layerlog.mjs).
+// WHAT THE SCHEDULED SCAN DELIBERATELY DOES NOT DO.
+//
+// The argv below is `--yes --no-wrapped --no-pace --ledger`. It is NOT --full,
+// and that is a decision rather than an omission: --full runs the model layer's
+// auto-index, and the model layer is SEPARATELY CONSENTED. runSearch() exists
+// so every model invocation passes through one door and writes one log, because
+// the consent screen promises a log for every run of the layer. A daemon
+// spawning a Python embedding job on a timer runs a consented-separately layer
+// without its consent, on a schedule nobody is watching.
+//
+// The consequence is real and is named where it can be seen rather than papered
+// over: nothing re-indexes on its own, so sessions recorded after the last
+// manual `search --search-index` are counted, snapshotted and NOT SEARCHABLE.
+// `search --search-status` now reports "N indexed · M on disk" for exactly that
+// reason — it used to print only N, so a stale index and a complete one looked
+// identical.
+//
+// The scan is what must run unattended: AI-coding logs age off disk in about
+// thirty days and the snapshots are what outlive them. An index can be rebuilt
+// from data that is still there; a transcript that aged out cannot.
 export const SCAN_TRIGGER    = "daemon:scan";
 export const PROTECT_TRIGGER = "daemon:protect";
 

@@ -250,6 +250,13 @@ const CLAIMS = [
    '    if (!det.recommended) return { ok: false, code: null, error: det.notes.at(-1) };',
    '    if (!det.recommended) return { ok: true, code: 0, blocked: true };',
    ["tests/claims-batch6.test.mjs", "tests/confine.test.mjs"]],
+
+  // ── batch 7 · the daemon's deliberate omission ──────────────────────────
+  ["daemon.mjs — the scheduled scan does NOT run the model layer",
+   "src/daemon.mjs",
+   "    <string>--ledger</string>",
+   "    <string>--ledger</string>\n    <string>--full</string>",
+   ["tests/daemon-no-model.test.mjs", "tests/daemon.test.mjs"]],
 ];
 
 // What a claim's sandbox needs. node_modules is SYMLINKED, not copied: it is

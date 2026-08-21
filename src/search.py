@@ -322,12 +322,45 @@ def cmd_status(args):
             n_idx = len(json.loads(doc_path.read_text(encoding="utf-8")))
         except Exception:
             pass
+    # HOW MANY EXIST, NOT JUST HOW MANY ARE INDEXED.
+    #
+    # This printed "(200 sessions)" and stopped. 200 indexed out of 200 and 200
+    # indexed out of 350 produced the SAME LINE, so an index that had gone stale
+    # was indistinguishable from a complete one — absent looking exactly like
+    # complete, in the one command whose whole job is reporting the state of the
+    # index.
+    #
+    # It matters because nothing re-indexes on its own. The daemon runs the scan
+    # and the protect ticker; it deliberately does not pass --full, so sessions
+    # recorded after the last manual index are counted, snapshotted and NOT
+    # SEARCHABLE. That is a fine design — an ML process on a timer is a
+    # separately consented layer running unconsented — but only if the gap says
+    # so out loud.
+    roots = args.roots if getattr(args, "roots", None) else [str(HOME)]
+    try:
+        n_disk = sum(1 for _ in _discover_sources(roots))
+    except Exception:                                    # noqa: BLE001
+        n_disk = None
+
     print(f"  venv:   {'yes — ' + str(VENV) if venv_ok else 'NOT SET UP'}")
-    print(f"  index:  {'yes — ' + str(INDEX_DIR) + ' (' + str(n_idx) + ' sessions)' if idx_ok else 'NOT BUILT'}")
+    if not idx_ok:
+        print("  index:  NOT BUILT"
+              + (f" — {n_disk} session(s) on disk are not searchable" if n_disk else ""))
+    elif n_disk is None:
+        print(f"  index:  yes — {INDEX_DIR} ({n_idx} sessions indexed; "
+              "could not read the roots to compare)")
+    else:
+        behind = n_disk - n_idx
+        state = ("up to date" if behind <= 0
+                 else f"{behind} session(s) NOT SEARCHABLE")
+        print(f"  index:  yes — {INDEX_DIR}")
+        print(f"          {n_idx} indexed · {n_disk} on disk · {state}")
     if not venv_ok:
         print("\n  Run:  starreckon search --setup")
     elif not idx_ok:
         print("\n  Run:  starreckon search --index")
+    elif n_disk is not None and n_disk > n_idx:
+        print("\n  Nothing re-indexes on a schedule. Run:  starreckon search --search-index")
 
 # ── setup command ─────────────────────────────────────────────────────────────
 
